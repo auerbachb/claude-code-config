@@ -9,7 +9,7 @@
 
 After **every** create — and after every update/close — append/refresh the session log and **print the GitHub issue URL as a clickable markdown link as the final line of the response.** This rule is absolute: the link is never buried in prose, never mid-paragraph — it is the closing line.
 
-**Closing order for a filing.** Earlier `Created #N: …` links in a batch or chain are intermediate output. After the final issue is filed, finish all report prose and any applicable inline-run offer or deferral. Then print the one canonical summary table (Step 9a) immediately before the final `Created #N: …` link. The table and link are the last two parts of the response: no text goes between them or after the link.
+**Closing order for a filing.** Earlier `Created #N: …` links in a batch or chain are intermediate output. After the final issue is filed, finish all report prose, then the coherence pass for a qualifying batch or chain (Step 9b2), then any applicable inline-run offer or deferral. Then print the one canonical summary table (Step 9a) immediately before the final `Created #N: …` link. The table and link are the last two parts of the response: no text goes between them or after the link.
 
 **Initialize `CHAIN_JSON` for drafting.** The emitted create receipt freezes the selected chain coordinates; recording below restores them so separate shell calls cannot inherit stale coordinates. `create:increment-draft` minted/restored the stable identity before dedup. Every record starts with null so ordinary issues cannot inherit a prior chain object:
 
@@ -44,7 +44,8 @@ LABELS_JSON=$(printf '%s\n' "$ACCEPTED_LABELS" | jq -R . | jq -s 'map(select(len
 
 set_log "$MINE_DEF"'if any(.issues[]; same_repo and .number == ($n|tonumber)) then . else .issues += [{number:($n|tonumber), title:$t, url:$u, labels:$labels,
                       created_at:$ts, origin:"create", status:"open", chip_task_id:null, chain:$chain,
-                      tier:$tier, delivers:$delivers, est_bound:($bound|tonumber)}]
+                      tier:$tier, delivers:$delivers, est_bound:($bound|tonumber),
+                      set_id:(if .active_set != null and .active_set.repository == $repo then .active_set.set_id else null end)}]
          | if $chain == null and .create_intent.kind == "new-standalone"
            then if .create_intent.repository != $repo or .active_chain != .create_intent.superseded_chain
                 then error("create intent changed; reconcile confirmed receipt")
@@ -59,6 +60,8 @@ set_log "$MINE_DEF"'if any(.issues[]; same_repo and .number == ($n|tonumber)) th
 ```
 
 **`DELIVERS` and `EST_BOUND` are the summary table's two per-row inputs, persisted here on purpose.** `DELIVERS` is the row's one-clause `Delivers` text — **one line, with any `|` escaped as `\|`**, since it is dropped straight into a markdown table cell and a raw pipe or newline splits the row — and `EST_BOUND` the raw `plan on` bound in minutes from the body's `## Estimate` line — both already in hand when the issue is drafted (Step 3 sub-step 4, Step 5). Writing them to the log is what lets the running tally re-render the canonical table after compaction, when the in-context values are gone and only `$LOG` survives; `tier` covers the `Model` column the same way. A tally that had to re-derive them would drift from the table printed at filing time. Because they are persisted rather than re-derived, a later `/update` that changes the delivered scope or the estimate has to write them back — Step 10 sub-step 6 owns that refresh.
+
+**`set_id` ties the row to its filing.** It is copied from `.active_set`, which `batch:chain` opens before the first member of a batch or chain (Step 6b); a single issue has no open set and records `null`. The coherence pass (Step 9b2) reads its members by this id, never by title, label, or filing time.
 
 **`chain_id` is what makes the chain recoverable.** Sibling detection (Step 4), the queued-successor note (Step 9c), and retraction (Step 12) all resolve membership by matching `chain_id` in `$LOG` — never by theme text or position number, which collide across unrelated chains and cannot survive a re-worded title. It also survives compaction: the log is re-read in Step 1, so a chain interrupted mid-filing is still identifiable afterwards, which in-context memory alone would not give you.
 
@@ -140,6 +143,32 @@ Default to **Standard** when signals are sparse. Values are bare family names / 
 For a **large gap** (e.g. Heavy batch on a Haiku or Sonnet thread), additionally recommend declining: *"For best results, consider declining and either switching this thread's model before accepting, or requesting the on-request hand-off below (which has a model picker)."* The offer never blocks — the user's explicit yes is the only gate. The inline path carries **no MODEL GUARD preamble** (that preamble stays only in the on-request chip/fallback block).
 
 **Both the tier name and recommended model/effort reach Step 9c** — named in the offer text before the acceptance question. A tier computed here and then dropped is the defect #791 fixed.
+
+### Step 9b2: Read a finished set back before the offer
+
+Run this once, right after the **last** member of a batch or chain has its per-issue summary and decision points and the `/update #N` / `close #N` reminder, and before the Step 9c offer. The last member is the final request of a batch (every increment included, when a request became a chain) or the final position of a standalone chain. With no open set — a single issue — skip this step silently.
+
+<!-- test-anchor: issue-maker-coherence-gate -->
+```bash
+# jq -e: 0 = true, 1 = false; anything else is an unreadable log and stops here.
+OPEN_RC=0
+jq -e --arg repo "$REPO" '.active_set != null and .active_set.repository == $repo' "$LOG" >/dev/null || OPEN_RC=$?
+case "$OPEN_RC" in 0|1) ;; *) echo "ERROR: could not read $LOG for the coherence gate; stop before the offer" >&2; exit 1 ;; esac
+if [ "$OPEN_RC" -eq 0 ]; then
+  SET_ID=$(jq -er '.active_set.set_id' "$LOG") || exit 1
+  QUALIFY_RC=0
+  jq -e --arg repo "$REPO" --arg id "$SET_ID" "$MINE_DEF"'.active_set.has_chain or ([.issues[] | select(same_repo and .set_id == $id)] | length) >= 3' "$LOG" >/dev/null || QUALIFY_RC=$?
+  case "$QUALIFY_RC" in
+    0) printf 'COHERENCE=run SET_ID=%s\n' "$SET_ID" ;;
+    1) set_log 'if .active_set.set_id != $id then error("coherence set changed") else
+         .coherence_runs = ((.coherence_runs // []) + [{set_id:$id, repository:$repo, status:"skipped", completed_at:$ts, report:[]}])
+         | .active_set = null end' --arg id "$SET_ID" --arg repo "$REPO" --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" || exit 1 ;;
+    *) echo "ERROR: could not count the coherence set in $LOG; stop before the offer" >&2; exit 1 ;;
+  esac
+fi
+```
+
+`COHERENCE=run` loads `create:coherence` and follows it to the end before Step 9c. Anything else prints nothing here: a one- or two-issue batch with no chain closes its set with a `skipped` receipt and adds no output. A failed receipt write stops before the offer, with the set still open for recovery.
 
 ### Step 9c: Offer the inline run before the closing table
 

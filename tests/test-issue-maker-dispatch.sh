@@ -198,6 +198,22 @@ assert_eq '[2,3]' "$runnable_rows" 'the inline offer and hand-off exclude a trac
 assert_eq 0 "$(grep -qF '(.issues[] | runnable | .chip_task_id) = $tok' .claude/skills/issue-maker/modules/create/postfile.md; echo $?)" 'the offer stamp skips a tracking parent'
 assert_eq 0 "$(grep -qF 'never offer `"Re-cut remainder"`' .claude/skills/issue-maker/modules/retract.md; echo $?)" 'parent retract offers exactly two unambiguous options'
 
+# Coherence pass (#2544): its own phase, loaded only after the last member.
+COHERENCE="$ROOT/.claude/skills/issue-maker/modules/create/coherence.md"
+assert_eq "$COHERENCE" "$("$DISPATCH" create coherence)" 'a finished set dispatches to the coherence module'
+assert_eq 0 "$(grep -qF '| create / coherence | `modules/create/coherence.md` |' .claude/skills/issue-maker/SKILL.md; echo $?)" 'entry index lists the coherence phase'
+assert_eq 0 "$(grep -qF 'load `create:coherence` only when postfile Step 9b2 prints `COHERENCE=run`' .claude/skills/issue-maker/SKILL.md; echo $?)" 'entry loads the coherence phase only on its trigger'
+coherence_gate=$(sed -n '/test-anchor: issue-maker-coherence-gate/,/^```$/p' .claude/skills/issue-maker/modules/create/postfile.md)
+assert_eq 0 "$(grep -qF 'COHERENCE=run' <<<"$coherence_gate"; echo $?)" 'the coherence gate block is found by its anchor'
+assert_eq 1 "$(grep -Eiq 'epic|label' <<<"$coherence_gate"; echo $?)" 'the coherence gate keys on the set, never on epic or labels'
+: > "$TRACE"
+loaded=""
+load_once session state
+load_once create postfile
+load_once create coherence
+expected=$(printf '%s\n' .claude/skills/issue-maker/modules/session-state.md .claude/skills/issue-maker/modules/create/postfile.md .claude/skills/issue-maker/modules/create/coherence.md | sed "s#^#$ROOT/#")
+assert_eq "$expected" "$(cat "$TRACE")" 'the coherence pass loads after postfile without other create phases'
+
 
 set +e
 "$DISPATCH" create unknown >/dev/null 2>&1
@@ -863,6 +879,54 @@ set_log() {
     # Guard the executable remote write's phase placement rather than a copied implementation.
     assert 'issue-maker-create' in source('modules/create/file.md')
     print('ok workflow: reflection contains no create invocation; estimate precedes final sizing and file phase owns the write')
+    # Coherence pass (#2544): an explicit set, stamped members, a quiet skip
+    # for small batches, and one recorded run that recovery never repeats.
+    open_set=next(b for b in blocks('modules/batch.md') if 'SOURCE_ASK' in b)
+    gate=next(b for b in blocks('modules/create/postfile.md') if 'COHERENCE=run' in b)
+    begin=next(b for b in blocks('modules/create/coherence.md') if 'COHERENCE=done' in b)
+    fix=next(b for b in blocks('modules/create/coherence.md') if '.active_set.applied_fixes = ' in b)
+    finish=next(b for b in blocks('modules/create/coherence.md') if 'REPORT_LINES:?' in b)
+    record=next(b for b in blocks('modules/create/postfile.md') if '.issues +=' in b)
+    def file_member(n,chain=None):
+        rcpt=dict(repo='owner/repo',number=n,title=f'Issue {n}',url=f'https://github.com/owner/repo/issues/{n}',labels=[],tier='Light',delivers='Slice',bound=60,chain=chain)
+        r=run(setup+'CREATE_RECEIPT='+shlex.quote(json.dumps(rcpt))+'\n'+record); assert r.returncode==0,r.stderr
+    def state(): return json.loads(log.read_text())
+    seed([]); file_member(1)
+    r=run(setup+gate); assert r.returncode==0 and r.stdout=='' and state()['issues'][0]['set_id'] is None and 'coherence_runs' not in state(),(r.stdout,r.stderr)
+    print('ok workflow: a single issue opens no set and the coherence gate prints nothing')
+    log.write_text('{not json'); before=log.read_bytes()
+    r=run(setup+gate); assert r.returncode!=0 and 'COHERENCE=run' not in r.stdout and log.read_bytes()==before,(r.returncode,r.stdout)
+    print('ok workflow: an unreadable log stops the coherence gate instead of skipping the pass')
+    seed([]); r=run(setup+'SOURCE_ASK="a and b"\n'+open_set); assert r.returncode==0,r.stderr
+    sid=state()['active_set']['set_id']
+    before=log.read_bytes()
+    r=run(setup+'SOURCE_ASK="a different filing"\n'+open_set); assert r.returncode!=0 and log.read_bytes()==before,(r.returncode,r.stderr)
+    r=run(setup+'SOURCE_ASK="later ask"\nIS_CHAIN_SET=true\nSET_CONTINUE=true\n'+open_set); assert r.returncode==0 and state()['active_set']['set_id']==sid and state()['active_set']['source']['ask']=='a and b' and state()['active_set']['has_chain'] is True,r.stderr
+    d=state(); d['active_set']['has_chain']=False; log.write_text(json.dumps(d))
+    file_member(1); file_member(2)
+    r=run(setup+gate); d=state()
+    assert r.returncode==0 and r.stdout=='' and d['active_set'] is None and d['coherence_runs'][0]['status']=='skipped' and [x['set_id'] for x in d['issues']]==[sid,sid],(r.stdout,r.stderr,d)
+    d['active_set']=dict(set_id='x',repository='other/repo',has_chain=False,source=dict(ask='q',ref=None));log.write_text(json.dumps(d));before=log.read_bytes()
+    r=run(setup+'SOURCE_ASK=q\n'+open_set); assert r.returncode!=0 and log.read_bytes()==before
+    print('ok workflow: a two-issue batch closes its set silently; an open set is reused only to continue its own filing, and a foreign one is refused')
+    seed([]); run(setup+'SOURCE_ASK="three things"\n'+open_set); sid=state()['active_set']['set_id']
+    for n in (1,2,3): file_member(n)
+    r=run(setup+gate); assert r.returncode==0 and r.stdout.strip()=='COHERENCE=run SET_ID='+sid,(r.stdout,r.stderr)
+    r=run(setup+'SET_ID='+sid+'\n'+begin); assert r.returncode==0 and state()['active_set']['review']['status']=='pending',r.stderr
+    assert [m['number'] for m in json.loads(r.stdout.strip().splitlines()[-1])['members']]==[1,2,3],r.stdout
+    for _ in range(2): r=run(setup+'SET_ID='+sid+'\nN=2\n'+fix); assert r.returncode==0,r.stderr
+    assert state()['active_set']['applied_fixes']==[2]
+    r=run(setup+'SET_ID='+sid+'\nREPORT_LINES="Fixed #2: Depends on #1\nGap: export lands nowhere"\n'+finish); d=state()
+    assert r.returncode==0 and d['active_set'] is None and d['coherence_runs'][-1]['status']=='done' and d['coherence_runs'][-1]['report']==['Fixed #2: Depends on #1','Gap: export lands nowhere'] and d['coherence_runs'][-1]['applied_fixes']==[2],(r.stderr,d)
+    before=log.read_bytes()
+    r=run(setup+gate); assert r.returncode==0 and r.stdout=='' and log.read_bytes()==before
+    r=run(setup+'SET_ID='+sid+'\n'+begin); assert r.returncode==0 and 'COHERENCE=done' in r.stdout and 'Gap: export lands nowhere' in r.stdout and log.read_bytes()==before,(r.stdout,r.stderr)
+    print('ok workflow: a three-issue batch runs the pass once; recovery reprints the stored report and never reruns it')
+    seed([]); run(setup+'SOURCE_ASK="one chain"\nIS_CHAIN_SET=true\n'+open_set); sid=state()['active_set']['set_id']
+    for n in (1,2): file_member(n,dict(chain_id='c',position=n,total=2))
+    r=run(setup+gate); assert r.returncode==0 and r.stdout.strip()=='COHERENCE=run SET_ID='+sid,(r.stdout,r.stderr)
+    r=run(setup+'SOURCE_ASK="one chain"\nSET_CONTINUE=true\nSOURCE_REF="#9 § PRD"\n'+open_set); assert r.returncode==0 and state()['active_set']['source']['ref']=='#9 § PRD',r.stderr
+    print('ok workflow: any chain qualifies for the pass and a document reference replaces the ask as source')
 PY
 
 if (( fail > 0 )); then

@@ -106,6 +106,10 @@ A first-class command for adding information to an existing issue **without leav
 
    **Chips are create-time only.** `/update`/edit-in-place never spawns or refreshes a chip — a chip offered at Step 9 stays as-is even if the body changes materially afterward. Re-planning the chip itself is out of scope for this skill (open question in issue #635's Notes); if the drift matters, retract and re-create. This also means `/update` can never cause the reverse double-offer (`/wave` or `/pm` already offered a chip for this issue, then someone edits it here via `/update`): the step above never *reads* an existing `chip_task_id` to decide anything, and the only value it ever *writes* is `null` (when backfilling a minimal entry for an issue this thread's log didn't already track) — never a live one, so it has no way to spawn a competing chip.
 
+### Coherence-pass fixes
+
+`create:coherence` applies its clear fixes through this step, and only these: a `Depends on #<predecessor>` line between neighbouring chain increments, a `- Parent: #<parent>` line on a child, a boundary line's final/non-final form with its named content unchanged, and an `{i}/{n}` title marker. Each must target an open member of the set being read back (`set_id` matches, `origin:"create"`). For those, the pass's finding stands in for sub-step 4: set `UPDATE_CONFIRMED=true` without asking, and set `UPDATE_SNAPSHOT` to the `{title,body}` of the pass's own fetch — the read the fix was built from. Skip sub-step 1's fetch block, since re-running it would replace that snapshot with a newer read and let the freshness check accept an edit the fix never saw. Sub-steps 5 and 6 run unchanged — the freshness check against that snapshot, the post-write verification, and the confirmed-only log update. A freshness mismatch is not re-proposed: the fix is dropped and the pass reports it as a finding. `DELIVERS` and `EST_BOUND` stay empty, since none of these edits moves scope or the estimate. Any other edit the pass suggests goes through the ordinary confirmed path.
+
 ---
 
 ## Step 11: Natural-language edit-in-place
