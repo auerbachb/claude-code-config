@@ -125,7 +125,10 @@ denies menus once it is armed), take one bounded round:
    `judgment-call`, and the text names the variable or account, never a value. Print the receipt
    (`human task ht-<id> saved: <what> (<reason>)`) and tell whoever asked that the step waits on him.
    **Not saved:** `OWNER_TASK_SH` empty, or `add` exits non-zero (exit 1: run `list --json` first;
-   if the task is there it was saved; exit 5: rewrite it naming the variable and retry once). Record it instead with `unattended.sh record --question
+   if the task is there it was saved; exit 5: rewrite it naming the variable and retry once). After
+   an exit 5 the refused text goes nowhere: `<what>` and `<why>` below, the record and every printed
+   line use only the rewritten text that names the variable or account, never the refused value.
+   Record it instead with `unattended.sh record --question
    "Human task: <what>" --did "not saved to the human-task list: <why>"` and leave it open, so it is
    listed on his return, then print one line: `not saved to the human-task list: <why>
    (owner-task.sh <not found|exit N>); recorded as U-<n>`. If `record` also fails, claim no `U-<n>`:

@@ -444,6 +444,7 @@ has "presence: the receipt line is printed" "$pskill" '(`human task ht-<id> save
 has "presence: the receipt prints before away is set" "$pskill" 'Save it, before step 5,'
 has "presence: missing helper or non-zero add falls back" "$pskill" '`OWNER_TASK_SH` empty, or `add` exits non-zero'
 has "presence: exit 1 checks the list before falling back" "$pskill" 'exit 1: run `list --json` first'
+has "presence: exit 5 refused text goes nowhere" "$pskill" 'After an exit 5 the refused text goes nowhere'
 has "presence: fallback records an open unattended question" "$pskill" 'unattended.sh record --question "Human task: <what>"'
 has "presence: fallback says the task was not saved" "$pskill" 'not saved to the human-task list: <why> (owner-task.sh <not found|exit N>)'
 has "presence: a failed record claims no U-<n>" "$pskill" 'If `record` also fails, claim no `U-<n>`'
