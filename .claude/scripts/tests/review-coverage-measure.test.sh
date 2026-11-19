@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# catalog: tests — Offline fixture test for review-coverage-measure.sh: each class, the unknown path, the threshold decision, and the usage exits
+# catalog: tests — Offline fixture test for review-coverage-measure.sh: each class, the unknown path, the threshold decision, the usage exits, snapshot provenance, and a stubbed-gh online reuse, --refresh and refresh-failure case
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SUT="$ROOT/.claude/scripts/review-coverage-measure.sh"
@@ -323,6 +323,106 @@ check "no run directory left after a failing run" "0" "$(ls -A "$CACHE" | grep -
 "$SUT" --from-cache --repo fixture/fixture --author fixture --since 2026-10-30 \
   --cache-dir "$OVL" --ledger-json "$LEDGER" >/dev/null 2>&1
 check "no run directory left after a successful run" "0" "$(ls -A "$OVL" | grep -c '^\.run\.')"
+
+# Snapshot provenance (issue #2361). A comment created before the merge and EDITED after it:
+# the cached copy still carries the old updated_at (counts as evidence); a fresh fetch
+# carries the new one (excluded). --from-cache must say it reproduces the snapshot.
+SNAP="$TMP/snap"
+mkdir -p "$SNAP"
+SPOP="$SNAP/fixture_fixture.population.author-fixture.since-2026-10-30.base-main.json"
+jq -n '[{number: 501, mergedAt: "2026-11-30T12:00:00Z", headRefOid: "snap501", changedFiles: 1, labels: []}]' > "$SPOP"
+echo '[[]]' > "$SNAP/fixture_fixture.pr-501.reviews.json"
+echo '[[]]' > "$SNAP/fixture_fixture.pr-501.pr_comments.json"
+jq -n '[[{id: 5, user: {login: "greptile-apps[bot]"}, body: "Last reviewed commit: snap501", created_at: "2026-11-29T10:00:00Z", updated_at: "2026-11-29T10:00:00Z"}]]' > "$SNAP/fixture_fixture.pr-501.issue_comments.json"
+jq -n '[[{id: 5, user: {login: "greptile-apps[bot]"}, body: "Last reviewed commit: snap501", created_at: "2026-11-29T10:00:00Z", updated_at: "2026-12-02T10:00:00Z"}]]' > "$TMP/fresh_issue_comments.json"
+SPOP_SUM=$(cksum < "$SPOP" | tr -d ' ')
+jq -n --arg sum "$SPOP_SUM" '{fetched_at: "2026-11-30T13:00:00Z", population_cksum: $sum, repo: "fixture/fixture", author: "fixture", since: "2026-10-30"}' > "${SPOP%.json}.meta.json"
+"$SUT" --from-cache --repo fixture/fixture --author fixture --since 2026-10-30 \
+  --cache-dir "$SNAP" --ledger-json "$LEDGER" > "$TMP/snap1.json" 2>"$TMP/snap1.err"
+check "snapshot offline run exits 0" "0" "$?"
+check "stale cached copy still counts as foreign (other)" "other" "$(jq -r 'select(.number == 501) | .class' "$SNAP/classified.jsonl")"
+check "snapshot fetch time is reported" "2026-11-30T13:00:00Z" "$(jq -r '.snapshot.population_fetched_at' "$TMP/snap1.json")"
+check "snapshot from_cache true" "true" "$(jq -r '.snapshot.from_cache' "$TMP/snap1.json")"
+check "snapshot statement on stderr" "1" "$(grep -c 'reproduce the cached snapshot, not current GitHub state' "$TMP/snap1.err")"
+# A cache edited to hold the post-merge updated_at is excluded by the at-merge cut.
+cp "$TMP/fresh_issue_comments.json" "$SNAP/fixture_fixture.pr-501.issue_comments.json"
+"$SUT" --from-cache --repo fixture/fixture --author fixture --since 2026-10-30 \
+  --cache-dir "$SNAP" --ledger-json "$LEDGER" > "$TMP/snap2.json" 2>/dev/null
+check "comment edited after the merge is excluded (override)" "override" "$(jq -r 'select(.number == 501) | .class' "$SNAP/classified.jsonl")"
+# A cache without a sidecar reports an unknown fetch time and unchanged results.
+"$SUT" --from-cache --repo fixture/fixture --author fixture --since 2026-10-30 \
+  --cache-dir "$CACHE" --ledger-json "$LEDGER" > "$TMP/snap3.json" 2>"$TMP/snap3.err"
+check "legacy cache fetch time is null" "null" "$(jq -r '.snapshot.population_fetched_at' "$TMP/snap3.json")"
+check "legacy cache says the fetch time is unknown" "1" "$(grep -c 'fetch time unknown' "$TMP/snap3.err")"
+check "legacy cache results unchanged (prs_total)" "8" "$(jq -r '.prs_total' "$TMP/snap3.json")"
+# A sidecar that belongs to a different population (checksum mismatch) reads as unknown.
+jq -n '{fetched_at: "2026-11-30T13:00:00Z", population_cksum: "0 0"}' > "${SPOP%.json}.meta.json"
+"$SUT" --from-cache --repo fixture/fixture --author fixture --since 2026-10-30 \
+  --cache-dir "$SNAP" --ledger-json "$LEDGER" > "$TMP/snap5.json" 2>/dev/null
+check "mismatched sidecar reads null" "null" "$(jq -r '.snapshot.population_fetched_at' "$TMP/snap5.json")"
+# A malformed sidecar reads as unknown, never an error.
+echo 'not json' > "${SPOP%.json}.meta.json"
+"$SUT" --from-cache --repo fixture/fixture --author fixture --since 2026-10-30 \
+  --cache-dir "$SNAP" --ledger-json "$LEDGER" > "$TMP/snap4.json" 2>/dev/null
+check "malformed sidecar exits 0" "0" "$?"
+check "malformed sidecar reads null" "null" "$(jq -r '.snapshot.population_fetched_at' "$TMP/snap4.json")"
+
+"$SUT" --refresh --from-cache --repo fixture/fixture --author fixture --since 2026-10-30 \
+  --cache-dir "$SNAP" >/dev/null 2>&1
+check "--refresh with --from-cache exits 2" "2" "$?"
+
+# Stubbed online run: gh is a stub on PATH that logs each call.
+STUB="$TMP/stubbin"
+GHLOG="$TMP/gh.log"
+mkdir -p "$STUB"
+jq -n '[{number: 501, mergedAt: "2026-11-30T12:00:00Z", headRefOid: "snap501", changedFiles: 1, labels: []}]' > "$TMP/stub_pop.json"
+echo '[[]]' > "$TMP/stub_empty.json"
+cat > "$STUB/gh" <<'STUBEOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+case "$*" in
+  "api rate_limit"*) echo 5000 ;;
+  "pr list"*) cat "$STUB_POP" ;;
+  *issues/501/comments*) [ -n "${STUB_FAIL_ISSUE:-}" ] && exit 1; cat "$STUB_FRESH" ;;
+  *pulls/501/reviews*|*pulls/501/comments*) cat "$STUB_EMPTY" ;;
+  *) exit 1 ;;
+esac
+STUBEOF
+chmod +x "$STUB/gh"
+ONL="$TMP/online"
+mkdir -p "$ONL"
+cp "$SNAP"/fixture_fixture.pr-501.*.json "$ONL/"
+# Seed the stale pre-edit comment into this cache.
+jq -n '[[{id: 5, user: {login: "greptile-apps[bot]"}, body: "Last reviewed commit: snap501", created_at: "2026-11-29T10:00:00Z", updated_at: "2026-11-29T10:00:00Z"}]]' > "$ONL/fixture_fixture.pr-501.issue_comments.json"
+export GH_LOG="$GHLOG" STUB_POP="$TMP/stub_pop.json" STUB_FRESH="$TMP/fresh_issue_comments.json" STUB_EMPTY="$TMP/stub_empty.json"
+: > "$GHLOG"
+PATH="$STUB:$PATH" "$SUT" --repo fixture/fixture --author fixture --since 2026-10-30 \
+  --cache-dir "$ONL" --ledger-json "$LEDGER" > "$TMP/on1.json" 2>"$TMP/on1.err"
+check "online reuse run exits 0" "0" "$?"
+check "online reuse keeps the stale cached comment (other)" "other" "$(jq -r 'select(.number == 501) | .class' "$ONL/classified.jsonl")"
+check "online reuse makes no issues/501/comments call" "0" "$(grep -c 'issues/501/comments' "$GHLOG")"
+check "online reuse counts reused payloads" "3" "$(jq -r '.snapshot.payloads_reused' "$TMP/on1.json")"
+check "online run records a fetch time" "true" "$(jq -r '.snapshot.population_fetched_at != null' "$TMP/on1.json")"
+check "online run writes the population sidecar" "1" "$(ls "$ONL"/*.meta.json 2>/dev/null | wc -l | tr -d ' ')"
+check "online reuse notes older payloads" "1" "$(grep -c -- '--refresh refetches them' "$TMP/on1.err")"
+: > "$GHLOG"
+PATH="$STUB:$PATH" "$SUT" --refresh --repo fixture/fixture --author fixture --since 2026-10-30 \
+  --cache-dir "$ONL" --ledger-json "$LEDGER" > "$TMP/on2.json" 2>/dev/null
+check "refresh run exits 0" "0" "$?"
+check "refresh refetches all three payloads" "3" "$(grep -c 'pulls/501/reviews\|pulls/501/comments\|issues/501/comments' "$GHLOG")"
+check "refresh changes the class to override" "override" "$(jq -r 'select(.number == 501) | .class' "$ONL/classified.jsonl")"
+check "refresh flag reported" "true" "$(jq -r '.snapshot.refresh' "$TMP/on2.json")"
+check "refresh counts fetched payloads" "3" "$(jq -r '.snapshot.payloads_fetched' "$TMP/on2.json")"
+check "refresh replaced the cached payload" "2026-12-02T10:00:00Z" "$(jq -r '.[0][0].updated_at' "$ONL/fixture_fixture.pr-501.issue_comments.json")"
+# A failed refresh keeps the old file and classifies the PR unknown.
+jq -n '[[{id: 5, user: {login: "greptile-apps[bot]"}, body: "Last reviewed commit: snap501", created_at: "2026-11-29T10:00:00Z", updated_at: "2026-11-29T10:00:00Z"}]]' > "$ONL/fixture_fixture.pr-501.issue_comments.json"
+cp "$ONL/fixture_fixture.pr-501.issue_comments.json" "$TMP/old_ic.json"
+STUB_FAIL_ISSUE=1 PATH="$STUB:$PATH" "$SUT" --refresh --repo fixture/fixture --author fixture --since 2026-10-30 \
+  --cache-dir "$ONL" --ledger-json "$LEDGER" > "$TMP/on3.json" 2>/dev/null
+check "failed refresh exits 0 without --fail-on-unknown" "0" "$?"
+check "failed refresh classifies unknown" "fetch_or_parse_failed" "$(jq -r 'select(.number == 501) | .sub' "$ONL/classified.jsonl")"
+check "failed refresh keeps the old cache file" "0" "$(cmp -s "$ONL/fixture_fixture.pr-501.issue_comments.json" "$TMP/old_ic.json"; echo $?)"
+check "no run directory left after online runs" "0" "$(ls -A "$ONL" | grep -c '^\.run\.')"
 
 printf 'review-coverage-measure tests: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

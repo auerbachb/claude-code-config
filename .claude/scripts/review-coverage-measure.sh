@@ -17,14 +17,18 @@
 #   unknown     a fetch failed, a payload did not parse, or the substance check failed
 #
 # Nothing is written to GitHub. Reads are GET-only. Immutable API responses are cached under
-# --cache-dir, keyed by repo, PR and endpoint, so a re-run costs no API calls. Each run works
+# --cache-dir, keyed by repo, PR and endpoint. The cache is a SNAPSHOT: --from-cache
+# reproduces the classification of the time it was fetched, not current GitHub state (a
+# comment edited or added later is not seen). An online run checks quota, refetches the
+# population and reuses non-empty per-PR payload files unless --refresh is set. The JSON
+# `snapshot` key and a stderr line state when the population was fetched. Each run works
 # from its own directory under --cache-dir (population, staged payloads, evaluator output)
 # and never reads a shared file it may have just replaced. A missing cache file is `unknown`,
 # never "no review".
 #
 # Usage: review-coverage-measure.sh [--repo owner/name] [--author login] [--since YYYY-MM-DD]
 #                                   [--cache-dir DIR] [--ledger-json FILE] [--from-cache]
-#                                   [--fail-on-unknown]
+#                                   [--refresh] [--fail-on-unknown]
 #        review-coverage-measure.sh --help
 
 set -u
@@ -59,13 +63,28 @@ Options
                         that fetched them.
   --ledger-json FILE    Ledger entries as a JSON array, for the cross-check. Default:
                         `unreviewed-merge-ledger.sh list --repo <repo>`.
-  --from-cache          Make no network calls; classify from the cache only (tests, re-runs).
+  --from-cache          Make no network calls; classify from the cache only. This reproduces
+                        the cached SNAPSHOT as it was fetched, not current GitHub state: later
+                        edits, new comments and deletions are not seen (a comment edited after
+                        the merge would be excluded by a fresh fetch but not by a stale copy).
+                        The output's `snapshot` key and a stderr line give the fetch time.
+  --refresh             Online only: refetch every PR's three payloads instead of reusing
+                        non-empty cache files. Without it an online run still checks quota and
+                        refetches the population, but reuses cached payloads, which can be
+                        older than the population. A failed refetch keeps the old cache file
+                        and classifies that PR unknown. Conflicts with --from-cache (exit 2).
   --fail-on-unknown     Exit 4 when any PR is unknown (default: report it and exit 0).
   -h, --help            Show this help.
 
 Output
   stdout   one JSON object: class counts, shares, per-reviewer tallies, the
            threshold decision, and the ledger/label cross-check.
+           `snapshot` = {population_fetched_at, from_cache, refresh, payloads_fetched,
+           payloads_reused}. population_fetched_at is the UTC time of the population fetch
+           (null for a cache that predates fetch-time recording); it does not describe
+           reused payload files, which can be older. Recorded in the sidecar
+           <population file>.meta.json, published after the population and tied to it
+           by checksum (a sidecar that does not match reads as null).
   cache    <cache-dir>/classified.jsonl holds one line per PR (published last, never read back).
 
 Method
@@ -99,7 +118,10 @@ SINCE=""
 CACHE_DIR=""
 LEDGER_JSON=""
 FROM_CACHE=0
+REFRESH=0
 FAIL_UNKNOWN=0
+PAYLOADS_FETCHED=0
+PAYLOADS_REUSED=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -110,11 +132,13 @@ while [ $# -gt 0 ]; do
     --cache-dir) [ $# -ge 2 ] || die "--cache-dir needs a value"; CACHE_DIR="$2"; shift 2 ;;
     --ledger-json) [ $# -ge 2 ] || die "--ledger-json needs a value"; LEDGER_JSON="$2"; shift 2 ;;
     --from-cache) FROM_CACHE=1; shift ;;
+    --refresh) REFRESH=1; shift ;;
     --fail-on-unknown) FAIL_UNKNOWN=1; shift ;;
     *) die "unknown option: $1" 2 ;;
   esac
 done
 
+[ "$FROM_CACHE" -eq 1 ] && [ "$REFRESH" -eq 1 ] && die "--refresh and --from-cache contradict each other" 2
 command -v jq >/dev/null 2>&1 || die "jq not found" 2
 [ -x "$SUBSTANCE_SH" ] || die "review-substance.sh not found next to this script" 2
 if [ "$FROM_CACHE" -eq 0 ]; then
@@ -209,9 +233,13 @@ REPO_KEY=$(printf '%s' "$REPO" | sed -e 's/%/%25/g' -e 's/_/%5F/g' -e 's|/|_|g')
 # a population file, and a window with no file is refused rather than served another's.
 POP_NAME="$REPO_KEY.population.author-$AUTHOR_KEY.since-$SINCE.base-main.json"
 POP="$CACHE_DIR/$POP_NAME"
+POP_META="${POP%.json}.meta.json"
+POP_FETCHED_AT=""
 RUN_POP="$RUN_DIR/population.json"
 if [ "$FROM_CACHE" -eq 0 ]; then
   POP_TMP=$(tmpf) || die "cannot create a temp file in $RUN_DIR" 4
+  # Captured before the live read, so the recorded time never post-dates the data.
+  POP_FETCHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   if ! gh pr list --repo "$REPO" --state merged --author "$AUTHOR" --base main \
       --search "merged:>=$SINCE" --limit "$POP_LIMIT" \
       --json number,mergedAt,headRefOid,changedFiles,labels,baseRefName </dev/null > "$POP_TMP" 2>/dev/null; then
@@ -227,10 +255,32 @@ if [ "$FROM_CACHE" -eq 0 ]; then
   if ! { cp "$RUN_POP" "$RUN_DIR/population.publish" && mv -f "$RUN_DIR/population.publish" "$POP"; }; then
     rm -f "$RUN_DIR/population.publish"
     printf 'warning: could not publish %s (this run is unaffected; --from-cache will not see it)\n' "$POP" >&2
+  else
+    # Provenance sidecar, written only after the population itself was published.
+    META_TMP="$RUN_DIR/population.meta.publish"
+    # The sidecar names the population by checksum, so a reader can verify the pair even if
+    # two runs interleave their publishes.
+    POP_SUM=$(cksum < "$RUN_POP" | tr -d ' ')
+    if jq -n --arg t "$POP_FETCHED_AT" --arg sum "$POP_SUM" --arg repo "$REPO" --arg author "$AUTHOR" --arg since "$SINCE" \
+         '{fetched_at: $t, population_cksum: $sum, repo: $repo, author: $author, since: $since}' > "$META_TMP" \
+       && mv -f "$META_TMP" "$POP_META"; then
+      :
+    else
+      # A stale sidecar would describe the previous population, so it must not survive.
+      rm -f "$META_TMP" "$POP_META"
+      printf 'warning: could not publish %s (fetch time will read as unknown offline)\n' "$POP_META" >&2
+    fi
   fi
 else
   [ -s "$POP" ] || die "no population at $POP (run once without --from-cache)" 2
   cp "$POP" "$RUN_POP" || die "population unreadable at $POP" 4
+fi
+# Fetch time of the population in use: read the sidecar in both modes. Missing or malformed
+# reads as unknown (null), never an error. An online run whose publish failed keeps its own time.
+if [ "$FROM_CACHE" -eq 1 ] || [ -z "$POP_FETCHED_AT" ]; then
+  # Reported only when the sidecar's checksum matches the population this run reads.
+  POP_SUM=$(cksum < "$RUN_POP" | tr -d ' ')
+  POP_FETCHED_AT=$(jq -r --arg sum "$POP_SUM" 'if (.fetched_at | type) == "string" and .population_cksum == $sum then .fetched_at else empty end' "$POP_META" 2>/dev/null) || POP_FETCHED_AT=""
 fi
 [ -s "$RUN_POP" ] || die "population is empty for this run (author $AUTHOR, since $SINCE)" 2
 
@@ -242,7 +292,8 @@ stage_payload() {
   num="$1"; kind="$2"
   src="$CACHE_DIR/$REPO_KEY.pr-$num.$kind.json"
   dst="$RUN_DIR/pr-$num.$kind.json"
-  if [ -s "$src" ]; then
+  if [ -s "$src" ] && [ "$REFRESH" -eq 0 ]; then
+    PAYLOADS_REUSED=$((PAYLOADS_REUSED + 1))
     if ! cp "$src" "$dst" 2>/dev/null; then
       rm -f "$dst"
       printf 'cache read failed: PR %s %s (classified unknown)\n' "$num" "$kind" >&2
@@ -261,13 +312,24 @@ stage_payload() {
   if gh api --paginate --slurp "$API?per_page=100" </dev/null > "$FT" 2>/dev/null \
       && jq -e 'flatten | type == "array"' "$FT" >/dev/null 2>&1 \
       && mv "$FT" "$dst"; then
-    # Publish is best effort: an existing cache response is never replaced.
-    if [ ! -e "$src" ] && ! ln "$dst" "$src" 2>/dev/null && [ ! -e "$src" ]; then
+    PAYLOADS_FETCHED=$((PAYLOADS_FETCHED + 1))
+    if [ "$REFRESH" -eq 1 ]; then
+      # An explicit refresh replaces the cached response, atomically.
+      if ! { cp "$dst" "$RUN_DIR/payload.publish" && mv -f "$RUN_DIR/payload.publish" "$src"; }; then
+        rm -f "$RUN_DIR/payload.publish"
+        printf 'warning: could not refresh %s in the cache (this run is unaffected)\n' "$src" >&2
+      fi
+    elif [ ! -e "$src" ] && ! ln "$dst" "$src" 2>/dev/null && [ ! -e "$src" ]; then
+      # Publish is best effort: an existing cache response is never replaced.
       printf 'warning: could not publish %s to the cache (this run is unaffected)\n' "$src" >&2
     fi
   else
-    rm -f "$FT"
-    printf 'fetch failed: PR %s %s (classified unknown)\n' "$num" "$kind" >&2
+    rm -f "$FT" "$dst"
+    if [ "$REFRESH" -eq 1 ] && [ -s "$src" ]; then
+      printf 'refresh failed: PR %s %s (old cache file kept; classified unknown)\n' "$num" "$kind" >&2
+    else
+      printf 'fetch failed: PR %s %s (classified unknown)\n' "$num" "$kind" >&2
+    fi
   fi
   return 0
 }
@@ -427,6 +489,8 @@ fi
 # "not warranted" only when the upper bound is at or below it.
 jq -s --arg repo "$REPO" --arg since "$SINCE" --argjson thr "$THRESHOLD_PCT" \
    --arg ledger_status "$LEDGER_STATUS" --slurpfile ledger "$LEDGER_FILE" \
+   --arg pop_at "$POP_FETCHED_AT" --argjson from_cache "$FROM_CACHE" --argjson refresh "$REFRESH" \
+   --argjson pfetched "$PAYLOADS_FETCHED" --argjson preused "$PAYLOADS_REUSED" \
    --arg ledger_start "$LEDGER_START" --arg cr "$CR_LOGIN" --arg ca "$CA_LOGIN" '
   def pct($a; $b): if $b == 0 then 0 else (($a * 1000 / $b) | round) / 10 end;
   def fsum: map(.changed_files) | add // 0;
@@ -462,6 +526,9 @@ jq -s --arg repo "$REPO" --arg since "$SINCE" --argjson thr "$THRESHOLD_PCT" \
   | {
       repo: $repo,
       since: $since,
+      snapshot: {population_fetched_at: (if $pop_at == "" then null else $pop_at end),
+                 from_cache: ($from_cache == 1), refresh: ($refresh == 1),
+                 payloads_fetched: $pfetched, payloads_reused: $preused},
       threshold_pct: $thr,
       prs_total: $n,
       prs_unknown: $u,
@@ -506,6 +573,15 @@ jq -s --arg repo "$REPO" --arg since "$SINCE" --argjson thr "$THRESHOLD_PCT" \
       }
     }
 ' "$CLS_TMP" || die "aggregation failed" 4
+
+if [ -n "$POP_FETCHED_AT" ]; then
+  printf 'snapshot: population fetched %s; results reproduce the cached snapshot, not current GitHub state\n' "$POP_FETCHED_AT" >&2
+else
+  printf 'snapshot: population fetch time unknown (the cache predates fetch-time recording); results reproduce the cached snapshot, not current GitHub state\n' >&2
+fi
+if [ "$FROM_CACHE" -eq 0 ] && [ "$REFRESH" -eq 0 ] && [ "$PAYLOADS_REUSED" -gt 0 ]; then
+  printf 'snapshot: %s payload file(s) reused from the cache and can be older than the population; --refresh refetches them\n' "$PAYLOADS_REUSED" >&2
+fi
 
 # The aggregate is computed from this run's own list; the shared file is replaced only
 # after the aggregate succeeded, so a concurrent run cannot change what was reported.
