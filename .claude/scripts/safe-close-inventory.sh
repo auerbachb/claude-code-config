@@ -404,9 +404,14 @@ add_pr() { case " $PR_NUMS " in *" $1 "*) ;; *) PR_NUMS="$PR_NUMS $1" ;; esac; }
 default_ref() { # <wt> -> remote default branch ref, or empty
   local r
   r="$(git -C "$1" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null)" && { printf '%s' "${r#refs/remotes/}"; return; }
+  # Without origin/HEAD the default is only knowable when exactly one of main/master exists;
+  # with both present it is ambiguous, so resolve nothing and let the branch get its PR checks.
+  local found="" n=0
   for r in origin/main origin/master; do
-    git -C "$1" rev-parse --verify --quiet "$r" >/dev/null 2>&1 && { printf '%s' "$r"; return; }
+    git -C "$1" rev-parse --verify --quiet "$r" >/dev/null 2>&1 && { found="$r"; n=$((n + 1)); }
   done
+  (( n == 1 )) && printf '%s' "$found"
+  return 0
 }
 
 if [[ -z "$WT" ]]; then
@@ -427,7 +432,12 @@ else
     [[ -n "$st_out" ]] && ndirty="$(printf '%s\n' "$st_out" | grep -c .)"
     dref="$(default_ref "$w")"
     on_default=0
-    case "$br_out" in main|master) on_default=1 ;; esac
+    # Exempt only the default branch resolved from origin/HEAD (fallback origin/main, origin/master),
+    # and only when that ref resolves to a commit: a dangling or absent default fails closed to unknown.
+    if [[ -n "$br_out" && -n "$dref" && "$br_out" == "${dref#origin/}" ]] \
+       && git -C "$w" rev-parse --verify --quiet "$dref^{commit}" >/dev/null 2>&1; then
+      on_default=1
+    fi
     wref="$(jq -n --arg p "$w" --arg b "$br_out" '{kind:"worktree",path:$p,branch:$b}')"
     if (( ndirty > 0 )); then
       add_item worktrees "dirty:$w" "$ndirty uncommitted path(s) in $w${br_out:+ ($br_out)}" lost \
