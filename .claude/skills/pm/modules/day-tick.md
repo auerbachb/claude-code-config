@@ -209,6 +209,9 @@ When this tick meets the existing successful-resume condition, resolve `day:park
 <!-- pm-routing:end -->
 **D5 — Persist status and evaluate scheduled reporting.** Record the tick, next cadence, slots, queue, digests and recovery outcomes in existing state. Run the 3.3a report gate on this tick's board and observed terminal outcomes before teardown. Follow `decision-only-output.md` for all other output, including immediate owner-action blockers, safety events and exhausted recovery. An explicit status/board request runs `/board` immediately.
 
+<!-- pm-routing:begin -->
+Before that output, read `shared:human-tasks` when this tick holds an operator-only item (an `OWNER_ACTION=` line from D1's exit reports, an owner-action blocker, a Needs-you row) and save each one unasked; a tick never opens a menu for it. A saved or not-saved line is an owner-action notice for the quiet-tick contract.
+<!-- pm-routing:end -->
 **Record the quiet-tick contract** (issue #2459) as the last write of a tick that keeps the loop running — after D3's persist and any re-arm, never on a D4 exit, pause or a 2D.7 park. Quiet is allowed only when a repeat of this tick would do nothing new. Bind `DAY_TICK_ACTED=true` when D1 processed an exit report or launched a transition, D2 launched or offered anything, D4 matched an outcome, or D5 surfaced an owner-action notice; else `false`. Horizon and budget holds stay loud, because only a model turn can see the counter that lifts them.
 
 <!-- test-anchor: pm-day-tick-quiet-record -->

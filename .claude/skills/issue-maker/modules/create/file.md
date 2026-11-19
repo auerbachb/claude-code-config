@@ -49,6 +49,9 @@ if [ "${IS_INCREMENT:-false}" = true ]; then
     RECORD_CHAIN=$(printf '%s' "$RECORD_CHAIN" | jq -c '. + {role:"parent"}') || exit 1
   fi
 fi
+# Only a batch or chain member joins the open coherence set; a single issue never does.
+SET_MEMBER=${SET_MEMBER:-${IS_INCREMENT:-false}}
+case "$SET_MEMBER" in true|false) ;; *) echo "ERROR: SET_MEMBER must be true or false" >&2; exit 1 ;; esac
 ISSUE_URL=""; ISSUE_NUMBER=""; FILE_RC=0
 if [ -z "$ISSUE_FILE" ]; then
   echo "ERROR: issue-file.sh not found (checked all three paths) — issue creation unavailable" >&2
@@ -106,8 +109,8 @@ fi
 echo "FILE_RC=$FILE_RC"
 if [ "$FILE_RC" -eq 0 ]; then
   CREATE_RECEIPT=$(jq -cn --arg number "$ISSUE_NUMBER" --arg url "$ISSUE_URL" \
-    --arg title "$TITLE" --arg labels "${ACCEPTED_LABELS:-}" --arg repo "$REPO" --arg tier "$ISSUE_TIER" --arg delivers "$DELIVERS" --argjson bound "$EST_BOUND" --argjson chain "$RECORD_CHAIN" \
-    '{repo:$repo,tier:$tier,delivers:$delivers,bound:$bound,chain:$chain,number:($number|tonumber),url:$url,title:$title,labels:($labels|split("\n")|map(select(length>0)))}') || {
+    --arg title "$TITLE" --arg labels "${ACCEPTED_LABELS:-}" --arg repo "$REPO" --arg tier "$ISSUE_TIER" --arg delivers "$DELIVERS" --argjson bound "$EST_BOUND" --argjson chain "$RECORD_CHAIN" --argjson set_member "$SET_MEMBER" \
+    '{repo:$repo,tier:$tier,delivers:$delivers,bound:$bound,chain:$chain,set_member:$set_member,number:($number|tonumber),url:$url,title:$title,labels:($labels|split("\n")|map(select(length>0)))}') || {
     echo "ERROR: remote create is confirmed, but its receipt could not be serialized; do not retry" >&2
     exit 1
   }

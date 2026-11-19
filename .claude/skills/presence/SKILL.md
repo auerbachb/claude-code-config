@@ -31,11 +31,13 @@ resolve_script() {
   return 1
 }
 PRESENCE_SH=$(resolve_script presence.sh) || PRESENCE_SH=""
+OWNER_TASK_SH=$(resolve_script owner-task.sh) || OWNER_TASK_SH=""
 ```
 
 `presence.sh` is **required**. When the lookup above leaves `PRESENCE_SH` empty, print
 `ERROR: presence.sh not found (checked all three paths) — presence state unavailable` and stop;
-otherwise carry on.
+otherwise carry on. `owner-task.sh` is optional: an empty `OWNER_TASK_SH` only sends a deferred
+answer to the fallback in **Ask now** step 4.
 
 ## Source gate
 
@@ -107,12 +109,31 @@ denies menus once it is armed), take one bounded round:
    each, the most consequential first. Any beyond four are recorded as usual after away is set.
    If unattended mode is already armed (`unattended.sh status`), open no menu (`human-queue.md`
    §Unattended): record each question with `unattended.sh record` and take its recommended option.
+   A step only he can do (a sign-in, a `.env` value, an agreement, his device, his call) also offers
+   `I'll do it later`; a free-text answer saying the same counts.
 4. **Record each answer where the work reads it**, then apply it after he leaves without asking
    again: `unattended.sh record --question … --recommended …` then `unattended.sh answer U-<n>
    --answer … --by operator`; a comment on the issue or PR it concerns (PRs he authored only,
    `safety.md` §Authorship); a message to the sub-agent or session that asked. An answer here is his
    own chat answer, so it carries the same authority as one typed in chat (one paid review approved
    = that one review).
+
+   **"I'll do it later" is a human task** (`.claude/reference/owner-tasks.md`). Save it, before
+   step 5, with `"$OWNER_TASK_SH" add --what "<the step>" --why "<reason>: <free text>" --source
+   "<issue, PR or thread>" --repo <owner/name of the work>`; `<reason>` is exactly one of
+   `sign-in`, `legal-agreement`, `payment-detail`, `secret-value`, `physical-device`,
+   `judgment-call`, and the text names the variable or account, never a value. Print the receipt
+   (`human task ht-<id> saved: <what> (<reason>)`) and tell whoever asked that the step waits on him.
+   **Not saved:** `OWNER_TASK_SH` empty, or `add` exits non-zero (exit 1: run `list --json` first;
+   if the task is there it was saved; exit 5: rewrite it naming the variable and retry once). After
+   an exit 5 the refused text goes nowhere: `<what>` and `<why>` below, the record and every printed
+   line use only the rewritten text that names the variable or account, never the refused value.
+   Record it instead with `unattended.sh record --question
+   "Human task: <what>" --did "not saved to the human-task list: <why>" --repo <owner/name of the work>` (the same repo
+   as `add`, so the question lands in that repo's list) and leave it open, so it is
+   listed on his return, then print one line: `not saved to the human-task list: <why>
+   (owner-task.sh <not found|exit N>); recorded as U-<n>`. If `record` also fails, claim no `U-<n>`:
+   print the task in full and say neither save worked. Every other answer is recorded as above.
 5. **Then set away**, whatever happened: a dismissed menu, a sub-agent that did not reply, or a
    live desk that captured the menu never holds the window back. Run `presence.sh declared-epoch` before step 1
    and pass it as `set away … --if-declared <value>`: exit 10 means another thread stored a newer

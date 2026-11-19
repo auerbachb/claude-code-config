@@ -17,7 +17,7 @@ for phase in preconditions arm tick teardown recovery park-reactive park-preempt
 done
 
 for pair in resume:load resume:fetch resume:present rank:load rank:fetch rank:score \
-    rank:present shared:priority shared:window-fit shared:ownership shared:config flow:cleanup flow:forgotten-prs \
+    rank:present shared:priority shared:window-fit shared:ownership shared:config shared:epic shared:human-tasks flow:cleanup flow:forgotten-prs \
     flow:monitor flow:launch flow:track flow:progress flow:refill flow:handoff; do
   operation=${pair%:*}
   phase=${pair#*:}
