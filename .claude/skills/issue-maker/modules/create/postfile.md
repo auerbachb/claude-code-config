@@ -38,6 +38,7 @@ ISSUE_TIER=$(printf '%s' "$CREATE_RECEIPT" | jq -er '.tier') || exit 1
 DELIVERS=$(printf '%s' "$CREATE_RECEIPT" | jq -er '.delivers') || exit 1
 EST_BOUND=$(printf '%s' "$CREATE_RECEIPT" | jq -er '.bound') || exit 1
 CHAIN_JSON=$(printf '%s' "$CREATE_RECEIPT" | jq -c '.chain // null') || exit 1
+SET_MEMBER=$(printf '%s' "$CREATE_RECEIPT" | jq -c '.set_member == true') || exit 1
 # ACCEPTED_LABELS holds the labels applied to this issue, one per line
 # (empty if none). Convert to a JSON array — `[]` when there are none.
 LABELS_JSON=$(printf '%s\n' "$ACCEPTED_LABELS" | jq -R . | jq -s 'map(select(length>0))')
@@ -45,7 +46,9 @@ LABELS_JSON=$(printf '%s\n' "$ACCEPTED_LABELS" | jq -R . | jq -s 'map(select(len
 set_log "$MINE_DEF"'if any(.issues[]; same_repo and .number == ($n|tonumber)) then . else .issues += [{number:($n|tonumber), title:$t, url:$u, labels:$labels,
                       created_at:$ts, origin:"create", status:"open", chip_task_id:null, chain:$chain,
                       tier:$tier, delivers:$delivers, est_bound:($bound|tonumber),
-                      set_id:(if .active_set != null and .active_set.repository == $repo then .active_set.set_id else null end)}]
+                      set_id:(if $member | not then null
+                              elif .active_set != null and .active_set.repository == $repo then .active_set.set_id
+                              else error("set member filed with no open coherence set; reconcile confirmed receipt") end)}]
          | if $chain == null and .create_intent.kind == "new-standalone"
            then if .create_intent.repository != $repo or .active_chain != .create_intent.superseded_chain
                 then error("create intent changed; reconcile confirmed receipt")
@@ -55,13 +58,13 @@ set_log "$MINE_DEF"'if any(.issues[]; same_repo and .number == ($n|tonumber)) th
            then .active_chain = null | .create_intent = null else . end end' \
   --arg repo "$REPO" --arg n "$ISSUE_NUMBER" --arg t "$TITLE" --arg u "$ISSUE_URL" \
   --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" --argjson labels "$LABELS_JSON" \
-  --argjson chain "$CHAIN_JSON" --arg tier "$ISSUE_TIER" \
+  --argjson chain "$CHAIN_JSON" --argjson member "$SET_MEMBER" --arg tier "$ISSUE_TIER" \
   --arg delivers "$DELIVERS" --arg bound "$EST_BOUND" || exit 1
 ```
 
 **`DELIVERS` and `EST_BOUND` are the summary table's two per-row inputs, persisted here on purpose.** `DELIVERS` is the row's one-clause `Delivers` text — **one line, with any `|` escaped as `\|`**, since it is dropped straight into a markdown table cell and a raw pipe or newline splits the row — and `EST_BOUND` the raw `plan on` bound in minutes from the body's `## Estimate` line — both already in hand when the issue is drafted (Step 3 sub-step 4, Step 5). Writing them to the log is what lets the running tally re-render the canonical table after compaction, when the in-context values are gone and only `$LOG` survives; `tier` covers the `Model` column the same way. A tally that had to re-derive them would drift from the table printed at filing time. Because they are persisted rather than re-derived, a later `/update` that changes the delivered scope or the estimate has to write them back — Step 10 sub-step 6 owns that refresh.
 
-**`set_id` ties the row to its filing.** It is copied from `.active_set`, which `batch:chain` opens before the first member of a batch or chain (Step 6b); a single issue has no open set and records `null`. The coherence pass (Step 9b2) reads its members by this id, never by title, label, or filing time.
+**`set_id` ties the row to its filing.** It is copied from `.active_set`, which `batch:chain` opens before the first member of a batch or chain (Step 6b); a single issue records `null`. Membership comes from the receipt's `set_member` (`create:file`), never from whether a set happens to be open, so a standalone issue filed while an unfinished batch's set is still open is never stamped into it. The coherence pass (Step 9b2) reads its members by this id, never by title, label, or filing time.
 
 **`chain_id` is what makes the chain recoverable.** Sibling detection (Step 4), the queued-successor note (Step 9c), and retraction (Step 12) all resolve membership by matching `chain_id` in `$LOG` — never by theme text or position number, which collide across unrelated chains and cannot survive a re-worded title. It also survives compaction: the log is re-read in Step 1, so a chain interrupted mid-filing is still identifiable afterwards, which in-context memory alone would not give you.
 

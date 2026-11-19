@@ -36,6 +36,8 @@ set_log 'if .active_set != null and .active_set.repository != $repo then error("
 }
 ```
 
+File every member of the set with `SET_MEMBER=true` in `create:file` (a chain increment defaults to it); that receipt field, not the open set alone, is what stamps the row with the set's id.
+
 `SOURCE_REF` is empty until a document exists. `create:doc-gate` reruns this block with `SOURCE_REF` set to the approved document's location (`#<parent> § PRD`, the shared doc link, or the repo path) so the pass reads the set against the document rather than the ask. A single issue never loads this module, so it never opens a set and never gets a pass.
 
 ---

@@ -22,7 +22,7 @@ jq -c --arg id "$SET_ID" --arg repo "$REPO" "$MINE_DEF"'{source:.active_set.sour
   members:[.issues[] | select(same_repo and .set_id == $id) | {number, chain}]}' "$LOG"
 ```
 
-`COHERENCE=done` means a recovered session already ran this pass: reprint its stored lines only if the Step 9c offer and the closing table are still pending, and change nothing. A `pending` review left by an interrupted run is simply run again — the reads are safe to repeat, and fixes already listed in `applied_fixes` are not applied twice.
+`COHERENCE=done` means a recovered session already ran this pass: reprint its stored lines only if the Step 9c offer and the closing table are still pending, and change nothing. A `pending` review left by an interrupted run is simply run again — the reads are safe to repeat, and a fix already listed in `applied_fixes` for that issue and kind is not applied twice.
 
 ## Read the set from GitHub, not from memory
 
@@ -56,13 +56,15 @@ A **clear fix** is mechanical and leaves what gets built unchanged:
 - a boundary line in the wrong form (final versus non-final) whose named content stays the same;
 - an `{i}/{n}` title marker that does not match the position.
 
-Apply each through `update:edit` — resolve and load it only now, and only when a clear fix exists — under its "Coherence-pass fixes" rule: the finding stands in for the confirmation, while the freshness check, the verification and the log update still run. After each verified write, record it so a recovered run skips it:
+Apply each through `update:edit` — resolve and load it only now, and only when a clear fix exists — under its "Coherence-pass fixes" rule: the finding stands in for the confirmation, while the freshness check, the verification and the log update still run. After each verified write, record it so a recovered run skips it. `FIX` names which of the four fixes above it was — `depends`, `parent`, `boundary` or `marker` — so a second fix on the same issue is still applied after a recovery:
 
 <!-- test-anchor: issue-maker-coherence-fix-receipt -->
 ```bash
+case "${FIX:-}" in depends|parent|boundary|marker) ;; *) echo "ERROR: FIX must be depends, parent, boundary or marker" >&2; exit 1 ;; esac
 set_log 'if .active_set.set_id != $id then error("coherence set changed") else
-  .active_set.applied_fixes = ((.active_set.applied_fixes // []) | if index([($n|tonumber)]) then . else . + [($n|tonumber)] end) end' \
-  --arg id "$SET_ID" --arg n "$N" || exit 1
+  .active_set.applied_fixes = ((.active_set.applied_fixes // []) | {number:($n|tonumber), fix:$fix} as $f
+    | if index([$f]) then . else . + [$f] end) end' \
+  --arg id "$SET_ID" --arg n "$N" --arg fix "$FIX" || exit 1
 ```
 
 Everything else is **reported, never applied**: a gap, an overlap, a reorder, a new dependency between batch issues, a boundary whose deferred work no later member picks up, any change to scope or estimate. A gap is never filed as a new issue here — name it and let the user decide. A fix the freshness check refuses becomes a reported finding too.

@@ -761,7 +761,7 @@ set_log() {
     # structured receipt output must carry the remote write across that boundary.
     receipt_line=next(line for line in r.stdout.splitlines() if line.startswith('CREATE_RECEIPT='))
     receipt=json.loads(receipt_line.split('=',1)[1])
-    assert receipt=={'repo':'owner/repo','tier':'Light','delivers':'Safe','bound':60,'chain':None,'number':7,'url':'https://github.com/owner/repo/issues/7','title':'Safe title','labels':[]},receipt
+    assert receipt=={'repo':'owner/repo','tier':'Light','delivers':'Safe','bound':60,'chain':None,'set_member':False,'number':7,'url':'https://github.com/owner/repo/issues/7','title':'Safe title','labels':[]},receipt
     seed([])
     record=next(b for b in blocks('modules/create/postfile.md') if '.issues +=' in b)
     restore='CREATE_RECEIPT='+shlex.quote(json.dumps(receipt))+'\n'
@@ -887,13 +887,13 @@ set_log() {
     fix=next(b for b in blocks('modules/create/coherence.md') if '.active_set.applied_fixes = ' in b)
     finish=next(b for b in blocks('modules/create/coherence.md') if 'REPORT_LINES:?' in b)
     record=next(b for b in blocks('modules/create/postfile.md') if '.issues +=' in b)
-    def file_member(n,chain=None):
-        rcpt=dict(repo='owner/repo',number=n,title=f'Issue {n}',url=f'https://github.com/owner/repo/issues/{n}',labels=[],tier='Light',delivers='Slice',bound=60,chain=chain)
-        r=run(setup+'CREATE_RECEIPT='+shlex.quote(json.dumps(rcpt))+'\n'+record); assert r.returncode==0,r.stderr
+    def file_member(n,chain=None,member=True,ok=True):
+        rcpt=dict(repo='owner/repo',number=n,title=f'Issue {n}',url=f'https://github.com/owner/repo/issues/{n}',labels=[],tier='Light',delivers='Slice',bound=60,chain=chain,set_member=member)
+        r=run(setup+'CREATE_RECEIPT='+shlex.quote(json.dumps(rcpt))+'\n'+record); assert (r.returncode==0)==ok,(r.returncode,r.stderr)
     def state(): return json.loads(log.read_text())
-    seed([]); file_member(1)
+    seed([]); file_member(1,member=False); file_member(2,ok=False)
     r=run(setup+gate); assert r.returncode==0 and r.stdout=='' and state()['issues'][0]['set_id'] is None and 'coherence_runs' not in state(),(r.stdout,r.stderr)
-    print('ok workflow: a single issue opens no set and the coherence gate prints nothing')
+    print('ok workflow: a single issue opens no set, a member receipt with no open set is refused, and the coherence gate prints nothing')
     log.write_text('{not json'); before=log.read_bytes()
     r=run(setup+gate); assert r.returncode!=0 and 'COHERENCE=run' not in r.stdout and log.read_bytes()==before,(r.returncode,r.stdout)
     print('ok workflow: an unreadable log stops the coherence gate instead of skipping the pass')
@@ -911,17 +911,19 @@ set_log() {
     print('ok workflow: a two-issue batch closes its set silently; an open set is reused only to continue its own filing, and a foreign one is refused')
     seed([]); run(setup+'SOURCE_ASK="three things"\n'+open_set); sid=state()['active_set']['set_id']
     for n in (1,2,3): file_member(n)
+    file_member(9,member=False); assert state()['issues'][-1]['set_id'] is None
     r=run(setup+gate); assert r.returncode==0 and r.stdout.strip()=='COHERENCE=run SET_ID='+sid,(r.stdout,r.stderr)
     r=run(setup+'SET_ID='+sid+'\n'+begin); assert r.returncode==0 and state()['active_set']['review']['status']=='pending',r.stderr
     assert [m['number'] for m in json.loads(r.stdout.strip().splitlines()[-1])['members']]==[1,2,3],r.stdout
-    for _ in range(2): r=run(setup+'SET_ID='+sid+'\nN=2\n'+fix); assert r.returncode==0,r.stderr
-    assert state()['active_set']['applied_fixes']==[2]
+    for f in ('depends','depends','marker'): r=run(setup+'SET_ID='+sid+'\nN=2\nFIX='+f+'\n'+fix); assert r.returncode==0,r.stderr
+    assert state()['active_set']['applied_fixes']==[dict(number=2,fix='depends'),dict(number=2,fix='marker')]
+    r=run(setup+'SET_ID='+sid+'\nN=2\nFIX=other\n'+fix); assert r.returncode!=0
     r=run(setup+'SET_ID='+sid+'\nREPORT_LINES="Fixed #2: Depends on #1\nGap: export lands nowhere"\n'+finish); d=state()
-    assert r.returncode==0 and d['active_set'] is None and d['coherence_runs'][-1]['status']=='done' and d['coherence_runs'][-1]['report']==['Fixed #2: Depends on #1','Gap: export lands nowhere'] and d['coherence_runs'][-1]['applied_fixes']==[2],(r.stderr,d)
+    assert r.returncode==0 and d['active_set'] is None and d['coherence_runs'][-1]['status']=='done' and d['coherence_runs'][-1]['report']==['Fixed #2: Depends on #1','Gap: export lands nowhere'] and d['coherence_runs'][-1]['applied_fixes']==[dict(number=2,fix='depends'),dict(number=2,fix='marker')],(r.stderr,d)
     before=log.read_bytes()
     r=run(setup+gate); assert r.returncode==0 and r.stdout=='' and log.read_bytes()==before
     r=run(setup+'SET_ID='+sid+'\n'+begin); assert r.returncode==0 and 'COHERENCE=done' in r.stdout and 'Gap: export lands nowhere' in r.stdout and log.read_bytes()==before,(r.stdout,r.stderr)
-    print('ok workflow: a three-issue batch runs the pass once; recovery reprints the stored report and never reruns it')
+    print('ok workflow: a three-issue batch runs the pass once, keeps a standalone issue out of its set, and records each fix by issue and kind; recovery reprints the stored report and never reruns it')
     seed([]); run(setup+'SOURCE_ASK="one chain"\nIS_CHAIN_SET=true\n'+open_set); sid=state()['active_set']['set_id']
     for n in (1,2): file_member(n,dict(chain_id='c',position=n,total=2))
     r=run(setup+gate); assert r.returncode==0 and r.stdout.strip()=='COHERENCE=run SET_ID='+sid,(r.stdout,r.stderr)
