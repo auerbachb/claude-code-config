@@ -51,10 +51,11 @@ Every read of the candidate set re-reads the stored epic, the way 3.4 re-reads `
 <!-- test-anchor: pm-epic-restore -->
 ```bash
 EPIC_STORED_RC=0
-EPIC_STORED=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].epic.number" 2>/dev/null) || EPIC_STORED_RC=$?
+# --get-json, not --get: a stored string "null" must read as corrupt, not as no epic.
+EPIC_STORED=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].epic.number" 2>/dev/null) || EPIC_STORED_RC=$?
 case "$EPIC_STORED_RC" in
   0) if [[ "$EPIC_STORED" =~ ^[1-9][0-9]*$ ]]; then EPIC_NUMBER=$EPIC_STORED
-     elif [[ -n "$EPIC_STORED" && "$EPIC_STORED" != null ]]; then EPIC_SCOPE_UNREADABLE=true; fi ;;
+     elif [[ "$EPIC_STORED" != null ]]; then EPIC_SCOPE_UNREADABLE=true; fi ;;
   3) : ;;                                # no state file: no epic
   *) EPIC_SCOPE_UNREADABLE=true ;;       # unreadable is not "no epic"
 esac
