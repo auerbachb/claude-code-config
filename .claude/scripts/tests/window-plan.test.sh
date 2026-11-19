@@ -44,5 +44,16 @@ check "3 hours: deadline is now + 10800" "$(field "$out" deadline_epoch)" "$(( N
 out=$(bash "$WP" --window "90m" --now "2026-11-13T12:00:37Z" 2>/dev/null) || true
 check "90m from :37: deadline is now + 5400 (unchanged form)" "$(field "$out" deadline_epoch)" "$(( NOW_EPOCH + 37 + 5400 ))"
 
+printf '== a passed clock time: refused by default, tomorrow under --next-occurrence\n'
+# 2026-11-13T12:00:00Z is 07:00 EST, so 6:00 AM has passed; tomorrow 06:00 EST == 11:00Z.
+bash "$WP" --window "until 6:00 AM" --now "$NOW" >/dev/null 2>&1; check "passed clock time: exit 1 without the flag" "$?" 1
+out=$(bash "$WP" --window "until 6:00 AM" --now "$NOW" --next-occurrence 2>/dev/null) || true
+check "passed clock time + --next-occurrence: tomorrow 06:00 ET" "$(field "$out" deadline_epoch)" "$(( NOW_EPOCH + 23 * 3600 ))"
+out=$(bash "$WP" --window "until 9:15 PM" --now "$NOW" --next-occurrence 2>/dev/null) || true
+check "future clock time + --next-occurrence: still today" "$(field "$out" deadline_epoch)" "$EXPECT_CLOCK"
+# 2026-03-07T23:00:00Z is 18:00 EST; 08:00 the next day is EDT (DST starts 2026-03-08) == 12:00Z.
+out=$(bash "$WP" --window "until 8:00 AM" --now "2026-03-07T23:00:00Z" --next-occurrence 2>/dev/null) || true
+check "--next-occurrence across the DST change: 08:00 EDT" "$(field "$out" deadline_epoch)" 1772971200
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
