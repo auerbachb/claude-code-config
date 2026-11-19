@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ai-quotas-setup.sh — Register AI subscription accounts and their isolated
 # per-account login profiles (issue #1666).
-# catalog: token-measurement — Register AI subscription accounts in `~/.claude/ai-quotas.json` — `claude` and `codex` each get an isolated per-account login profile, `cursor` gets a registry entry alone because the Cursor IDE holds that login, and `antigravity` (one account per machine, no profile; reports whether `agy` is signed in and as which account) likewise — name them with short nicknames, set a manual plan tier and monthly price override, install or remove the macOS LaunchAgent that takes one unattended usage reading a day, generate the `launchers.zsh` shell functions that start a provider CLI against one account's profile, share the primary install's skills, rules, hooks, plugins, and MCP servers into a profile, and report which accounts are currently logged in — labels and paths only, never a credential value
+# catalog: token-measurement — Register AI subscription accounts in `~/.claude/ai-quotas.json` — `claude` and `codex` each get an isolated per-account login profile, `cursor` gets a registry entry alone because the Cursor IDE holds that login, and `antigravity` (one account per machine, no profile; reports whether `agy` is signed in and as which account) likewise — name them with short nicknames, set a manual plan tier and monthly price override, install or remove the macOS LaunchAgent that takes one unattended usage reading a day, generate the `launchers.zsh` shell functions that start a provider CLI against one account's profile, share the primary install's skills, rules, hooks, plugins, and MCP servers into a profile, and export the account list to a file and import it in a new environment with a guided login pass, and report which accounts are currently logged in — labels and paths only, never a credential value
 #
 # PURPOSE
 #   The owner runs several premium AI coding subscriptions side by side and
@@ -37,6 +37,8 @@
 #   ai-quotas-setup.sh launchers [--json]
 #   ai-quotas-setup.sh ledger-hooks
 #   ai-quotas-setup.sh share-config <label> [<provider>]
+#   ai-quotas-setup.sh export [--out FILE]
+#   ai-quotas-setup.sh import FILE [--no-login]
 #   ai-quotas-setup.sh --help | -h
 #
 # ACTIONS
@@ -126,6 +128,30 @@
 #             block share-config copies can carry an API key in an env
 #             entry — copied byte for byte, never printed.
 #
+#   export    Write the account list to a versioned JSON file (Issue #2468;
+#             schema `ai-quotas-accounts/1`, default ./ai-quotas-accounts.json,
+#             `--out -` prints it) so another computer or environment (desktop app
+#             to terminal, a cloud session) can recreate it. Per account: provider,
+#             label, nickname, provider account/org/user IDs where the registry
+#             holds them, plan override (tier, monthly price), source order, and
+#             the login method. Mode 600. NO credential of any kind, no keychain
+#             item name, and no profile path: import recomputes those for the new
+#             environment. The file holds emails and IDs — keep it private.
+#   import    Recreate every account from an export, idempotently: entries already
+#             here are kept (a field the file states that differs is reported as a
+#             conflict and the entry is left untouched, exit 3), a second Cursor or
+#             Antigravity account is refused with the one-per-machine message
+#             (exit 3), the rest are added with profile directories in THIS
+#             environment's profile root. Then a guided login pass, account by
+#             account: already signed in is skipped; otherwise the exact step for
+#             that provider is printed and the person is waited on (Enter to start
+#             a claude/codex login or to confirm a Cursor/agy sign-in, s to skip) —
+#             a login is never started or typed for them. Ends with a ready /
+#             needs-you summary. `--no-login` imports entries only; re-running
+#             `import` resumes the pass for accounts still not signed in. With no
+#             terminal (a cloud session) it creates the entries and lists the
+#             logins that must happen elsewhere.
+#
 # PROVIDERS
 #   claude    Per-account CLAUDE_CONFIG_DIR, logged in by running `claude`
 #             against it. Verified Claude Code 2.1.312 also supports auth-only
@@ -211,6 +237,10 @@
 #                           `claude` against the profile's CLAUDE_CONFIG_DIR).
 #                           Set it to `/login` on a CLI version where that
 #                           shortcut is preferred.
+#   AI_QUOTAS_IMPORT_INTERACTIVE
+#                           1 or 0 forces `import`'s login pass to treat the
+#                           session as interactive or not (default: both stdin
+#                           and stdout are terminals).
 #   AI_QUOTAS_PLATFORM      Platform name (default: `uname -s`). `Darwin`
 #                           selects the Keychain probe.
 #   AI_QUOTAS_SQLITE3_BIN   Path to sqlite3 (reads the Cursor IDE store).
@@ -237,6 +267,9 @@
 #       cron line that ran the reader without them would record `needs-login`
 #       every day and call it history.
 #   3   Usage error: bad action, provider, or label; already-registered pair;
+#       `import` of an unreadable or invalid file, or one that had a conflict
+#       or a refused second Cursor/Antigravity account (everything else in the
+#       file is still imported); `export` with nothing registered;
 #       an ambiguous label that matches more than one provider; two accounts
 #       that would share a launcher name; `share-config` on a cursor account
 #       or on a profile_dir that is the primary install itself.
@@ -349,6 +382,8 @@ ARG_LABEL=""
 ARG_NICK=""
 ARG_PLAN_TIER=""
 ARG_PLAN_USD=""
+ARG_OUT=""
+ARG_FILE=""
 REPORT_WINDOW=""
 REPORT_PCT=""
 REPORT_RESET=""
@@ -374,6 +409,12 @@ while [[ $# -gt 0 ]]; do
       ARG_HOUR="$2"; shift 2 ;;
     --hour=*) ARG_HOUR="${1#--hour=}"
       [[ -n "$ARG_HOUR" ]] || die_usage "--hour requires an hour (0-23)"
+      shift ;;
+    --out)
+      [[ $# -ge 2 && -n "${2:-}" ]] || die_usage "--out requires a file path (or - for stdout)"
+      ARG_OUT="$2"; shift 2 ;;
+    --out=*) ARG_OUT="${1#--out=}"
+      [[ -n "$ARG_OUT" ]] || die_usage "--out requires a file path (or - for stdout)"
       shift ;;
     --) shift; while [[ $# -gt 0 ]]; do POSITIONAL+=("$1"); shift; done ;;
     -*) die_usage "unknown flag: $1" ;;
@@ -460,6 +501,13 @@ case "$ACTION" in
   launchers)
     [[ ${#POSITIONAL[@]} -eq 1 ]] || die_usage "launchers takes no arguments"
     ;;
+  export)
+    [[ ${#POSITIONAL[@]} -eq 1 ]] || die_usage "export takes no arguments (use --out FILE)"
+    ;;
+  import)
+    [[ ${#POSITIONAL[@]} -eq 2 ]] || die_usage "import requires <file> (an export written by 'export')"
+    ARG_FILE="${POSITIONAL[1]}"
+    ;;
   report)
     # `report <label> <window> <used_pct> [<reset>] [<provider>]`. A fourth
     # argument that names a provider is the provider, not a reset, so a
@@ -489,15 +537,18 @@ case "$ACTION" in
     esac
     ;;
   *)
-    die_usage "unknown action: $ACTION (expected list, doctor, repair-layout, add, nick, plan, sources, remove, relogin, schedule, launchers, share-config, ledger-hooks)"
+    die_usage "unknown action: $ACTION (expected list, doctor, repair-layout, add, nick, plan, sources, remove, relogin, schedule, launchers, share-config, export, import, ledger-hooks)"
     ;;
 esac
 
 if [[ $JSON -eq 1 && "$ACTION" != "list" && "$ACTION" != "doctor" && "$ACTION" != "launchers" ]]; then
   die_usage "--json applies to list, doctor, or launchers"
 fi
-if [[ $NO_LOGIN -eq 1 && "$ACTION" != "add" ]]; then
-  die_usage "--no-login applies to add only"
+if [[ $NO_LOGIN -eq 1 && "$ACTION" != "add" && "$ACTION" != "import" ]]; then
+  die_usage "--no-login applies to add and import only"
+fi
+if [[ -n "$ARG_OUT" && "$ACTION" != "export" ]]; then
+  die_usage "--out applies to export only"
 fi
 if [[ $NICK_GIVEN -eq 1 && "$ACTION" != "add" && "$ACTION" != "nick" ]]; then
   die_usage "--nick applies to add only (use 'nick <label> <name>' on an existing account)"
@@ -2936,6 +2987,374 @@ action_share_config() {
   fi
 }
 
+# --- export / import: move the account list to a new environment (#2468) -----
+# The export is the registry minus everything environment- or secret-shaped:
+# provider, label (the subscription email), nickname, known provider IDs, the
+# manual plan override, the source order, and the login METHOD. Never a profile
+# path (import recomputes it), a keychain item name, a login timestamp, or
+# anything read from a profile directory. Each field is copied by name from the
+# registry, so a field added to the registry later is NOT exported until it is
+# added here on purpose.
+
+EXPORT_SCHEMA="ai-quotas-accounts/1"
+
+# Provider IDs are the one registry value copied from outside this tool, so they get the
+# strictest filter: a known key, one of three exact ID shapes (UUID, digits, or a
+# user-/org-/acct- prefixed token), and not credential-shaped. Anything else is dropped on
+# export and refused on import, so a secret pasted into ids can never ride along.
+# Used by BOTH export_json and IMPORT_VALIDATE_JQ so the two cannot drift.
+IDS_JQ_DEFS='
+  def id_key_ok: IN("account_id", "org_id", "organization_id", "user_id");
+  def credential_shaped:
+    test("(^|[-_.])(sk|pk|rk|ghp|gho|ghs|ghu|xox[a-z]?|bearer|token|secret|key|pass|password|pat|jwt)([-_.]|$)"; "i")
+    or test("^(eyJ|ya29|AIza|AKIA)");
+  def id_value_ok: type == "string" and length > 0 and length <= 64
+    and (test("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+         or test("^[0-9]{1,20}$")
+         or test("^(user|usr|org|organization|acct|acc|account)[-_][A-Za-z0-9-]{3,48}$"; "i"))
+    and (credential_shaped | not);
+'
+
+export_json() { # <config-json> <now-iso> -> the export document on stdout
+  printf '%s' "$1" | jq -S --arg schema "$EXPORT_SCHEMA" --arg now "$2" "$IDS_JQ_DEFS"'
+    {schema: $schema, exported_at: $now}
+    + (if ((.source_failure_threshold | type) == "number") then {source_failure_threshold: .source_failure_threshold} else {} end)
+    + {accounts: [ .accounts[]
+        | {provider, label}
+          + (if ((.nickname | type) == "string" and .nickname != "") then {nickname: .nickname} else {} end)
+          + ((.ids // {})
+             | if type == "object" then
+                 with_entries(select(.key | id_key_ok) | select(.value | id_value_ok))
+               else {} end
+             | if length > 0 then {ids: .} else {} end)
+          + (if ((.plan_override | type) == "object" and (.plan_override.tier | type) == "string")
+             then {plan_override: ({tier: .plan_override.tier}
+                    + (if ((.plan_override.usd_per_month | type) == "number") then {usd_per_month: .plan_override.usd_per_month} else {} end))}
+             else {} end)
+          + (if ((.sources | type) == "array") then {sources: .sources} else {} end)
+          + {login: {method: ({claude: "claude-cli", codex: "codex-cli", cursor: "cursor-ide", antigravity: "agy-cli"}[.provider] // "unknown")}}
+      ]}'
+}
+
+action_export() {
+  local config doc out tmp dir count dropped
+  config="$(read_config)"
+  count="$(printf '%s' "$config" | jq '.accounts | length')"
+  [[ "$count" -gt 0 ]] || die 3 "no accounts are registered — nothing to export"
+  doc="$(export_json "$config" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")" || die 5 "could not build the export"
+  dropped="$(jq -n --argjson c "$config" --argjson d "$doc" '
+    ([$c.accounts[] | (.ids // {}) | if type == "object" then length else 0 end] | add // 0)
+    - ([$d.accounts[] | (.ids // {}) | length] | add // 0)')" || dropped=0
+  if [[ "${dropped:-0}" -gt 0 ]]; then
+    echo "${SELF_NAME}: ${dropped} provider ID value(s) were left out of the export (not a recognised ID shape, or credential-shaped)." >&2
+  fi
+  out="${ARG_OUT:-./ai-quotas-accounts.json}"
+  if [[ "$out" == "-" ]]; then
+    printf '%s\n' "$doc"
+    return 0
+  fi
+  [[ ! -d "$out" ]] || die 3 "--out names a directory: $out"
+  dir="$(dirname "$out")"
+  [[ -d "$dir" ]] || die 5 "output directory does not exist: $dir"
+  # The rename below replaces the target: never let it be the live registry (by name,
+  # by symlink, or by hard link), which would swap the accounts for export JSON.
+  if [[ "$out" == "$CONFIG_FILE" || "$out" -ef "$CONFIG_FILE" || "$(cd "$dir" && pwd -P)/$(basename "$out")" == "$(cd "$(dirname "$CONFIG_FILE")" 2>/dev/null && pwd -P)/$(basename "$CONFIG_FILE")" ]]; then
+    die 3 "--out names the live account registry ($CONFIG_FILE); choose a different file"
+  fi
+  # 0600 before any content lands, like the registry: the file holds emails and
+  # account IDs. Written through a temp file so a failed write never leaves half a file.
+  tmp="$(mktemp "${dir}/.ai-quotas-export.XXXXXX")" || die 5 "could not create a temp file in $dir"
+  chmod 600 "$tmp" || { rm -f "$tmp"; die 5 "could not chmod the export"; }
+  printf '%s\n' "$doc" > "$tmp" || { rm -f "$tmp"; die 5 "could not write the export"; }
+  mv -f "$tmp" "$out" || { rm -f "$tmp"; die 5 "could not move the export into place: $out"; }
+  echo "${SELF_NAME}: exported ${count} account(s) to ${out} (mode 600). It holds emails and account IDs but no credential — keep it private. Import it with: ${SELF_NAME} import <file>"
+}
+
+# One line per problem; empty output means the file is importable. Every field is
+# checked against the same rule the matching action enforces, so an import can never
+# register what add/nick/plan/sources would refuse.
+IMPORT_VALIDATE_JQ="$IDS_JQ_DEFS"'
+  def bad_text: test("[\u0000-\u001f\u007f]");
+  if type != "object" then "the file is not a JSON object"
+  elif ((.schema | type) != "string" or (.schema | startswith("ai-quotas-accounts/") | not)) then "not an ai-quotas account export (no ai-quotas-accounts/<major> schema)"
+  elif (.schema != "ai-quotas-accounts/1") then "unsupported export schema \(.schema) (this tool reads ai-quotas-accounts/1)"
+  elif ((.accounts | type) != "array") then "the export has no accounts list"
+  elif (has("source_failure_threshold") and ((.source_failure_threshold | type) != "number" or .source_failure_threshold != (.source_failure_threshold | floor) or .source_failure_threshold < 1 or .source_failure_threshold > 999999)) then "invalid source_failure_threshold (a positive integer of at most six digits)"
+  else
+    (.accounts | to_entries[] | .key as $i | .value as $a
+     | ("account #\($i + 1)") as $w
+     | if ($a | type) != "object" then "\($w): not an object"
+       else
+         (if ($a.provider | IN("claude", "codex", "cursor", "antigravity")) then empty else "\($w): unknown provider" end),
+         (if (($a.label | type) == "string" and ($a.label | test("^[A-Za-z0-9][A-Za-z0-9._@+-]*$")) and ($a.label | length) <= 128) then empty else "\($w): invalid label" end),
+         (if ($a | has("nickname")) and (($a.nickname | type) != "string" or ($a.nickname | utf8bytelength) > 32 or ($a.nickname | bad_text) or ($a.nickname | startswith(" ")) or ($a.nickname | endswith(" "))) then "\($w): invalid nickname" else empty end),
+         (if ($a | has("plan_override")) and (($a.plan_override | type) != "object" or (($a.plan_override | keys - ["tier", "usd_per_month"] | length) > 0) or ((($a.plan_override.tier // null) | type) != "string") or ((($a.plan_override.tier // "") | test("^[ -~]{1,32}$")) | not) or (($a.plan_override.tier // "") | (startswith(" ") or endswith(" ")))
+            or (($a.plan_override | has("usd_per_month")) and (($a.plan_override.usd_per_month | type) != "number" or $a.plan_override.usd_per_month < 0 or $a.plan_override.usd_per_month > 99999.99 or ((($a.plan_override.usd_per_month * 100) | round) / 100) != $a.plan_override.usd_per_month))) then "\($w): invalid plan_override" else empty end),
+         (({claude: ["oauth-usage", "browser"], codex: ["app-server", "http"], cursor: ["ide-token", "browser"], antigravity: ["backend", "terminal", "observation"]}[$a.provider] // []) as $allowed
+          | if ($a | has("sources")) and (($a.sources | type) != "array" or ($a.sources | length) == 0 or (($a.sources | unique | length) != ($a.sources | length))
+              or (($a.sources | all(type == "string" and . as $v | $allowed | index($v))) | not))
+            then "\($w): invalid sources for \($a.provider) (allowed: \($allowed | join(", ")); no repeats)" else empty end),
+         (if ($a | has("ids")) and (($a.ids | type) != "object"
+              or (($a.ids | to_entries | all(.key | id_key_ok)) | not)
+              or (($a.ids | to_entries | all(.value | id_value_ok)) | not))
+            then "\($w): invalid ids (allowed keys: account_id, org_id, organization_id, user_id; values must be a UUID, digits, or a user-/org-/acct- prefixed ID, never a credential)" else empty end)
+       end)
+  end'
+
+# What the person has to do to sign this provider in. Printed, never run for them.
+import_login_step() { # <provider> <profile_dir>
+  case "$1" in
+    claude) echo "sign in with the Claude CLI (it opens a browser; finish the sign-in, then exit the session with /exit): $(manual_login_command claude "$2")" ;;
+    codex) echo "sign in with the Codex CLI (it opens a browser; finish the sign-in): $(manual_login_command codex "$2")" ;;
+    cursor) echo "open the Cursor IDE and sign in" ;;
+    antigravity) echo "run agy in a terminal and sign in with your Google account" ;;
+  esac
+}
+
+# Interactive means a person can answer: stdin and stdout are both terminals, unless
+# AI_QUOTAS_IMPORT_INTERACTIVE says 1 or 0. A cloud or CI session has neither, so it
+# creates entries and lists the logins that must happen elsewhere.
+import_is_interactive() {
+  case "${AI_QUOTAS_IMPORT_INTERACTIVE:-}" in
+    1) return 0 ;;
+    0) return 1 ;;
+  esac
+  [[ -t 0 && -t 1 ]]
+}
+
+# Cursor and agy are one login per machine, so "signed in" says nothing about WHICH account.
+# agy reports its email, which must equal the imported label; Cursor's IDE store is probed
+# for presence only, so its note says the account is unconfirmed. Sets IMPORT_IDENTITY_NOTE;
+# returns 1 on a proven mismatch (the caller counts the account as needing the person).
+IMPORT_IDENTITY_NOTE=""
+import_identity_check() { # <provider> <label>
+  local have want
+  IMPORT_IDENTITY_NOTE=""
+  case "$1" in
+    antigravity)
+      if [[ -n "${ANTIGRAVITY_ACCOUNT:-}" ]]; then
+        have="$(printf '%s' "$ANTIGRAVITY_ACCOUNT" | tr '[:upper:]' '[:lower:]')"
+        want="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
+        if [[ "$have" != "$want" ]]; then
+          IMPORT_IDENTITY_NOTE="agy is signed in as ${ANTIGRAVITY_ACCOUNT}, not '$2' - sign agy in with the right Google account"
+          return 1
+        fi
+      fi
+      ;;
+    cursor)
+      IMPORT_IDENTITY_NOTE=" (this tool cannot read which account the Cursor IDE holds; confirm it is '$2')"
+      ;;
+  esac
+  return 0
+}
+
+# The guided pass over IMPORT_PASS_PROVIDERS / IMPORT_PASS_LABELS: the accounts the file
+# registered or this machine already had. A login is the provider's own and starts only
+# after the person says go; nothing is typed or read for them.
+import_login_pass() {
+  local interactive=0 i n config idx dir service provider label step ans rc ready=0 needs=0 line
+  local -a needs_lines=()
+  import_is_interactive && interactive=1
+  n=${#IMPORT_PASS_LABELS[@]}
+  echo
+  echo "Login pass (${n} account(s)):"
+  for (( i = 0; i < n; i++ )); do
+    provider="${IMPORT_PASS_PROVIDERS[$i]}"; label="${IMPORT_PASS_LABELS[$i]}"
+    config="$(read_config)"
+    idx="$(match_indices "$config" "$label" "$provider" | head -n 1)"
+    if [[ -z "$idx" ]]; then
+      echo "  removed      ${provider} '${label}' - no longer registered (removed by another process); skipped"
+      continue
+    fi
+    dir="$(printf '%s' "$config" | jq -r --argjson i "$idx" '.accounts[$i].profile_dir')"
+    service="$(printf '%s' "$config" | jq -r --argjson i "$idx" '.accounts[$i].credential_ref.service // ""')"
+    account_status "$provider" "$dir" "$service"
+    if [[ "$ACCOUNT_STATUS" == ok ]]; then
+      if import_identity_check "$provider" "$label"; then
+        echo "  ready        ${provider} '${label}' - already signed in, skipped${IMPORT_IDENTITY_NOTE}"
+        ready=$((ready + 1))
+      else
+        echo "  needs you    ${provider} '${label}' - ${IMPORT_IDENTITY_NOTE}"
+        needs=$((needs + 1)); needs_lines+=("${provider} '${label}': ${IMPORT_IDENTITY_NOTE}")
+      fi
+      continue
+    fi
+    step="$(import_login_step "$provider" "$dir")"
+    if [[ "$ACCOUNT_STATUS" == unverified ]]; then
+      echo "  needs you    ${provider} '${label}' - ${CRED_DETAIL}"
+      needs=$((needs + 1)); needs_lines+=("${provider} '${label}': ${CRED_DETAIL}")
+      continue
+    fi
+    echo "  needs login  ${provider} '${label}' - ${step}"
+    if [[ $interactive -eq 0 ]]; then
+      needs=$((needs + 1)); needs_lines+=("${provider} '${label}': ${step}")
+      continue
+    fi
+    case "$provider" in
+      claude|codex)
+        printf '    Press Enter to start this login, or s to skip: '
+        ans="s"; IFS= read -r ans || ans="s"
+        if [[ -z "$ans" ]]; then
+          rc=0
+          # A fresh process: relogin exits on failure and keeps its own slot and trap.
+          "${BASH:-bash}" "$0" relogin "$label" "$provider" || rc=$?
+          [[ $rc -eq 0 ]] || echo "    the login did not complete (exit ${rc})."
+        fi
+        ;;
+      *)
+        printf '    Press Enter once you have signed in, or s to skip: '
+        ans="s"; IFS= read -r ans || ans="s"
+        ;;
+    esac
+    if [[ -z "$ans" ]]; then
+      # Re-read: relogin may have recorded a keychain item for this account.
+      config="$(read_config)"
+      idx="$(match_indices "$config" "$label" "$provider" | head -n 1)"
+      if [[ -z "$idx" ]]; then
+        echo "    ${provider} '${label}' was removed while its login ran; skipped"
+        continue
+      fi
+      dir="$(printf '%s' "$config" | jq -r --argjson i "$idx" '.accounts[$i].profile_dir // ""')"
+      service="$(printf '%s' "$config" | jq -r --argjson i "$idx" '.accounts[$i].credential_ref.service // ""')"
+      account_status "$provider" "$dir" "$service"
+      if [[ "$ACCOUNT_STATUS" == ok ]]; then
+        if import_identity_check "$provider" "$label"; then
+          echo "  ready        ${provider} '${label}' - signed in${IMPORT_IDENTITY_NOTE}"
+          ready=$((ready + 1))
+        else
+          echo "  needs you    ${provider} '${label}' - ${IMPORT_IDENTITY_NOTE}"
+          needs=$((needs + 1)); needs_lines+=("${provider} '${label}': ${IMPORT_IDENTITY_NOTE}")
+        fi
+        continue
+      fi
+      echo "    still not signed in: ${CRED_DETAIL}"
+    fi
+    needs=$((needs + 1)); needs_lines+=("${provider} '${label}': ${step}")
+  done
+  echo
+  echo "Summary: ${ready} ready, ${needs} need you."
+  if [[ $needs -gt 0 ]]; then
+    for line in "${needs_lines[@]}"; do echo "  - ${line}"; done
+    if [[ $interactive -eq 0 ]]; then
+      echo "This session cannot take a login. Do those sign-ins where you can, then re-run: ${SELF_NAME} import <file>"
+    else
+      echo "Re-run '${SELF_NAME} import <file>' to continue with these."
+    fi
+  fi
+}
+
+action_import() {
+  local file="$ARG_FILE" doc errs n i config entry provider label idx existing diffs now dir newentry
+  local added=0 kept=0 conflicts=0 refused=0 changed=0 held threshold fixhint
+  local -a lines=()
+  IMPORT_PASS_PROVIDERS=(); IMPORT_PASS_LABELS=()
+  [[ -f "$file" && -r "$file" ]] || die 3 "import file not readable: $file"
+  doc="$(cat "$file")" || die 3 "could not read: $file"
+  printf '%s' "$doc" | jq -e . >/dev/null 2>&1 || die 3 "not valid JSON: $file"
+  errs="$(printf '%s' "$doc" | jq -r "$IMPORT_VALIDATE_JQ")" || die 3 "could not validate: $file"
+  if [[ -n "$errs" ]]; then
+    echo "${SELF_NAME}: $file cannot be imported - nothing was changed:" >&2
+    printf '  %s\n' "$errs" >&2
+    exit 3
+  fi
+  n="$(printf '%s' "$doc" | jq '.accounts | length')"
+  [[ "$n" -gt 0 ]] || die 3 "the export lists no accounts"
+
+  # Profile directories for accounts this machine does not have yet, in THIS environment's
+  # profile root. Done before the lock, as add does; only claude and codex have one, and
+  # neither can be refused.
+  config="$(read_config)"
+  for (( i = 0; i < n; i++ )); do
+    provider="$(printf '%s' "$doc" | jq -r --argjson i "$i" '.accounts[$i].provider')"
+    label="$(printf '%s' "$doc" | jq -r --argjson i "$i" '.accounts[$i].label')"
+    case "$provider" in claude|codex) ;; *) continue ;; esac
+    [[ -z "$(match_indices "$config" "$label" "$provider")" ]] || continue
+    ensure_profile_dir "$(profile_dir_for "$label" "$provider")"
+  done
+
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  state_lock_acquire "$CONFIG_FILE" || die 7 "timed out waiting for the config write lock"
+  config="$(read_config)"
+  for (( i = 0; i < n; i++ )); do
+    entry="$(printf '%s' "$doc" | jq -c --argjson i "$i" '.accounts[$i]')"
+    provider="$(printf '%s' "$entry" | jq -r '.provider')"
+    label="$(printf '%s' "$entry" | jq -r '.label')"
+    idx="$(match_indices "$config" "$label" "$provider" | head -n 1)"
+    if [[ -n "$idx" ]]; then
+      existing="$(printf '%s' "$config" | jq -c --argjson i "$idx" '.accounts[$i]')"
+      # Only what the file SAYS can conflict: a field it omits is not a claim.
+      diffs="$(jq -nr --argjson e "$existing" --argjson f "$entry" '
+        [ (if ($f.nickname // null) != null and ($e.nickname // null) != $f.nickname then "nickname (here: \($e.nickname // "none"), file: \($f.nickname))" else empty end),
+          (if ($f.plan_override // null) != null and ($e.plan_override // null) != $f.plan_override then "plan override" else empty end),
+          (if ($f.sources // null) != null and ($e.sources // null) != $f.sources then "source order" else empty end),
+          (if (($f.ids // {}) | to_entries | map(select((($e.ids // {})[.key]) != .value)) | length) > 0 then "provider IDs" else empty end)
+        ] | join(", ")')" || { state_lock_release || true; die 5 "could not compare '${label}'"; }
+      if [[ -n "$diffs" ]]; then
+        conflicts=$((conflicts + 1))
+        case "$diffs" in
+          *"provider IDs"*) fixhint="nick, plan and sources cannot change provider IDs: run '${SELF_NAME} remove ${label} ${provider}' and import again if the file is right" ;;
+          *) fixhint="change it with nick, plan, or sources if the file is right" ;;
+        esac
+        lines+=("  conflict     ${provider} '${label}' - differs in ${diffs}; the entry here was left untouched (${fixhint})")
+      else
+        kept=$((kept + 1))
+        lines+=("  kept         ${provider} '${label}' - already registered")
+      fi
+      IMPORT_PASS_PROVIDERS+=("$provider"); IMPORT_PASS_LABELS+=("$label")
+      continue
+    fi
+    # One login per machine: add's refusal, naming the label that holds the slot.
+    held=""
+    case "$provider" in
+      cursor) held="$(cursor_label_held "$config")" ;;
+      antigravity) held="$(antigravity_label_held "$config")" ;;
+    esac
+    if [[ -n "$held" ]]; then
+      refused=$((refused + 1))
+      if [[ "$provider" == cursor ]]; then
+        lines+=("  refused      cursor '${label}' - cursor is already registered as '${held}': one Cursor IDE holds one account, so a second label would report the same usage twice")
+      else
+        lines+=("  refused      antigravity '${label}' - antigravity is already registered as '${held}': agy holds one account, so a second label would report the same usage twice")
+      fi
+      continue
+    fi
+    dir="$(profile_dir_for "$label" "$provider")"
+    newentry="$(printf '%s' "$entry" | jq -c --arg dir "$dir" --arg now "$now" '
+      {provider, label, profile_dir: $dir, added_at: $now}
+      + ({nickname, sources, ids} | with_entries(select(.value != null)))
+      + (if .plan_override then {plan_override: ({tier: .plan_override.tier}
+           + (if .plan_override.usd_per_month != null then {usd_per_month: .plan_override.usd_per_month} else {} end))} else {} end)')" \
+      || { state_lock_release || true; die 5 "could not build the entry for '${label}'"; }
+    config="$(printf '%s' "$config" | jq --argjson entry "$newentry" --arg schema "$SCHEMA_VERSION" \
+      '.schema_version = (.schema_version // $schema) | .accounts += [$entry]')" \
+      || { state_lock_release || true; die 5 "could not add the account entry"; }
+    added=$((added + 1)); changed=1
+    lines+=("  added        ${provider} '${label}'")
+    IMPORT_PASS_PROVIDERS+=("$provider"); IMPORT_PASS_LABELS+=("$label")
+  done
+  threshold="$(printf '%s' "$doc" | jq -r '.source_failure_threshold // empty | select(type == "number" and . >= 1 and . == floor)')"
+  if [[ -n "$threshold" && "$(printf '%s' "$config" | jq 'has("source_failure_threshold")')" == false ]]; then
+    config="$(printf '%s' "$config" | jq --argjson t "$threshold" '.source_failure_threshold = $t')"
+    changed=1
+    lines+=("  added        source-failure threshold ${threshold}")
+  fi
+  if [[ $changed -eq 1 ]]; then
+    write_config "$config"
+  fi
+  state_lock_release || true
+
+  echo "Import from ${file}:"
+  printf '%s\n' "${lines[@]}"
+  echo "${SELF_NAME}: ${added} added, ${kept} kept, ${conflicts} conflict(s), ${refused} refused."
+  if [[ $NO_LOGIN -eq 1 ]]; then
+    echo "--no-login: entries only. Re-run '${SELF_NAME} import ${file}' to sign in the accounts that are not signed in yet."
+  elif [[ ${#IMPORT_PASS_LABELS[@]} -gt 0 ]]; then
+    import_login_pass
+  fi
+  [[ $((conflicts + refused)) -eq 0 ]] || exit 3
+  return 0
+}
+
 # shellcheck source=./lib/ai-quotas-layout.sh
 source "$SELF_DIR/lib/ai-quotas-layout.sh"
 
@@ -2960,4 +3379,6 @@ case "$ACTION" in
   schedule) action_schedule ;;
   launchers)    action_launchers ;;
   share-config) action_share_config ;;
+  export)   action_export ;;
+  import)   action_import ;;
 esac
