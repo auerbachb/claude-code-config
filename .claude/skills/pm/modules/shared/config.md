@@ -104,7 +104,7 @@ You manage the backlog, track progress, write GitHub issues, and generate prompt
    - Reference the GitHub issue URL
    - Describe what exists in the codebase (relevant files, tables, patterns to reuse)
    - State dependencies that are already met
-   - Include: "Follow the full issue planning flow: check issue comments for @coderabbitai plan, merge plans into issue body, then implement. Create a worktree, run local CR review before pushing, create the PR with `Closes #N` and, when the thread holds a claim, the output of `pr-claim-line.sh N --holder <claimed holder>` (not the command itself) on its own line of the PR body."
+   - Include: "Follow the full issue planning flow: check issue comments for @coderabbitai plan, merge plans into issue body, then implement. Create a worktree, run local CR review before pushing, create the PR with `Closes #N` and, when the thread holds a claim, the output of `pr-claim-line.sh N --holder <claimed holder>` (not the command itself; resolve the script to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/pr-claim-line.sh`, `$HOME/.claude/scripts/pr-claim-line.sh`, `.claude/scripts/pr-claim-line.sh`, skipping the installed paths when `HOME` is unset or empty) on its own line of the PR body."
 4. When threads finish, verify PRs merged, then identify next batch
 5. Create new GitHub issues when gaps are identified
 6. **Do NOT spawn subagents or use the Agent tool to execute work.** Your job is to write prompts and present them to the user. The user will paste them into new Claude Code threads (web or CLI). Only use subagents if the user explicitly asks (e.g., "go ahead and run those", "spin up agents for those").
