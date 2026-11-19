@@ -300,9 +300,11 @@ for N in ${SPAWNED_PR_NUMS:-}; do
     <<<"${GATE_BY_PR[$N]:-}") || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=head_metadata; }
   ISSUE_N=$("$PR_ISSUE_REF_SH" --first "$N" 2>/dev/null) || ISSUE_N=null
   AGENT_ID="pmm-fix-$N"
+  # session_id stamps the owning thread (issue #2448), so /safe-close can attribute the record.
   ENTRY=$(jq -n -c --arg id "$AGENT_ID" --arg task "PMM fix PR #$N" --argjson issue "$ISSUE_N" \
-    --argjson pr "$N" --arg launched "$NOW" --arg head_sha "$N_HEAD_SHA" \
-    '{id:$id, task:$task, issue:$issue, pr:$pr, phase:"A", status:"spawned", launched:$launched, head_sha:$head_sha}') \
+    --argjson pr "$N" --arg launched "$NOW" --arg head_sha "$N_HEAD_SHA" --arg sid "${CLAUDE_SESSION_ID:-}" \
+    '{id:$id, task:$task, issue:$issue, pr:$pr, phase:"A", status:"spawned", launched:$launched, head_sha:$head_sha,
+      session_id:(if $sid == "" then null else $sid end)}') \
     || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=agent_entry; }
   FLIGHT_ENTRY=$(jq -cn --arg now "$NOW" --arg head "$N_HEAD_SHA" --arg agent "$AGENT_ID" \
     '{skill:"phase-a-fixer",status:"active",dispatched_at:$now,head_sha:$head,agent_id:$agent}') \

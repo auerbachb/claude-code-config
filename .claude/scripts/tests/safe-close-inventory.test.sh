@@ -15,6 +15,8 @@ ok() { echo "ok   — $*"; }
 
 export HOME="$TMP/home"
 mkdir -p "$HOME/.claude" "$TMP/bin"
+# The inventory reads session transcripts from CLAUDE_CONFIG_DIR when set: pin it to the fixture.
+export CLAUDE_CONFIG_DIR="$HOME/.claude"
 # Read bgwork markers from this suite's own directory, not the shared /tmp (issue #2391).
 export CLAUDE_BGWORK_MARKER_DIR="$TMP/markers"; mkdir -p "$CLAUDE_BGWORK_MARKER_DIR"
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
@@ -26,6 +28,7 @@ STATE="$HOME/.claude/session-state.json"
 # ---- stub gh: api user, pr list, pr view; everything else fails --------------------
 cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
+[[ -n "${STUB_CALL_LOG:-}" ]] && printf '%s\n' "$*" >> "$STUB_CALL_LOG"
 case "$1 $2" in
   "api user") [[ -n "${STUB_VIEWER:-}" ]] || exit 1; echo "$STUB_VIEWER" ;;
   "pr list") [[ -n "${STUB_PR_LIST:-}" ]] || exit 1; sed "s/__HEAD__/$(git rev-parse HEAD)/g" "$STUB_PR_LIST" ;;
@@ -146,6 +149,40 @@ OUT="$(run)"
 echo '{}' > "$STATE"
 ok "an unowned non-terminal record is unknown; a terminal one is ignored"
 
+# ---- 10b. an ownerless record that predates the session is excluded context (issue #2448) -----
+# October record naming a merged PR; the session's transcript starts in November.
+mkdir -p "$HOME/.claude/projects/proj"
+printf '%s\n' '{"type":"summary"}' '{"type":"user","timestamp":"2026-11-17T09:00:00.123Z"}' > "$HOME/.claude/projects/proj/$SESSION.jsonl"
+jq -n '{active_agents:{"a-old":{id:"a-old",task:"issue-873",pr:873,phase:"B",status:"spawned",launched:"2026-10-02T12:00:00Z"}},
+        pipelines:{"2718":{started_at:"2026-10-05T08:00:00Z",pr:null}}}' > "$STATE"
+OUT="$(run)"; rc=$?
+[[ $rc == 0 && "$(jqr .verdict)" == safe ]] || { echo "$OUT" >&2; fail "an ownerless record older than the session blocked the verdict"; }
+[[ "$(jqr '[.excluded[]|select(.id==".active_agents:a-old" or .id==".pipelines:2718")]|length')" == 2 ]] || { echo "$OUT" >&2; fail "predating records not listed in excluded[]"; }
+grep -q 'before this session' <<<"$(jqr '.excluded[]|select(.id==".active_agents:a-old")|.reason')" || fail "excluded reason does not say why"
+[[ "$(jqr .session_start.at)" == "2026-11-17T09:00:00.123Z" ]] || fail "session start not read from the transcript"
+ok "an ownerless record that predates the session's first activity is excluded with a reason"
+
+# Same record without a timestamp and without a PR: fail closed, one unknown item.
+jq -n '{active_agents:{"a-old":{id:"a-old",task:"issue-873",phase:"B",status:"spawned"}}}' > "$STATE"
+OUT="$(run)"; rc=$?
+[[ $rc == 1 && "$(jqr .verdict)" == not_yet && "$(jqr '[.items[]|select(.consequence=="unknown")]|length')" == 1 ]] \
+  || { echo "$OUT" >&2; fail "an ownerless record with no timestamp was not unknown"; }
+# A record written after the session started stays unknown too.
+jq -n '{active_agents:{"a-new":{id:"a-new",status:"spawned",launched:"2026-11-18T00:00:00Z"}}}' > "$STATE"
+OUT="$(run)"
+[[ "$(jqr .verdict)" == not_yet && "$(jqr .categories.subagents.status)" == unknown ]] || fail "a record newer than the session start was excluded"
+# No session start (no transcript, no flag): the old record stays unknown.
+rm -f "$HOME/.claude/projects/proj/$SESSION.jsonl"
+jq -n '{active_agents:{"a-old":{id:"a-old",status:"spawned",launched:"2026-10-02T12:00:00Z"}}}' > "$STATE"
+OUT="$(run)"
+[[ "$(jqr .verdict)" == not_yet && "$(jqr .session_start)" == null ]] || fail "an old record was excluded with no session start"
+# An explicit --session-start supplies it; an unparsable one is a usage error.
+OUT="$(run --session-start 2026-11-01T00:00:00Z)"
+[[ "$(jqr .verdict)" == safe ]] || { echo "$OUT" >&2; fail "--session-start was not honoured"; }
+run --session-start yesterday >/dev/null 2>&1; [[ $? == 2 ]] || fail "an unparsable --session-start should exit 2"
+echo '{}' > "$STATE"
+ok "no timestamp, a newer record, or no session start keeps the record unknown (fail closed)"
+
 # ---- 11. no session id and a failing GitHub read are unknown -------------------------------
 OUT="$(cd "$W" && env -u CLAUDE_SESSION_ID "$SCRIPT" --repo "$REPO" --worktree "$W")"
 [[ "$(jqr .categories.background_tasks.status)" == unknown && "$(jqr .verdict)" == not_yet ]] || fail "missing session id not unknown"
@@ -246,6 +283,90 @@ OUT="$(run)"
 [[ "$(jqr .verdict)" == not_yet && "$(jqr '.categories.state_markers.status')" == unknown ]] || fail "a leave marker of the wrong shape must be unknown, not an absent entry"
 echo '{}' > "$STATE"
 ok "repo-scoped markers are seen, another session's are not counted, a cleared legacy entry does not hide an active scoped one, a wrong-shaped map is unknown"
+
+# ---- 13h. the default-branch exemption follows origin/HEAD, not the names main/master (issue #2271) ------
+# Own clone so the earlier cases keep their meaning. The gh stub logs every call outside home/work; the
+# PR list is always [] so a covered default cannot be mistaken for an inspected one.
+export STUB_CALL_LOG="$TMP/gh-calls.log"
+export STUB_PR_LIST="$TMP/pr-none.json"
+echo '{}' > "$STATE"
+git clone -q "$TMP/origin.git" "$TMP/dwork" 2>/dev/null
+D="$TMP/dwork"
+git -C "$D" checkout -q -B main origin/main
+runD() { : > "$STUB_CALL_LOG"; (cd "$D" && "$SCRIPT" --session "$SESSION" --repo "$REPO" --worktree "$D" "$@"); }
+head_called() { grep -qx "pr list .*--head $1\( .*\)\?" "$STUB_CALL_LOG"; }
+nbranch() { jq -r --arg id "branch:$1" '[.items[]|select(.id==$id)]|length' <<<"$OUT"; }
+set_default() { git -C "$D" symbolic-ref refs/remotes/origin/HEAD "refs/remotes/origin/$1"; }
+git -C "$D" checkout -q -b release/stable main
+git -C "$D" push -q origin release/stable 2>/dev/null
+set_default release/stable
+[[ "$(git -C "$D" symbolic-ref refs/remotes/origin/HEAD)" == refs/remotes/origin/release/stable ]] || fail "could not set origin/HEAD"
+
+# custom, slash-bearing default: exempt from branch/PR inspection
+OUT="$(runD)"; rc=$?
+[[ $rc == 0 && "$(jqr '[.items[]|select(.id|startswith("clean:"))|.consequence]|first')" == harmless ]] || { echo "$OUT" >&2; fail "custom default checkout not clean/harmless"; }
+[[ "$(jqr '[.items[]|select(.category=="branches")]|length')" == 0 ]] || fail "custom default produced a branch item"
+head_called release/stable && fail "custom default was looked up as a PR head"
+ok "a custom slash-bearing default is exempt from branch and PR inspection"
+
+# unsaved work on the default is still reported
+echo x > "$D/dirty.txt"
+OUT="$(runD)"; rc=$?
+[[ $rc == 1 && "$(jqr .verdict)" == not_yet && "$(jqr '[.items[]|select(.id|startswith("dirty:"))|.consequence]|first')" == lost ]] || fail "dirty custom default not lost"
+rm -f "$D/dirty.txt"
+echo y > "$D/y.txt"; git -C "$D" add y.txt; git -C "$D" commit -q -m local-only
+OUT="$(runD)"
+[[ "$(jqr '[.items[]|select(.id|startswith("unpushed:"))|.consequence]|first')" == lost ]] || fail "unpushed commit on custom default not lost"
+git -C "$D" reset -q --hard origin/release/stable
+ok "dirty and unpushed work on the default checkout is still lost"
+
+# converse: a non-default branch named main is inspected
+git -C "$D" checkout -q main
+OUT="$(runD)"
+head_called main || fail "non-default main was not looked up"
+[[ "$(nbranch main)" == 1 && "$(jqr '[.items[]|select(.id=="branch:main")|.consequence]|first')" == harmless ]] || { echo "$OUT" >&2; fail "same-SHA non-default main not one harmless branch item"; }
+echo z > "$D/z.txt"; git -C "$D" add z.txt; git -C "$D" commit -q -m ahead; git -C "$D" push -q origin main 2>/dev/null
+OUT="$(runD)"; rc=$?
+[[ $rc == 1 && "$(jqr .verdict)" == not_yet && "$(jqr '[.items[]|select(.id=="branch:main")|.consequence]|first')" == orphaned ]] || { echo "$OUT" >&2; fail "pushed-ahead non-default main not orphaned"; }
+ok "a non-default branch named main is inspected (harmless at the default SHA, orphaned when ahead)"
+
+# dangling origin/HEAD naming the checkout: no exemption, fails closed
+git -C "$D" reset -q --hard origin/main 2>/dev/null; git -C "$D" push -q -f origin main 2>/dev/null
+git -C "$D" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/ghost
+git -C "$D" checkout -q -B ghost origin/main
+OUT="$(runD)"; rc=$?
+head_called ghost || fail "dangling default was exempted"
+[[ $rc == 1 && "$(jqr .categories.branches.status)" == unknown && "$(jqr '[.items[]|select(.category=="branches" and .consequence=="unknown")]|length')" -ge 1 ]] \
+  || { echo "$OUT" >&2; fail "dangling origin/HEAD did not fail closed to unknown"; }
+ok "a dangling origin/HEAD naming the checkout gives no exemption and is unknown"
+
+# no default evidence at all
+git -C "$D" symbolic-ref --delete refs/remotes/origin/HEAD
+git -C "$D" update-ref -d refs/remotes/origin/main
+git -C "$D" checkout -q -B other-y origin/release/stable
+OUT="$(runD)"; rc=$?
+[[ $rc == 1 && "$(jqr .verdict)" == not_yet && "$(jqr '[.items[]|select(.category=="branches" and .consequence=="unknown")]|length')" -ge 1 ]] \
+  || { echo "$OUT" >&2; fail "no default evidence did not give unknown"; }
+ok "no resolvable default is unknown, not exempt"
+
+# fallback: origin/HEAD absent, origin/main present -> clean main is still the default
+git -C "$D" fetch -q origin 2>/dev/null
+git -C "$D" update-ref refs/remotes/origin/main "$(git --git-dir="$TMP/origin.git" rev-parse main)"
+git -C "$D" checkout -q -B main origin/main
+OUT="$(runD)"
+[[ "$(nbranch main)" == 0 ]] || fail "fallback origin/main default produced a branch item"
+head_called main && fail "fallback default was looked up as a PR head"
+ok "with origin/HEAD absent the origin/main fallback still exempts main"
+
+# ambiguous: origin/HEAD absent and both origin/main and origin/master exist -> no exemption for main
+git -C "$D" symbolic-ref --delete refs/remotes/origin/HEAD 2>/dev/null
+git -C "$D" update-ref refs/remotes/origin/master "$(git --git-dir="$TMP/origin.git" rev-parse main)"
+OUT="$(runD)"
+head_called main || fail "ambiguous main/master default exempted main from PR inspection"
+git -C "$D" update-ref -d refs/remotes/origin/master
+ok "with both origin/main and origin/master and no origin/HEAD, main is not exempted"
+unset STUB_CALL_LOG
+echo '{}' > "$STATE"
 
 # ---- 14. usage ---------------------------------------------------------------------------------
 help_out="$("$SCRIPT" --help)"

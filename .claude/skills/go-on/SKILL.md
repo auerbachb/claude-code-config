@@ -7,10 +7,60 @@ triggers:
   - pick up where we left off
   - continue the interrupted work
   - what was I doing
-argument-hint: "[--resume-options [--target LAUNCHER] | [--resume-refill] [--again] [--generation <id>]] (refill stays paused without --resume-refill)"
+argument-hint: "[--resume-options [--target LAUNCHER] | --resume-batch --target LAUNCHER | [--resume-refill] [--again] [--generation <id>]] (refill stays paused without --resume-refill)"
 ---
 
 Resume the work, whatever stopped it. Step 0 classifies the stoppage from recorded evidence and routes; Steps 0b–10 are the interrupted-review-workflow lane it routes to.
+
+## Owner-approved Claude resume batch
+
+For exactly `--resume-batch --target LAUNCHER`, resolve only the trusted
+installed helper below. Do not combine the batch with a refill, pause, or
+review-resume flag. Run `preview` first. Show every session and original folder,
+the exact target launcher, and the terminal destination. If no verified batch
+is available, offer the existing manual roster and return.
+
+Use AskUserQuestion to offer **Open this exact batch** or **Cancel**. If that
+tool is unavailable, ask in chat and wait for the owner to answer. No approval
+is implied by invoking this route or by a quota notice, previous approval,
+timeout, ambiguous reply, or cancellation. Never approve on the owner's
+behalf. After the fresh explicit approval, pass the exact preview's approval
+value and unchanged target to the same helper. A changed or expired preview
+requires fresh approval; do not retry an uncertain dispatch.
+
+<!-- test-anchor: go-on-approved-quota-batch -->
+
+```bash
+quota_resume_batch_route() {
+  local mode="${1:-}" target="${2:-}" approval="${3:-}" candidate
+  [[ -n "${HOME:-}" && "$target" =~ ^claude-[a-z0-9]+(-[a-z0-9]+)*$ ]] || return 2
+  case "$mode" in
+    preview) [[ -z "$approval" ]] || return 2 ;;
+    approve) [[ "$approval" =~ ^[0-9]{1,12}\.[a-f0-9]{64}$ ]] || return 2 ;;
+    *) return 2 ;;
+  esac
+  for candidate in \
+    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/quota-resume-batch.sh}" \
+    "${HOME:+$HOME/.claude/scripts/quota-resume-batch.sh}"; do
+    [[ -x "$candidate" ]] || continue
+    if [[ "$mode" == preview ]]; then
+      "$candidate" preview --target "$target"
+    else
+      "$candidate" approve --target "$target" --approval "$approval"
+    fi
+    return
+  done
+  return 1
+}
+quota_resume_batch_route "${QUOTA_RESUME_BATCH_MODE:-}" "${QUOTA_RESUME_TARGET:-}" "${QUOTA_RESUME_BATCH_APPROVAL:-}"
+```
+
+Bind the mode and target from this invocation and the approval value from
+the exact preview only after the owner approves. Bind the approval empty
+during preview; never trust an inherited value. Report dispatch acceptance,
+uncertainty and refusal separately. An accepted dispatch does not prove
+Claude has finished opening. Return here without clearing either gate or
+running any other recovery action.
 
 ## Read-only Claude resume options
 
@@ -43,6 +93,9 @@ For a targeted invocation, bind `QUOTA_RESUME_TARGET` to the one literal
 registered launcher token from the argument before calling the block. For
 an untargeted invocation bind it empty. Reject a missing target or extra flags
 before invoking any helper; do not interpret `--target` as a resume command.
+If the owner requested a target launcher, mention the separate
+/go-on --resume-batch --target route as an option for verified /end stops.
+Do not run that route from this read-only list.
 
 Show its entries for the current registered Claude account: session ID, folder,
 account, summary, and manual resume options. Show each verified path in

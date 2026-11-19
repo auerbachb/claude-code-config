@@ -37,5 +37,7 @@ gh issue edit N --remove-label in-progress --remove-assignee @me
 
 A fallback claim cannot be renewed; it expires after 4 hours without a renewal. If you are still working, post a fresh claim comment.
 
+Working across worktrees? A claim made with the default holder belongs to the checkout it was made in, so a later `gh pr create` from another worktree can be blocked by your own claim. Claim with an explicit `--holder` before you create the worktree and keep that holder. Run the claim as its own command, never in the same command as `git worktree add`, `git checkout -b` or `gh pr create`: the guard checks the whole command before any of it runs. If the guard says your own claim may not be visible from this checkout, rerun the command with the `export CLAUDE_CLAIM_HOLDER='...' && ` prefix it prints, but only if you made that claim. Never copy a holder from the GitHub marker.
+
 Opening a PR for a claimed issue? Put a hidden line in the PR body so the PR-side check can match it to the claim: `<!-- claim-holder: h-<12 hex> -->`. The value is the first 12 hex characters of the SHA-256 of your raw holder token, prefixed `h-`. Compute it with `printf '%s' "$HOLDER" | shasum -a 256 | cut -c1-12` (or `sha256sum`) and write `h-` in front of the result. A holder already shaped `h-<12 hex>` is used unchanged. Never paste the raw token, since it can carry a hostname or a path. `.claude/scripts/pr-claim-line.sh <N> --holder "$HOLDER"` prints the finished line.
 <!-- END agent-issue-claims -->

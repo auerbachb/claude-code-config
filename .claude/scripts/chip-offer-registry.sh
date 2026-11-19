@@ -261,17 +261,18 @@ write_offers() {
     die_write "write to temp file failed"
   }
 
-  # Verify lock is still held before committing.
-  if ! state_lock_assert_held; then
-    rm -f "$tmp" 2>/dev/null || true
+  # Verify lock is still held and commit, together under the commit gate
+  # (#2460) so a stale break cannot land between the check and the mv.
+  local commit_rc=0 commit_err=""
+  commit_err="$(state_lock_commit "$tmp" "$STATE_FILE" 2>&1)" || commit_rc=$?
+  # exit 6 = unchanged, retry (lock lost or gate busy); anything else is a
+  # real write failure whose diagnostic must reach the operator.
+  (( commit_rc == 0 || commit_rc == STATE_LOCK_EXIT_TIMEOUT )) || [[ -z "$commit_err" ]] || printf '%s\n' "$commit_err" >&2
+  if (( commit_rc == STATE_LOCK_EXIT_TIMEOUT )); then
     state_lock_release
     _retry_or_fail
   fi
-
-  if ! mv "$tmp" "$STATE_FILE"; then
-    rm -f "$tmp" 2>/dev/null || true
-    die_write "mv to $STATE_FILE failed"
-  fi
+  (( commit_rc == 0 )) || die_write "mv to $STATE_FILE failed"
 }
 
 # Count capacity-consuming entries, respecting TTL.

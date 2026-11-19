@@ -1164,6 +1164,9 @@ Body:
 ## CR Implementation Plan
 {CR plan if available, or "No CR plan available — explore the codebase to identify affected files."}
 
+## Claim
+Issue #{NUMBER} is already claimed for this pipeline with holder `{CLAIM_HOLDER}`. Do not claim, renew or release it. Your worktree's default holder differs from that one, so the issue-claim guard may block `gh pr create`. If it says your own claim "may not be visible from this checkout" or "cannot match" the holder, rerun the same command with the prefix `export CLAUDE_CLAIM_HOLDER={CLAIM_HOLDER_QUOTED} && ` — never a holder read off the GitHub marker. (Parent: fill `{CLAIM_HOLDER_QUOTED}` with the holder as one single-quoted shell word, each `'` written `'\''`, so a holder containing an apostrophe still yields a runnable prefix. When the pipeline has no recorded `claim_holder`, omit this whole section.)
+
 ## Guardrails (MANDATORY)
 **Read `subagent-phase-guardrails.md` (Step 0 candidate order) and insert its full contents verbatim at this point** — RESOLVE, SAFETY, MINDSET/capability-discovery, and SKILLS-first reflex. That file is the single canonical home for these blocks; `verbatim-block-lint.sh` CI-guards them there.
 
@@ -1219,11 +1222,13 @@ Body:
    : "${MODEL_ROUTE_RECORD:?current routing record required}" "${OWNER_REPO:?repo required}" "${PR_NUMBER:?PR required}"
    jq -e '.request.task == .decision.task and .request.phase == .decision.phase' <<<"$MODEL_ROUTE_RECORD" >/dev/null || exit 5
    jq -e 'type == "object" and (.phase_completed|type == "string") and (keys | all(test("^[A-Za-z_][A-Za-z0-9_]*$")))' <<<"$HANDOFF_JSON" >/dev/null || exit 5
+   jq -e --arg owner "$OWNER_REPO" '(has("owner_repo") | not) or (.owner_repo | type == "string" and ascii_downcase == ($owner | ascii_downcase))' <<<"$HANDOFF_JSON" >/dev/null || exit 5
    ROUTED_HANDOFF_ASSIGNMENT=$(jq -nr --argjson route "$MODEL_ROUTE_RECORD" \
      '".model_routing[" + ($route.request.task|tojson) + "][" + ($route.request.phase|tojson) + "]=" + ($route|tojson)') || exit 5
-   "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --init "$PR_NUMBER" '{}' || exit 5
+   ROUTED_OWNER_SEED=$(jq -nc --arg owner "$OWNER_REPO" '{owner_repo: ($owner | ascii_downcase)}') || exit 5
+   "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --init "$PR_NUMBER" "$ROUTED_OWNER_SEED" || exit 5
    "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing --set "$PR_NUMBER" "$ROUTED_HANDOFF_ASSIGNMENT" || exit 5
-   ROUTED_METADATA_ROWS=$(jq -c 'to_entries[] | select(.key != "model_routing" and .key != "phase_completed")' <<<"$HANDOFF_JSON") || exit 5
+   ROUTED_METADATA_ROWS=$(jq -c 'to_entries[] | select(.key != "model_routing" and .key != "phase_completed" and .key != "owner_repo")' <<<"$HANDOFF_JSON") || exit 5
    while IFS= read -r ROUTED_METADATA_ROW; do
      [ -n "$ROUTED_METADATA_ROW" ] || continue
      ROUTED_METADATA_ASSIGNMENT=$(jq -r '".[" + (.key|tojson) + "]=" + (.value|tojson)' <<<"$ROUTED_METADATA_ROW") || exit 5
@@ -1374,10 +1379,14 @@ SPAWN_ENTRY_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ') || { SPAWN_STATE_RC=4; SPAWN_STA
 [[ -n "$SPAWN_ENTRY_AT" ]] || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=clock; }
 [[ -n "${TASK:-}" ]] || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=task; }
 SPAWN_STATE_AGENT_KEYS=("${AGENT_ID:-}")
+# session_id stamps the owning thread (issue #2448): an ownerless record blocks /safe-close everywhere.
 AGENT_ENTRY=$(jq -n -c --arg id "${AGENT_ID:-}" --arg task "${TASK:-}" \
-  --argjson issue "{ISSUE_NUMBER}" --arg launched "$SPAWN_ENTRY_AT" \
-  '{id:$id, task:$task, issue:$issue, pr:null, phase:"A", status:"spawned", launched:$launched}') \
+  --argjson issue "{ISSUE_NUMBER}" --arg launched "$SPAWN_ENTRY_AT" --arg sid "${CLAUDE_SESSION_ID:-}" \
+  '{id:$id, task:$task, issue:$issue, pr:null, phase:"A", status:"spawned", launched:$launched,
+    session_id:(if $sid == "" then null else $sid end)}') \
   || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=agent_entry; }
+SESSION_ID_JSON=$(jq -cn --arg sid "${CLAUDE_SESSION_ID:-}" 'if $sid == "" then null else $sid end') \
+  || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=session_id; }
 AGENT_KEY=$(jq -cn --arg id "${AGENT_ID:-}" '$id') || { SPAWN_STATE_RC=4; SPAWN_STATE_ERROR=agent_id; }
 AGENT_SET=(--set ".active_agents[$AGENT_KEY]=$AGENT_ENTRY")
 
@@ -1412,6 +1421,7 @@ if [[ "$SPAWN_STATE_RC" -eq 0 ]]; then
     fi
     SPAWN_WRITE_ARGS=(
       --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].started_at=$LAUNCHED_AT"
+      --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].session_id=${SESSION_ID_JSON:-null}"
       --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].pr=null"
       ${CLAIM_SET[@]+"${CLAIM_SET[@]}"} --set '.monitoring_active=true'
       ${AGENT_SET[@]+"${AGENT_SET[@]}"})
@@ -1467,7 +1477,7 @@ On `SPAWN_STATE=failed`, the child is already running and its registration is un
 
 **Do not add `--raw-path`.** It is a per-invocation flag, not a per-`--set` one, and a fully-spelled `.repos[...]` path already reaches the repo scope without it; passing it would send any `.prs[...]` write batched into the same call to the top level instead. Phase A Completion later fills `.pr` and copies `started_at` into `.prs["{PR_NUMBER}"].pipeline_started_at` (Step 9). Field contract: `.claude/reference/session-state-schema.json`.
 
-Record each spawned agent in `session-state.json` under its OWN key in the `active_agents` map, batched into the same atomic `session-state.sh` call as the pipeline and `monitoring_active` writes above. **Build the entry as real JSON first, then interpolate it** — `--set` parses its value as JSON and *falls back to a plain string* when the parse fails, so a bare field list (`{id, task, …}`) lands as a string under the agent key and readers can no longer reach `.phase` or `.status`. The whole-field type check does not catch it, because `.active_agents` is still an object. Use the same shape `pmm-act.md` does, with the fields `id`, `task`, `issue`, `pr`, `phase`, `status`, `launched`:
+Record each spawned agent in `session-state.json` under its OWN key in the `active_agents` map, batched into the same atomic `session-state.sh` call as the pipeline and `monitoring_active` writes above. **Build the entry as real JSON first, then interpolate it** — `--set` parses its value as JSON and *falls back to a plain string* when the parse fails, so a bare field list (`{id, task, …}`) lands as a string under the agent key and readers can no longer reach `.phase` or `.status`. The whole-field type check does not catch it, because `.active_agents` is still an object. Use the same shape `pmm-act.md` does, with the fields `id`, `task`, `issue`, `pr`, `phase`, `status`, `launched`, `session_id` (the owning thread; `/safe-close` cannot attribute a record without it — `state-owner-stamp-lint.sh`):
 
 That build is the `AGENT_ENTRY` / `AGENT_SET` pair in 7.1's block above, and `"${AGENT_SET[@]}"` is passed to the **same** `session-state.sh` invocation as the pipeline and `monitoring_active` writes — do not issue a second call for it. A separate agent write is not merely non-atomic: when it fails, the pipeline is left active with no `active_agents` record, which is the partial launch record every reader downstream then has to guess about. `.pr` is `null` at spawn for the reason 7.1 gives (no PR exists yet); Phase A Completion fills it later.
 

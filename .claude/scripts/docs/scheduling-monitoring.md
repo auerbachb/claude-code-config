@@ -17,6 +17,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [install-config-sync.sh](../install-config-sync.sh) | Register the per-machine config sync (`claude-config-sync.sh`) as a macOS launchd LaunchAgent — one run at login, then every `--interval` seconds |
 | [install-silence-watchdog.sh](../install-silence-watchdog.sh) | Install the macOS launchd watchdog that monitors Claude heartbeat files |
 | [install-workspace-sweep.sh](../install-workspace-sweep.sh) | Install the daily finished-worktree LaunchAgent, with a side-effect-free dry run |
+| [monitor-quiet-tick.sh](../monitor-quiet-tick.sh) | Keep a /babysit-pr or /pm day Monitor silent on an unchanged tick while advancing its streak counters shell-side; emit on change, threshold or error |
 | [off-peak-minute.sh](../off-peak-minute.sh) | Deterministic per-repo off-peak cron minute selector for CronCreate jobs |
 | [overrun-check.sh](../overrun-check.sh) | Per-pipeline planning-bound breach check for the monitor loop; emits one alert line on the first breach only |
 | [phone-push-wait.sh](../phone-push-wait.sh) | Phone push for a parked step: arm a delay, push once if still unanswered, record a miss |

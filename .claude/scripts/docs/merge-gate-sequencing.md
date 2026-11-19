@@ -31,6 +31,22 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [unreviewed-merge-ledger.sh](../unreviewed-merge-ledger.sh) | Record, list, and mark backfill status of merges made without an AI review |
 <!-- catalog:rows:end -->
 
+## Which merge helper for which gate
+
+Pick the helper from the last `merge-gate.sh` JSON, refreshed after acceptance verification at `AC_VERIFIED_HEAD` (issue #2432). The ledger and admin helpers check the live PR state, but they never verify review, CI, or acceptance criteria — the caller does that first.
+
+| Gate shape | Action |
+|------------|--------|
+| Met, `no_review_override.applied == true`, `merge_state` `CLEAN` (or `UNSTABLE` with non-empty `no_review_override.excluded_reviewer_checks`) | Ledger `merge --pr N --repo R --gate-json -` with the full gate JSON. After GitHub confirms `MERGED`, ledger `record --pr N --repo R --from-snapshot`. |
+| Met, override not applied (`applied: false` or `null`), `merge_state == CLEAN` | Ledger `merge --pr N --repo R --sha <AC_VERIFIED_HEAD>`. The same gate sent to `--gate-json` exits `9` and merges nothing. A direct `gh pr merge` skips the snapshot lock and the cleanup of unused override evidence. |
+| Unmet, `BEHIND` the only `missing[]` entry, no override, AC verified (`/wrap` only) | Ledger `snapshot --pr N --repo R --discard`, then the clean-BEHIND probe (`clean-behind-check.sh`). Probe `0` → `admin-merge.sh N --auto-plain --ac-verified --defer-bookkeeping`; probe `1` → `/fixpr` rebase, then back through the gate loop; probe `2`–`4` → stop. `/merge` stops on any unmet gate. |
+| Override applied and `BEHIND` | Never an admin bypass. Rebase through `/fixpr`, then run a new gate for the new HEAD. |
+| Any other unmet gate, or a merge state not listed above | Do not merge. |
+
+`UNSTABLE` is accepted only on the override row; an ordinary reviewed merge needs `CLEAN`. After any merge-command error, check the PR's native state before routing — GitHub may already have merged it.
+
+Mechanism and ledger exit codes: [no-review-override.md](../../reference/no-review-override.md).
+
 ---
 
 [← back to the index](../README.md)

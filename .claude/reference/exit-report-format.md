@@ -34,7 +34,9 @@ HANDOFF_FILE: ~/.claude/handoffs/pr-618-handoff.json
 | `FIXPR_TOTAL_WAIT_SECS` | integer | (when the phase ran `/fixpr`) cumulative post-push review-wait time |
 | `FIXPR_WAIT_FINAL` | `clean`, `cap-exhausted`, `new-findings-pending` | (when the phase ran `/fixpr`) final wait-loop state from `FIXPR_WAIT_SUMMARY` |
 
-| `RESULT` | one line | Required for a `pm-worker` `completed` report, optional elsewhere. A short task result the parent can act on without reading prose (for example a `pm-worker`'s created issue number). Capped at 300 characters by `exit-report-extract.sh`. |
+| `RESULT` | one line | Required for a `pm-worker` `completed` report, optional elsewhere. A short task result the parent can act on without reading prose (for example a `pm-worker`'s created issue number). For a blocker outcome, a one-line summary of the blocker reason (the full reason stays in prose directly above the report). Capped at 300 characters by `exit-report-extract.sh`. |
+
+Every terminal outcome, blocker outcomes included, ends with the complete structured `EXIT_REPORT` as the last output; a blocker message alone never substitutes for it. `OUTCOME` is an exact enumerated value and never carries a reason.
 
 A Phase A report that is `blocked` before any push, or `exhaustion` before a PR exists, carries `PR_NUMBER: none`, `HEAD_SHA: none` and `HANDOFF_FILE: none`. Outcomes that claim a PR exists (`pushed_fixes`, `no_findings`, `fixes_pushed`, `clean`, `merge_ready`, `merged`) must carry an integer `PR_NUMBER` and non-blank `HEAD_SHA`, `REVIEWER` and `HANDOFF_FILE`; `exit-report-extract.sh` rejects anything else.
 
@@ -52,7 +54,7 @@ The three `FIXPR_*` fields are required whenever the phase executed the `/fixpr`
 | B | `fixes_pushed` | Fixed findings, pushed — needs re-review |
 | B | `merge_ready` | All checks green, merge gate satisfied |
 | B | `exhaustion` | Token budget low — replacement needed |
-| B | `blocked_self_review` | All review tiers unavailable; self-review only, merge gate cannot be met — report the blocker |
+| B | `blocked_self_review` | All review tiers unavailable; self-review only, merge gate cannot be met — reason above |
 | B | `blocked` | Could not continue for a reason needing human judgment — reason above |
 | C | `merged` | All AC verified and checked off; `/wrap` completed the squash merge and follow-up flow |
 | C | `blocked` | Merge blocked (CI failure, missing approvals, unchecked AC) |

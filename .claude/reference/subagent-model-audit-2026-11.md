@@ -17,12 +17,19 @@ counts below replace them. Its verdict that 11 Sonnet routings were unjustified
 step-ups was also wrong. The routing records show first launches; see
 "Step-ups and eligibility."
 
+A later review of PR #2303 found an unsupported claim that no nested transcripts
+were excluded. The scan covered top-level transcripts only and never checked
+session-directory subagent transcripts. The claim was removed, and every spawn
+count in this report is now scoped to the scanned top-level transcripts. No
+recount was possible: the source transcripts are not available.
+
 ## Bottom line
 
 - In this repo's sessions, 66 Opus helper spawns fall in the window, all dated
   11-06 or 11-07. One of them is dated 11-07, the routing-landing day. No
-  Opus spawn in this repo's sessions is dated after 11-07.
-- Across all projects, 56 helper spawns resolved to Opus on 11-09 through 11-13
+  Opus spawn in the scanned top-level transcripts of this repo's sessions is
+  dated after 11-07.
+- Across all projects (scanned top-level transcripts), 56 helper spawns resolved to Opus on 11-09 through 11-13
   (54 `general-purpose`, 2 `researcher`). All 56 named `opus` at the call site.
   None came from this repo's sessions. They came from two other project
   directories (29 spawns) and from home-directory sessions with no project (27).
@@ -40,7 +47,13 @@ step-ups was also wrong. The routing records show first launches; see
 Reproducible with one pass over the transcripts. No transcript text is kept.
 
 1. Source: top-level `~/.claude/projects/*/*.jsonl` session transcripts (354
-   files). No nested transcripts exist at that depth, so none are excluded.
+   files). That glob matches top-level session transcripts only. Session-directory
+   subagent transcripts, such as `~/.claude/projects/*/<session>/subagents/agent-*.jsonl`,
+   were not scanned. Whether they hold Agent calls dated 2026-11-06 through
+   2026-11-13 is unknown, not zero. All spawn counts in this report describe the
+   scanned top-level population only. For context, a separate bounded sample in
+   `spend-telemetry-pipeline.md` found 0 of 200 November child agent IDs under
+   that layout; that sample does not prove the nested population is empty.
 2. Helper spawn: each assistant `tool_use` block with `name == "Agent"`,
    deduplicated by its `id`. Across all dates this gives 4,833 distinct spawns.
 3. Requested model: `input.model`. Absent = `unnamed`. Subagent type:
@@ -102,6 +115,7 @@ paths, but no skill was mapped to each one.
 
 ## Sample: this repo's sessions
 
+Scope: top-level transcripts only; nested subagent transcripts were not scanned.
 Window 2026-11-06 to 2026-11-13. 176 distinct spawns, of which 81 are on or after
 2026-11-07.
 
@@ -127,6 +141,7 @@ On or after 2026-11-07 in this repo: Opus 1 (`phase-b-reviewer`, 11-07); Sonnet
 
 ## Sample: all projects
 
+Scope: top-level transcripts only; nested subagent transcripts were not scanned.
 Window 2026-11-06 to 2026-11-13. 1,093 distinct spawns.
 
 | Resolved | Requested | Subagent type | Count |
@@ -151,7 +166,8 @@ resolution 7 Opus-named.
 
 ## Opus spawns after routing landed
 
-Each of the 141 Opus-resolved spawns on or after 11-07 named `opus` at the call
+Each of the 141 Opus-resolved spawns on or after 11-07 in the scanned
+top-level transcripts named `opus` at the call
 site. None was inherited or pinned. Eligibility verdicts follow.
 
 | Group | Count | Dates | Subagent type | Eligibility verdict |
@@ -159,7 +175,8 @@ site. None was inherited or pinned. Eligibility verdicts follow.
 | This repo's sessions | 1 | 11-07 | phase-b-reviewer | Evidence: the definition sets `model: haiku`, and this override departs from it. Opinion: Haiku suffices. Verdict: historical, on the routing-landing day. No new issue. |
 | Other project directories | 140 | 11-07 and 11-09 to 11-13 | mostly general-purpose | Outside this repo's routing and definitions. Eligibility not assessable from the records (no task identity). Opinion only. |
 
-The 56 spawns on 11-09 to 11-13 (all projects): general-purpose 54,
+The 56 later spawns on 11-09 to 11-13 (all projects, scanned top-level
+transcripts only): general-purpose 54,
 researcher 2. By date: 8 on 11-09, 19 on 11-10, 9 on 11-12, 20 on 11-13. By
 source: 29 from other project directories, 27 from home-directory sessions.
 Rough keyword grouping of their descriptions: phase, fix, review, or merge work
@@ -271,7 +288,9 @@ judgment on the 140 spawns outside this repo.
 - Issue #2301: record a basis for any `capable: false` pick (153 Sonnet picks in the routing store: 152 first launches and one same-model retry). Framed there as "step-ups"; see the framing note above.
 - Issue #2302: replace the stale `CLAUDE_CODE_SUBAGENT_MODEL` pin in owner settings (owner decision).
 
-No new issue was filed for the Opus spawns. The data shows no concrete fix to
-file. The one in-repo spawn was on the routing-landing day, and no repo-scope
+No new issue was filed for the Opus spawns. This decision rests on the scanned
+top-level population. A recount across nested subagent transcripts needs the
+original transcript set or a sanitized manifest, and neither is available. The
+data shows no concrete fix to file. The one in-repo spawn was on the routing-landing day, and no repo-scope
 Opus spawn follows it. The 140 others sit in projects whose launching skill the
 records cannot name, so a fix cannot be filed in the repo that owns it.
