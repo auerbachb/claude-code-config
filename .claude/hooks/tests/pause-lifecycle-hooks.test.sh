@@ -13,7 +13,7 @@ TMP="$(mktemp -d)"
 WRITER_PIDS=()
 cleanup_tmp() {
   local wp
-  for wp in ${WRITER_PIDS[@]+"${WRITER_PIDS[@]}"}; do kill "$wp" 2>/dev/null; done
+  for wp in ${WRITER_PIDS[@]+"${WRITER_PIDS[@]}"}; do kill "$wp" 2>/dev/null || true; done
   rm -rf "$TMP"
 }
 trap cleanup_tmp EXIT
