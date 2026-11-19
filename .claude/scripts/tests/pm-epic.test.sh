@@ -64,8 +64,10 @@ fi
 if [ "\$1 \$2" = "issue edit" ]; then
   [ -f "\$fx/edit-fail" ] && { echo "HTTP 502" >&2; exit 1; }
   bf=""; prev=""; for a in "\$@"; do [ "\$prev" = --body-file ] && bf="\$a"; prev="\$a"; done
-  jq --rawfile b "\$bf" '.body = \$b' "\$fx/issue-\$3.json" > "\$fx/tmp" && mv "\$fx/tmp" "\$fx/issue-\$3.json"
-  [ -f "\$fx/edit-clobber" ] && jq '.body = "clobbered by another writer"' "\$fx/issue-\$3.json" > "\$fx/tmp" && mv "\$fx/tmp" "\$fx/issue-\$3.json"
+  jq --rawfile b "\$bf" '.body = \$b' "\$fx/issue-\$3.json" > "\$fx/tmp" && mv "\$fx/tmp" "\$fx/issue-\$3.json" || exit 70
+  if [ -f "\$fx/edit-clobber" ]; then
+    jq '.body = "clobbered by another writer"' "\$fx/issue-\$3.json" > "\$fx/tmp" && mv "\$fx/tmp" "\$fx/issue-\$3.json" || exit 70
+  fi
   exit 0
 fi
 if [ "\$1 \$2" = "issue close" ]; then
@@ -420,6 +422,7 @@ mal 859 $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 0\nStopped:\n\n- S1 
 issue 862 open "Fenced row" $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 0\n\n```\n- S9 · remaining · example only\n```\n- S1 · remaining · real'
 check_eq "scope: a fenced row is not an item; an unterminated last row is" "S1" "$("$SCRIPT" scope acme/w 862 | jq -r '.remaining | join(",")')"
 issue 863 open "Open fence" $'Text.\n\n```\nunclosed'
+echo '[]' > "$TMP/fx/sub-863.json"
 rows "- S1 · remaining · x"
 "$SCRIPT" scope-init acme/w 863 "$TMP/rows" >/dev/null 2>&1; rc=$?
 check_eq "scope-init: refuses a body that ends inside an unclosed fence" "8" "$rc"
@@ -479,6 +482,57 @@ out=$("$SCRIPT" close-if-done acme/w 889 2>/dev/null); rc=$?
 check_eq "close-if-done: a record written during the check keeps the parent open" "open #889 (the parent changed during the check; re-check)" "$out"
 check_eq "close-if-done: no close call past a record written during the check" "0" "$(grep -c '^issue close' "$TMP/calls.log")"
 
+# ---- strict scope record: fail closed (review round 2) ----------------------------
+# A marker without its heading is malformed, never "no record".
+mal 890 $'## Scope (renamed)\n\n<!-- pm-epic-scope v1 -->\nWave: 0\n\n- S1 · remaining · x\n' "a marker without its heading"
+issue 891 open "Renamed record" $'## Increment chain\n\n- [x] #881\n\n## Notes\n\n<!-- pm-epic-scope v1 -->\n- S2 · remaining · y\n'
+echo '[]' > "$TMP/fx/sub-891.json"
+: > "$TMP/calls.log"
+"$SCRIPT" close-if-done acme/w 891 >/dev/null 2>&1; rc=$?
+check_eq "close-if-done: a marker without its heading never closes (exit 1)" "1" "$rc"
+check_eq "close-if-done: no close call on a headless marker" "0" "$(grep -c '^issue close' "$TMP/calls.log")"
+issue 892 open "Fenced marker only" $'Docs:\n\n```\n<!-- pm-epic-scope v1 -->\n```\n'
+"$SCRIPT" scope acme/w 892 >/dev/null 2>&1; rc=$?
+check_eq "scope: a fenced marker alone is still no record (exit 5)" "5" "$rc"
+# Every list item in the section must be a full row.
+mal 893 $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 0\n\n- S1 · covered by #881 · wave 0 · a\n- Sx · remaining · contact form\n' "a row with a bad item id"
+mal 894 $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 0\n\n- S1 · covered by #881 · wave 0 · a\n- note: contact form still to do\n' "a stray list item in the section"
+# A closed parent with remaining scope is a discrepancy, never already-closed.
+issue 895 closed "Closed early" $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 0\n\n- S1 · covered by #881 · wave 0 · a\n- S2 · remaining · b\n\n## Increment chain\n\n- [x] #881\n'
+echo '[]' > "$TMP/fx/sub-895.json"
+out=$("$SCRIPT" close-if-done acme/w 895 2>/dev/null); rc=$?
+check_eq "close-if-done: a closed parent with remaining scope is exit 1" "1" "$rc"
+check_eq "close-if-done: closed with remaining scope is a discrepancy" "discrepancy #895 closed with 1 scope items remaining" "$out"
+issue 896 closed "Closed done" $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 0\n\n- S1 · covered by #881 · wave 0 · a\n\n## Increment chain\n\n- [x] #881\n'
+echo '[]' > "$TMP/fx/sub-896.json"
+check_eq "close-if-done: a closed parent with complete scope and children is already-closed" "already-closed #896" "$("$SCRIPT" close-if-done acme/w 896 2>/dev/null)"
+# Scope coverage must name a verified child issue; a PR never counts.
+issue 897 open "PR coverage" $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 0\n\n- S1 · covered by #881 · wave 0 · a\n- S2 · covered by #105 · wave 0 · b\n\n## Increment chain\n\n- [x] #881\n- [x] #105\n'
+echo '[]' > "$TMP/fx/sub-897.json"
+: > "$TMP/calls.log"
+out=$("$SCRIPT" close-if-done acme/w 897 2>/dev/null); rc=$?
+check_eq "close-if-done: coverage naming a PR keeps the parent open" "open #897 (scope coverage #105 is not a verified child; re-check)" "$out"
+check_eq "close-if-done: no close call past PR coverage" "0" "$(grep -c '^issue close' "$TMP/calls.log")"
+# scope-init needs a complete child read even when every row is remaining.
+issue 898 open "Unread subs" $'- [ ] #881\n'
+rm -f "$TMP/fx/sub-898.json"
+rows "- S1 · remaining · x"
+: > "$TMP/calls.log"
+"$SCRIPT" scope-init acme/w 898 "$TMP/rows" >/dev/null 2>&1; rc=$?
+check_eq "scope-init: an unreadable sub-issue list writes nothing, even all-remaining (exit 1)" "1" "$rc"
+check_eq "scope-init: no body write on an incomplete child list" "0" "$(grep -c '^issue edit' "$TMP/calls.log")"
+# scope-init never overwrites a body that changed after its validated snapshot.
+issue 899 open "Edited meanwhile" $'- [ ] #881\n'
+echo '[]' > "$TMP/fx/sub-899.json"
+jq '.body = "operator edit\n"' "$TMP/fx/issue-899.json" > "$TMP/fx/later-issue-899.json"
+echo 2 > "$TMP/fx/swap-at-899"
+rows "- S1 · covered by #881 · wave 0 · a"
+: > "$TMP/calls.log"
+"$SCRIPT" scope-init acme/w 899 "$TMP/rows" >/dev/null 2>&1; rc=$?
+check_eq "scope-init: a body changed after validation is exit 1" "1" "$rc"
+check_eq "scope-init: no body write over an intervening edit" "0" "$(grep -c '^issue edit' "$TMP/calls.log")"
+check_eq "scope-init: the intervening edit survives" "operator edit" "$(jq -r .body "$TMP/fx/issue-899.json" | tr -d '\n')"
+
 mal 886 $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 2\n\n- S1 · covered by #881 · wave 1 · a\n- S2 · covered by #881 · wave 1 · b\n' "one wave child covering two items"
 # An indented heading (1-3 spaces) is still the record.
 issue 887 open "Indented heading" $' ## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 0\n\n- S1 · remaining · x\n'
@@ -497,6 +551,7 @@ rm "$TMP/fx/edit-fail"
 touch "$TMP/fx/edit-clobber"
 "$SCRIPT" wave-open acme/w 870 1 1 >/dev/null 2>&1; rc=$?
 check_eq "wave-open: a write another writer overwrote fails verification (exit 1)" "1" "$rc"
+check_eq "wave-open: the clobber fixture really overwrote the body" "clobbered by another writer" "$(jq -r .body "$TMP/fx/issue-870.json")"
 rm "$TMP/fx/edit-clobber"
 issue 871 closed "Closed epic" $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 0\n\n- S1 · remaining · x\n'
 "$SCRIPT" wave-due acme/w 871 >/dev/null 2>&1; rc=$?

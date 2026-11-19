@@ -109,7 +109,7 @@ Before entering a day phase, use the [day module routing table](#day-module-rout
 
 **Day mode's one-chip bound applies from the arming turn, not from the first tick.** When `DAY_MODE=true`, Step 3.1's thread-prompt path offers **at most one chip per turn** — including the arming turn, where Step 1's own dispatch runs. Treat that turn as tick 0. Without this the mode's first turn would be the one that emits a wall of chips, which is precisely the failure it exists to end (2D.3 D2).
 
-**On an arming invocation, ownership is settled before any work.** When `DAY_MODE=true` and `DAY_TICK` is not set, run **Step 2D.1 immediately after Step 0a and before Step 1** — out of numeric order, deliberately. Step 1 claims issues, resolves cleanup gates, and dispatches pipelines; running it first and only then discovering that a `/pr-monitor-and-manage` fleet already owns this repo would leave claimed issues and live pipelines under two dispatching owners, which is the single failure the exclusion exists to prevent. Refusing costs a turn; refusing after dispatch costs a double merge. Steps 1 and 2 then run normally, and 2D.2 picks up from there.
+**On an arming invocation, ownership is settled before any work.** When `DAY_MODE=true` and `DAY_TICK` is not set, run **Step 2D.1 immediately after Step 0a and before Step 1** — out of numeric order, deliberately. Step 0d's epic work then runs after 2D.1 too: a refused ownership check leaves no filed child and no edited parent. Step 1 claims issues, resolves cleanup gates, and dispatches pipelines; running it first and only then discovering that a `/pr-monitor-and-manage` fleet already owns this repo would leave claimed issues and live pipelines under two dispatching owners, which is the single failure the exclusion exists to prevent. Refusing costs a turn; refusing after dispatch costs a double merge. Steps 1 and 2 then run normally, and 2D.2 picks up from there.
 
 ---
 
@@ -427,7 +427,7 @@ On `AWAY_SET=true`, follow the lines `presence.sh` printed exactly as the presen
 ## Step 0d: Epic scope
 
 <!-- pm-routing:begin -->
-Runs on a user invocation after Step 0c, before 2D.1 and the Step 1 gate. When `EPIC_ARG=true`, read `shared:epic` and run its Bind block: a missing or closed issue, or an unreadable child list, is its one line and the end of the invocation, with nothing launched. A childless epic, or one whose children leave scope uncovered, is split there in waves of at most five (its §Waves). When `EPIC_ARG=false` on a cold start, read `shared:epic` only to clear a stored epic. Resume, ticks and refill restore a stored epic through the same module at their candidate gates (`rank:load`, `resume:load`, `flow:refill`).
+Runs on a user invocation after Step 0c and before the Step 1 gate — and, on a `/pm day` arming invocation, after 2D.1, so a refused ownership check files nothing and edits no parent. When `EPIC_ARG=true`, read `shared:epic` and run its Bind block: a missing or closed issue, or an unreadable child list, is its one line and the end of the invocation, with nothing launched. A childless epic, or one whose children leave scope uncovered, is split there in waves of at most five (its §Waves). When `EPIC_ARG=false` on a cold start, read `shared:epic` only to clear a stored epic. Resume, ticks and refill restore a stored epic through the same module at their candidate gates (`rank:load`, `resume:load`, `flow:refill`).
 <!-- pm-routing:end -->
 
 ---

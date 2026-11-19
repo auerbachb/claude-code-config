@@ -59,9 +59,10 @@
 #                  sub-issues read failed, or a listed child cannot be found
 #                  (`missing`), it exits 1 and leaves the parent open.
 #                  A parent already closed is checked the same way: it prints
-#                  `already-closed #N` only when every child reads CLOSED, and
-#                  `discrepancy #N closed with j of k children open` (exit 1)
-#                  otherwise. Other output: `closed #N (k children)` or
+#                  `already-closed #N` only when every child reads CLOSED and
+#                  its scope record (if any) is complete, and a `discrepancy`
+#                  line (exit 1) otherwise: open children, remaining scope
+#                  items, or coverage naming no verified child. Other output: `closed #N (k children)` or
 #                  `open #N (j of k children open)`. A parent whose
 #                  `## Epic scope` still lists remaining items stays open:
 #                  `open #N (every child closed; j scope items remain)`; an
@@ -89,9 +90,12 @@
 #   a child that existed before the first wave) or `remaining`. Rows are plain
 #   bullets, never task-list items, so they are never read as children. The
 #   section runs from its heading to the next `#`/`##` heading outside a fence
-#   (or a trailing `_Captured via ..._` footer). Anything off-shape — no
-#   marker, no or two `Wave:` lines, a duplicate or unparseable `S` row, a
-#   covered wave past the current wave, two sections — is malformed (exit 7),
+#   (or a trailing `_Captured via ..._` footer). The record is strict: the
+#   heading or the marker alone makes it a record. Anything off-shape — a
+#   heading with no marker, a marker (outside a fence) with no heading, no or
+#   two `Wave:` lines, a list item in the section that is not a full row (bad
+#   item id, unknown status, missing delimiter), a duplicate `S` id, a covered
+#   wave past the current wave, two sections — is malformed (exit 7),
 #   and every caller fails closed on it. Edits are line-level: prose and
 #   other sections are never rewritten. Every write re-reads the body first
 #   and re-reads it after to verify; GitHub has no conditional edit, so two
@@ -318,7 +322,7 @@ children_cmd() {
 
 # done_verdict JSON N -> prints the verdict line; returns 0 when every child is
 # verified CLOSED on a complete child list and the parent is open (safe to
-# close), 3 when the parent is already closed and that holds, 2 when children
+# close), 3 (silently) when the parent is already closed and that holds, 2 when children
 # are still open on an open parent, 5 childless, 1 otherwise (a discrepancy or
 # a partial child list).
 list_incomplete() {  # list_incomplete JSON N -> 0 (with a stderr line) when the child list is partial
@@ -341,7 +345,7 @@ done_verdict() {
     if [[ "$state" != CLOSED ]]; then printf 'open #%s (no children)\n' "$n"; return 5; fi
     # A closed parent is "done" only on a complete child list.
     list_incomplete "$json" "$n" && return 1
-    printf 'already-closed #%s\n' "$n"; return 3
+    return 3
   fi
   if [[ "$open" -gt 0 ]]; then
     if [[ "$state" == CLOSED ]]; then
@@ -350,17 +354,20 @@ done_verdict() {
     printf 'open #%s (%s of %s children open)\n' "$n" "$open" "$total"; return 2
   fi
   list_incomplete "$json" "$n" && return 1
-  if [[ "$state" == CLOSED ]]; then printf 'already-closed #%s\n' "$n"; return 3; fi
+  # Closed with every child closed: the caller prints `already-closed` only
+  # after the scope record is verified complete too.
+  if [[ "$state" == CLOSED ]]; then return 3; fi
   return 0
 }
 
 close_if_done() {
-  local repo="$1" n="$2" json total names rc
+  local repo="$1" n="$2" json total names rc closed=false
   json=$(children_json "$repo" "$n") || exit $?
   rc=0; done_verdict "$json" "$n" || rc=$?
   case "$rc" in
     0) : ;;
-    2|3) exit 0 ;;
+    3) closed=true ;;
+    2) exit 0 ;;
     *) exit "$rc" ;;
   esac
   # An epic split in waves is done only when its scope record has nothing
@@ -374,13 +381,27 @@ close_if_done() {
   case "$src" in
     0|5) left=$(jq -r '.remaining // [] | length' <<< "$scope")
        if [[ "$left" -gt 0 ]]; then
+         if [[ "$closed" == true ]]; then
+           printf 'discrepancy #%s closed with %s scope items remaining\n' "$n" "$left"; exit 1
+         fi
          printf 'open #%s (every child closed; %s scope items remain%s)\n' "$n" "$left" \
            "$(jq -r 'if .stopped then "; stopped: \(.stopped)" else "" end' <<< "$scope")"
          exit 0
        fi ;;
-    7) die 1 "#$n has a malformed ## Epic scope record; not closing" ;;
+    7) die 1 "#$n has a malformed ## Epic scope record; not closing (scope malformed)" ;;
     *) die 1 "could not read the ## Epic scope record of #$n; not closing" ;;
   esac
+  # A covered row must name an issue in the verified child list. A PR number
+  # is exempt only as a checklist reference, never as scope coverage.
+  for num in $(jq -r '(.children // [])[]' <<< "$scope"); do
+    jq -e --argjson c "$num" 'any(.children[]; .number == $c)' <<< "$json" >/dev/null && continue
+    if [[ "$closed" == true ]]; then
+      printf 'discrepancy #%s closed but scope coverage #%s is not a verified child\n' "$n" "$num"; exit 1
+    fi
+    printf 'open #%s (scope coverage #%s is not a verified child; re-check)\n' "$n" "$num"
+    exit 0
+  done
+  if [[ "$closed" == true ]]; then printf 'already-closed #%s\n' "$n"; exit 0; fi
   # Re-read once more right before closing: a child reopened or added since
   # the first read keeps the parent open. GitHub offers no conditional close,
   # so a tiny window between this read and the close call remains.
@@ -390,7 +411,8 @@ close_if_done() {
   rc=0; done_verdict "$json" "$n" || rc=$?
   case "$rc" in
     0) : ;;
-    2|3) exit 0 ;;
+    2) exit 0 ;;
+    3) printf 'open #%s (the parent changed during the check; re-check)\n' "$n"; exit 0 ;;
     *) exit "$rc" ;;
   esac
   # The parent body this re-read used must be the one the scope read judged:
@@ -400,10 +422,14 @@ close_if_done() {
     exit 0
   fi
   # Every child the scope read saw (recorded or listed in that body) must be in
-  # this verified list. A number missing from it is a child added in between,
-  # unless GitHub says it is a pull request (never a child).
-  fresh=$( { jq -r '(.children // [])[]' <<< "$scope"; body_children "$fbody" "$n" | cut -f1; } | awk 'NF && !s[$0]++')
-  for num in $fresh; do
+  # this verified list. A number missing from it is a child added in between;
+  # only a checklist reference GitHub says is a pull request is exempt.
+  for num in $(jq -r '(.children // [])[]' <<< "$scope"); do
+    jq -e --argjson c "$num" 'any(.children[]; .number == $c)' <<< "$json" >/dev/null && continue
+    printf 'open #%s (scope coverage #%s is not a verified child; re-check)\n' "$n" "$num"
+    exit 0
+  done
+  for num in $(body_children "$fbody" "$n" | cut -f1 | awk 'NF && !s[$0]++'); do
     jq -e --argjson c "$num" 'any(.children[]; .number == $c)' <<< "$json" >/dev/null && continue
     rc=0; load_body "$repo" "$num" /dev/null >/dev/null || rc=$?
     if [[ "$rc" -eq 3 ]] && fetch_issue "$repo" "$num" 2>/dev/null | jq -e '.is_pr' >/dev/null 2>&1; then continue; fi
@@ -480,7 +506,18 @@ scope_from_file() {
   loc=$(locate "$f") || return 1
   read -r ss se sc cs ce total ft fo <<< "$loc"
   [[ "${sc:-}" =~ ^[0-9]+$ ]] || return 1
-  if [[ "$sc" -eq 0 ]]; then jq -cn '{present: false}'; return 5; fi
+  if [[ "$sc" -eq 0 ]]; then
+    # A marker outside a fence with no `## Epic scope` heading is a damaged
+    # record, never "no record": exit 5 is only for neither heading nor marker.
+    local ml
+    ml=$(outside_lines "$f" 1 "$total" | cut -f2-) || return 1
+    while IFS= read -r line; do
+      if [[ "$line" =~ $RE_MARK ]]; then
+        malformed "$n" "a $SCOPE_MARK marker without its ## Epic scope heading"; return 7
+      fi
+    done <<< "$ml"
+    jq -cn '{present: false}'; return 5
+  fi
   [[ "$sc" -eq 1 ]] || { malformed "$n" "more than one section"; return 7; }
   local ln line marker=0 wave="" planned="" waveln=0 stopped="" stopln=0 rows="" seen=" "
   local id rest status child cwave text
@@ -517,7 +554,11 @@ scope_from_file() {
       fi
       # Anything that looks like an item but is off-shape is malformed, never
       # silently dropped (a dropped remaining item could let the parent close).
-      if [[ "$line" =~ ^[[:space:]]*[-*+][[:space:]]*S[0-9]+ ]]; then malformed "$n" "unreadable row: $line"; return 7; fi
+      # Every list item in the section must be a full row: a bad item id, an
+      # unknown status or a missing delimiter fails closed.
+      if [[ "$line" =~ ^[[:space:]]*[-*+]([[:space:]]|$) || "$line" =~ ^[[:space:]]*S[0-9]+ ]]; then
+        malformed "$n" "unreadable row: $line"; return 7
+      fi
     done <<< "$section"
   fi
   [[ "$marker" -eq 1 ]] || { malformed "$n" "no $SCOPE_MARK marker"; return 7; }
@@ -640,25 +681,22 @@ scope_init() {
     rows+="$line"$'\n'; count=$((count + 1))
   done < "$rows_file"
   [[ "$count" -gt 0 ]] || die 2 "no item rows in $rows_file"
-  # Wave-0 coverage must name a child the parent already has (checklist, task
-  # list or sub-issue), read from GitHub on a complete child list.
-  if [[ -n "$covers" ]]; then
-    local kids krc=0
-    kids=$(children_json "$repo" "$n") || krc=$?
-    [[ "$krc" -eq 0 ]] || exit "$krc"
-    if list_incomplete "$kids" "$n"; then die 1 "the child list of #$n is incomplete; cannot verify wave-0 coverage"; fi
-    for child in $covers; do
-      jq -e --argjson c "$child" 'any(.children[]; .number == $c)' <<< "$kids" >/dev/null ||
-        die 2 "#$child is not a child of #$n; a wave-0 row covers only an existing child"
-    done
-  fi
-
+  # Every record write needs a complete child read, even when every row is
+  # `remaining` (an unread sub-issue may already deliver one), and the edit is
+  # made to the body snapshot that read used. Wave-0 coverage must name a
+  # child from that list.
   f=$(mktemp) || die 1 'mktemp failed'
-  trap 'rm -f "$f"' EXIT
-  rc=0; state=$(load_body "$repo" "$n" "$f") || rc=$?
-  [[ "$rc" -ne 3 ]] || die 3 "issue #$n does not exist in $repo"
-  [[ "$rc" -eq 0 ]] || die 1 "could not read issue #$n in $repo"
+  trap 'rm -f "$f" "$f.now"' EXIT
+  local kids krc=0
+  kids=$(children_json "$repo" "$n" "$f") || krc=$?
+  [[ "$krc" -eq 0 ]] || exit "$krc"
+  state=$(jq -r .state <<< "$kids")
   [[ "$state" == OPEN ]] || die 4 "issue #$n is closed"
+  if list_incomplete "$kids" "$n"; then die 1 "the child list of #$n is incomplete; no scope record written"; fi
+  for child in $covers; do
+    jq -e --argjson c "$child" 'any(.children[]; .number == $c)' <<< "$kids" >/dev/null ||
+      die 2 "#$child is not a child of #$n; a wave-0 row covers only an existing child"
+  done
   local loc ss se sc cs ce total ft fo at block
   loc=$(locate "$f") || die 1 "could not scan the body of #$n"
   read -r ss se sc cs ce total ft fo <<< "$loc"
@@ -671,6 +709,12 @@ scope_init() {
   elif [[ "$ft" -gt 0 ]]; then at=$((ft - 1)); block+=$'\n'
   else at="$total"; fi
   line_blank "$f" "$at" || block=$'\n'"$block"
+  # Re-read right before writing: a body changed since the validated snapshot
+  # is never overwritten.
+  local snap; snap=$(cat "$f")
+  rc=0; load_body "$repo" "$n" "$f.now" >/dev/null || rc=$?
+  [[ "$rc" -eq 0 ]] || die 1 "could not re-read issue #$n in $repo; nothing written"
+  [[ "$(cat "$f.now")" == "$snap" ]] || die 1 "#$n changed during scope-init; nothing written (re-run it)"
   insert_after "$f" "$at" "$block" || die 1 'could not edit the body'
   write_body "$repo" "$n" "$f"
   local json; rc=0
