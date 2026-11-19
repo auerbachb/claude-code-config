@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Sourced by ai-quotas.sh. Cursor IDE credential and usage reader.
 
-# IDE credential and dashboard contract: .claude/reference/ai-quotas.md.
+# IDE credential and dashboard contract: .claude/reference/ai-quotas-cursor.md.
 CURSOR_WINDOW="billing-cycle"
 CURSOR_API_BASE="https://cursor.com/api/dashboard"
 # Said instead of `relogin_hint` for every cursor login failure: there is no
@@ -14,7 +14,7 @@ CURSOR_SIGNIN_HINT="open the Cursor IDE and sign in"
 # a status that tells them to sign in again, which is the one instruction that
 # cannot help. `$PLATFORM` already exists here and already decides the Keychain
 # path above, so the Linux store is picked the same way. Windows stays on the
-# env seam: its `%APPDATA%` path is documented in .claude/reference/ai-quotas.md
+# env seam: its `%APPDATA%` path is documented in .claude/reference/ai-quotas-cursor.md
 # but nothing in this fleet or in CI can exercise it, and a guessed path that
 # does not exist reads as `needs-login` too — the failure this change removes.
 cursor_state_db() {

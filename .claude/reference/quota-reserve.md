@@ -122,4 +122,4 @@ When rechecking on a later build, use identical prompt text for the manual, auto
 
 ## Related
 
-`usage-horizon.sh` (the harness's own token horizon, #1427), `subagent-thread-limit-park.md` (parking work killed by a limit), `ai-quotas.md` (the reader), `review-daily-cap.sh` (review spend). **Tests:** `.claude/scripts/tests/quota-reserve.test.sh`, `.claude/hooks/tests/quota-reserve-hooks.test.sh`.
+`usage-horizon.sh` (the harness's own token horizon, #1427), `subagent-thread-limit-park.md` (parking work killed by a limit), `ai-quotas-reader.md` (the reader), `review-daily-cap.sh` (review spend). **Tests:** `.claude/scripts/tests/quota-reserve.test.sh`, `.claude/hooks/tests/quota-reserve-hooks.test.sh`.

@@ -389,12 +389,13 @@ a missing credential from a probe the helper could not complete.
 
 ## Reference
 
-Config schema (including the `nickname` field and its limits), the exact per-provider
-re-login commands, where each provider keeps its credential, how the Cursor IDE token is
-read and why no browser is involved, the LaunchAgent this skill writes — every plist key,
-why 09:00, and why the `PATH` has to name Homebrew — the generated `launchers.zsh` and
-what `share-config` links, copies, and merges, and the increment boundary:
-`.claude/reference/ai-quotas.md`.
+Config schema (including the `nickname` field and its limits), where each provider keeps
+its credential, and the increment boundary: `.claude/reference/ai-quotas.md`. The exact
+per-provider re-login commands, the generated `launchers.zsh`, and what `share-config`
+links, copies, and merges: `.claude/reference/ai-quotas-setup.md`. How the Cursor IDE
+token is read and why no browser is involved: `.claude/reference/ai-quotas-cursor.md`.
+The LaunchAgent this skill writes — every plist key, why 09:00, and why the `PATH` has to
+name Homebrew: `.claude/reference/ai-quotas-history.md`.
 
 ## Layout mismatch recovery
 
@@ -420,7 +421,7 @@ service binding, matching refs/sidecars and no secure-storage override. It needs
 macOS Swift/Python 3 and accessible item metadata; no password is requested or
 replayed. Report a refusal; do not retry in-place repair. For mixed/non-cycle
 cases, the owner can use the fresh-profile reauthentication runbook in
-`.claude/reference/ai-quotas.md#fresh-profile-reauthentication`: preserve the old
+`.claude/reference/ai-quotas-setup.md#fresh-profile-reauthentication`: preserve the old
 profile, verify a new canonical profile independently, then retire only the old
 registry row. This is an explicit owner sign-in; do not launch it from a diagnostic
 or treat this fallback as authorization to bypass managed authentication policy.

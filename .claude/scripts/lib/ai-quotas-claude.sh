@@ -144,7 +144,7 @@ claude_token_for() { # <profile_dir> <keychain_service|"">
 # than each holding half a rotated credential.
 #
 # Endpoint, client id, and request shape were read out of the installed Claude
-# Code bundle rather than guessed — see `.claude/reference/ai-quotas.md`
+# Code bundle rather than guessed — see `.claude/reference/ai-quotas-claude.md`
 # §"Renewing an expired access token" for the observation and its date.
 CLAUDE_TOKEN_URL="${AI_QUOTAS_CLAUDE_TOKEN_URL:-https://platform.claude.com/v1/oauth/token}"
 CLAUDE_OAUTH_CLIENT_ID="${AI_QUOTAS_CLAUDE_CLIENT_ID:-9d1c250a-e61b-44d9-88ed-5944d1962f5e}"

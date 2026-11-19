@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Sourced by ai-quotas.sh. Snapshot history, reliability, and table rendering.
 
-# Snapshot and table contract: .claude/reference/ai-quotas.md.
+# Snapshot and table contract: .claude/reference/ai-quotas-reader.md and
+# .claude/reference/ai-quotas-history.md.
 
 epoch_to_utc_iso() { # <epoch>
   [[ "$QUOTA_DATE_DIALECT" != unavailable ]] || return 0

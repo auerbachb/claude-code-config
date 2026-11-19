@@ -138,8 +138,8 @@
 #   ai-quotas.sh --help              the reader that produces the rows
 #   quotas-cheapest-next.sh --help   the overage annotation, same row-in /
 #                                    row-out shape
-#   .claude/reference/ai-quotas.md   the history schema and the projection in
-#                                    prose
+#   .claude/reference/ai-quotas-history.md   the history schema and the
+#                                    projection in prose
 #   .claude/skills/quotas/SKILL.md   the /quotas surface
 
 set -uo pipefail

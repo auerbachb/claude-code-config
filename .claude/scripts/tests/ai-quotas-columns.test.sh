@@ -527,7 +527,7 @@ check_eq "$(claude_field '.fetched_display')" "$(TZ=America/New_York date -j -f 
 # --- 8. review round 3: contracts the second review found --------------------------------------
 
 # The documented limit_resets example is itself valid input.
-DOC_EXAMPLE="$(grep -o '{"count": 1, "items": \[{"kind": "[^"]*", "expires_at": "[^"]*"}\]}' "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../reference/ai-quotas.md" | head -n 1)"
+DOC_EXAMPLE="$(grep -o '{"count": 1, "items": \[{"kind": "[^"]*", "expires_at": "[^"]*"}\]}' "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../reference/ai-quotas-reader.md" | head -n 1)"
 check_contains "$DOC_EXAMPLE" '"count": 1' "the documented limit_resets example was found in the reference"
 observe_json "$(jq -c --argjson lr "$DOC_EXAMPLE" '. + {limit_resets: $lr}' <<<"$TOOL_BASE")" >/dev/null
 check_eq "$?,$(jq -c '.limit_resets.count' "$OBS_FILE")" "0,1" "the documented example passes the real validator and is saved"
