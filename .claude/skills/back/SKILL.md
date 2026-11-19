@@ -19,6 +19,9 @@ every thread and repo this machine and the Desk database can show. All reading i
 - **Starts no session and dispatches no work.** No `start_session`, no Agent, no Monitor, no `/subagent`.
   Answers are recorded where the owning threads read them; those threads act on them.
 - **Menus first.** Nothing is summarized before the menus: questions, then tasks, then the digest.
+  When `/back` itself returns him from a lapsed window, the prompt hook's context also carries the
+  `UNATTENDED QUESTIONS` list "to show before anything else". In a `/back` turn the menus are that
+  showing: do not print the hook's plain list as well, so each question appears once, as a menu.
 
 ## Step 0: Resolve helpers
 
@@ -56,6 +59,8 @@ their sources could not be read.
 
 Parse `$ARGUMENTS`: `all` sets the scope; a duration ("for 2 hours", "30m", "the rest of the day") is
 how long he will be here.
+
+With `PRESENCE_SH` empty, skip items 1 to 3 (the `DEGRADED` line already said why) and go to Step 2.
 
 1. `"$PRESENCE_SH" return --early --no-dialog` ends away handling, including a window that has not run
    out yet, and records it as a return. Exit 0 returned; 1 he was not away (nothing to do); 10 another
