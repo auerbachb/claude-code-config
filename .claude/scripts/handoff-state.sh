@@ -107,7 +107,8 @@
 #                               non-string owner, a wrong PR or HEAD, or a body
 #                               that is not a single object exits 4 unwritten.
 #                               Exit codes: 0 ok/no-op, 2 usage or scope, 3 no
-#                               record, 4 identity mismatch/bad JSON, 5 disk,
+#                               record, 4 identity mismatch/bad JSON (the message
+#                               names the cause, e.g. "missing owner_repo"), 5 disk,
 #                               6 lock timeout.
 #   handoff-state.sh [<scope-flags>] --set    <pr_number> <jq-path>=<value>
 #   handoff-state.sh [<scope-flags>] --append <pr_number> <field> <value>
@@ -763,7 +764,24 @@ if [[ -n "$EXPECTED_PR" ]] && ! jq -se --argjson pr "$EXPECTED_PR" --arg owner "
   'length == 1 and (.[0] | type == "object" and .pr_number == $pr
    and (.owner_repo | type == "string") and (.owner_repo | ascii_downcase) == $owner
    and .head_sha == $head)' "$HANDOFF_FILE" >/dev/null 2>&1; then
-  echo "handoff-state.sh: selected handoff identity changed or is unknown at $HANDOFF_FILE; expected PR #$EXPECTED_PR, $EXPECTED_OWNER and HEAD $EXPECTED_HEAD; nothing written" >&2
+  # Diagnostic only: classify why the predicate above refused. Never fills or
+  # infers a field; the acceptance rule is unchanged.
+  IDENTITY_CAUSE=$(jq -sr --argjson pr "$EXPECTED_PR" --arg owner "$EXPECTED_OWNER" --arg head "$EXPECTED_HEAD" '
+    if (length != 1 or (.[0] | type) != "object") then "unreadable or not a single JSON object"
+    else .[0] as $r
+    | [ (if ($r|has("pr_number")|not) then "missing pr_number"
+         elif ($r.pr_number|type) != "number" then "pr_number is null or wrong type"
+         elif $r.pr_number != $pr then "pr_number mismatch" else empty end),
+        (if ($r|has("owner_repo")|not) then "missing owner_repo"
+         elif ($r.owner_repo|type) != "string" then "owner_repo is null or wrong type"
+         elif ($r.owner_repo|ascii_downcase) != $owner then "owner_repo mismatch" else empty end),
+        (if ($r|has("head_sha")|not) then "missing head_sha"
+         elif ($r.head_sha|type) != "string" then "head_sha is null or wrong type"
+         elif $r.head_sha != $head then "head_sha mismatch" else empty end) ]
+      | if length == 0 then "unknown" else join(", ") end
+    end' "$HANDOFF_FILE" 2>/dev/null) || IDENTITY_CAUSE="unreadable or not a single JSON object"
+  [[ -n "$IDENTITY_CAUSE" ]] || IDENTITY_CAUSE="unknown"
+  echo "handoff-state.sh: selected handoff identity changed or is unknown at $HANDOFF_FILE; expected PR #$EXPECTED_PR, $EXPECTED_OWNER and HEAD $EXPECTED_HEAD; cause: $IDENTITY_CAUSE; nothing written" >&2
   state_lock_release
   exit 4
 fi
