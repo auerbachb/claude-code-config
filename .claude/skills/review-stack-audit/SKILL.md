@@ -394,8 +394,8 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
 > same `$WORKTREE_ROOT`.
 
 Refuse otherwise, explain why, and fall back to the default directory. When it
-does land in-repo, add the one-line entry under **"Audits and research
-(point-in-time)"** in `.claude/reference/README.md`, naming the filename
+does land in-repo, add the one-line entry to
+`.claude/reference/catalog/audits-and-research.md`, naming the filename
 `report-path.sh` actually returned — suffix included, if it has one.
 
 ### Resolve the path, then write

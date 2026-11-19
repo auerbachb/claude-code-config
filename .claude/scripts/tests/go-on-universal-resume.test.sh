@@ -16,7 +16,7 @@ END="$ROOT/.claude/skills/end/SKILL.md"
 END_RESUME="$ROOT/.claude/skills/end-resume/SKILL.md"
 LADDER="$ROOT/.claude/reference/universal-resume.md"
 SCHEMA="$ROOT/.claude/reference/session-state-schema.json"
-REF_README="$ROOT/.claude/reference/README.md"
+REF_README="$ROOT/.claude/reference/catalog/runbooks.md"
 HANDOFF_TEMPLATE="$ROOT/.claude/skills/end/references/portable-handoff-template.md"
 # The lane procedures load from modules (issue #2181): the entry keeps Step 0.
 GO_ON_PREPARE="$ROOT/.claude/skills/go-on/modules/review/prepare.md"
