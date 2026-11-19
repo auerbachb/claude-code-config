@@ -357,7 +357,7 @@ itself. The tick that would widen the cadence, reach `stable-frozen` or reach `-
 always emitted, with the counter left for the model, so backoff and termination fire on the same
 tick as before; a missing contract, a changed digest or any read/write failure emits too. The
 review-deadline tick skips the gate and runs `--disarm` before printing, so no later tick goes
-quiet while that one is being handled. Pass `persistent: true`, capture the returned task ID, and persist it as
+quiet while that one is being handled. Pass `timeout_ms` at the runtime maximum (1800000 where capped) and `persistent: true` only if the Monitor schema lists it — on a capped runtime the watch expires and is re-armed by **EXPIRY MODE** below. Capture the returned task ID, and persist it as
 `.prs["$PR"].babysit.monitor_task_id`. The watcher stays session-scoped by design — one that
 outlived its session would be auto-dispatching `/wrap` merges into an empty room.
 
@@ -1343,6 +1343,41 @@ Conflict rounds: <conflict_streak> of <max_conflict_rounds> (omit when conflict_
   The per-hunk entries come from `complex_report` stored in `.babysit.last_dispatch.complex_report` (set in T4 on `CONFLICTS` return). Parse via `jq -r '.complex_report[] | "  \(.file): \(.location) — \(.reason)"'`.
 
 ---
+
+## EXPIRY MODE
+
+On a runtime that caps Monitor `timeout_ms` (the desktop app: 30 minutes, no
+`persistent` parameter) the watch ends on its own and the thread gets **one**
+expiry notice (Issue #2201). Re-arming on that notice is a required step, not an
+inference — the procedure and its terms are in `.claude/reference/monitor-expiry.md`.
+
+1. **Bind the notice.** Read `.prs["$PR"].babysit`. It is an **expiry receipt** only
+   when the notice names the exact recorded `monitor_task_id`, `active == true` and
+   `cadence_transition != true`. Capture the recorded `monitor_generation`. With
+   `stop_requested == true` the receipt still binds but re-arms nothing: it stands in
+   for T0's exact `TaskStop` of that ID (an expired task cannot be stopped again), so
+   finish T0's termination and clear the watcher state. A notice that does not bind (another ID, a newer generation,
+   a cleared watcher) is not a receipt: liveness is unknown, so take the existing
+   stale path (A2 stale reclaim, or `/babysit-pr-stop` then `/babysit-pr`) — silence
+   is not death.
+2. **Terminal conditions first.** Run one tick (TICK MODE) under the captured
+   generation. If it reaches T-END (merged/closed PR, hard blocker, `--max-iter`,
+   stable-frozen, user stop), the receipt stands in for T-END's `TaskStop` of that
+   exact ID: bind `TERMINAL_STOP_SUCCEEDED=true` and finish T-END. Re-arm nothing.
+   If the tick instead reaches T5's cadence replacement (cadence changed or a new
+   review deadline), do not let T5 attempt a `TaskStop` of the expired task: that
+   replacement **is** step 3, run once with the receipt as its exact stop.
+3. **Otherwise replace the watch through T5's cadence path** with the captured
+   generation as `GATE_GENERATION`, `EFFECTIVE_MIN` equal to the recorded
+   `cadence_effective_minutes`, and the recorded `armed_review_deadline` (0 if past)
+   as `NEXT_REVIEW_DEADLINE`. Run the cadence guard block; in place of its
+   `TaskStop`, the receipt counts as the successful exact stop of
+   `$CADENCE_TASK_ID` — **only** when that equals the ID the notice named. Then arm
+   with a fresh generation and publish/roll back exactly as T5 does.
+
+The receipt satisfies the exact-stop requirement for that one ID and nothing else.
+`babysit-tick-watchdog.sh` also runs at Stop, so a missed notice surfaces as a
+"no persisted tick observed" notice on the thread's next Stop.
 
 ## Notes
 

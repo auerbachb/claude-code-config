@@ -690,8 +690,12 @@ require_text .claude/reference/session-state-schema.json \
 # directive must sit inside Step 6 and after the sleep loop it configures.
 require_order "$LEAVE_SKILL" '## Step 6:' \
   'while sleep "$WINDDOWN_SLEEP"' \
-  'Pass `persistent: true` and description `leave-time wind-down`' \
-  'the persistent-Monitor directive must sit with the arm block it configures, not float in the file'
+  'Monitor schema lists it, and description `leave-time wind-down`' \
+  'the Monitor directive must sit with the arm block it configures, not float in the file'
+require_order "$LEAVE_SKILL" '## Step 6:' \
+  'Pass `timeout_ms` at the runtime maximum' \
+  '**remaining** time' \
+  'leave-by must arm at the maximum timeout_ms and re-arm an expired wind-down for the remaining time (Issue #2201)'
 require_text "$LEAVE_SKILL" 'Never `CronCreate`' \
   'leave-by must forbid CronCreate for the wind-down wake'
 require_text "$LEAVE_SKILL" 'never a chain' \

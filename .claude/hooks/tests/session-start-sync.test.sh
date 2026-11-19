@@ -207,4 +207,42 @@ esac
 grep -q '_bound_unavailable_reason' "$HOOK" \
   || fail "the decline message is hard-coded to \"bounded-run.sh unavailable\", so a handover-allocation decline would be reported as a missing library (CodeAnt, PR #1640)"
 
+# --- 18. Session-id handoff to CLAUDE_ENV_FILE (Issue #2201) ---------------
+# The hook runs from a sandbox copy with no scripts/ or setup script beside it
+# and a private HOME, so it reaches the handoff and then degrades quickly
+# without touching real config.
+HANDOFF_DIR="$(mktemp -d)"
+ssync_register_tmp "$HANDOFF_DIR"
+mkdir -p "$HANDOFF_DIR/sb/.claude/hooks" "$HANDOFF_DIR/home"
+cp "$HOOK" "$HANDOFF_DIR/sb/.claude/hooks/"
+SB_HOOK="$HANDOFF_DIR/sb/.claude/hooks/session-start-sync.sh"
+run_handoff() { # <payload> <env-file>
+  printf '%s' "$1" | HOME="$HANDOFF_DIR/home" CLAUDE_ENV_FILE="$2" bash "$SB_HOOK" 2>/dev/null
+}
+for src in startup resume clear compact fork; do
+  envf="$HANDOFF_DIR/env-$src"
+  printf 'export KEEP_ME=1' > "$envf"   # no final newline on purpose
+  out=$(run_handoff '{"session_id":"sid-'"$src"'.A_1","source":"'"$src"'"}' "$envf")
+  printf '%s' "$out" | jq -e . >/dev/null || fail "handoff ($src): hook output is not valid JSON: $out"
+  grep -qx 'export KEEP_ME=1' "$envf" || fail "handoff ($src): existing CLAUDE_ENV_FILE lines must be preserved"
+  for sh in sh bash; do
+    got=$("$sh" -c '. "$1"; printf %s "$CLAUDE_BGCEILING_SESSION_ID"' _ "$envf")
+    [[ "$got" == "sid-$src.A_1" ]] || fail "handoff ($src): sourcing in $sh must yield the exact id, got '$got'"
+  done
+  [[ "$out" != *"HANDOFF DEGRADED"* ]] || fail "handoff ($src): a good id must not report degradation"
+done
+for bad in '{"source":"startup"}' '{"session_id":"x y;rm","source":"startup"}' '{"session_id":"","source":"startup"}'; do
+  envf="$HANDOFF_DIR/env-bad"
+  : > "$envf"
+  out=$(run_handoff "$bad" "$envf")
+  [[ ! -s "$envf" ]] || fail "handoff: an invalid or missing id must write nothing ($bad)"
+  [[ "$out" == *"HANDOFF DEGRADED"* ]] || fail "handoff: an invalid or missing id must report degradation ($bad): $out"
+  printf '%s' "$out" | jq -e . >/dev/null || fail "handoff: degraded output is not valid JSON: $out"
+done
+out=$(run_handoff '{"session_id":"ok-1","source":"startup"}' "$HANDOFF_DIR/no-such-dir/env")
+[[ "$out" == *"HANDOFF DEGRADED"* ]] || fail "handoff: an unwritable CLAUDE_ENV_FILE must report degradation: $out"
+out=$(printf '%s' '{"session_id":"ok-1","source":"startup"}' | env -u CLAUDE_ENV_FILE HOME="$HANDOFF_DIR/home" bash "$SB_HOOK" 2>/dev/null)
+[[ "$out" != *"HANDOFF"* ]] || fail "handoff: a host without CLAUDE_ENV_FILE is a supported mode, not a notice: $out"
+grep -q 'CLAUDE_SESSION_ID=' "$HOOK" && fail "the hook must not set CLAUDE_SESSION_ID — other components own it"
+
 echo "OK: session-start-sync.sh SessionStart migration tests passed"

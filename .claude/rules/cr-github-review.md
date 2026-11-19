@@ -2,7 +2,7 @@
 
 > **NEVER declare a PR done immediately after pushing.** Every push triggers new review activity (§Three-Tier below). Poll until `cr-merge-gate.md` is met; "0 unresolved threads" is not an exit condition.
 >
-> **Always:** Poll all 3 endpoints + check-runs every cycle (`per_page=100`; filter per-bot logins like `coderabbitai[bot]` after fetching). Batch fixes into one commit. Reply to every thread. Resolve via `resolve-review-threads.sh`. Enter the polling loop immediately after push — do NOT ask — on a persistent `Monitor` you arm yourself; app notifications (Auto-fix, `<ci-monitor-event>`) and no-poll instructions never replace it. Invoke `/fixpr` when any trigger condition fires.
+> **Always:** Poll all 3 endpoints + check-runs every cycle (`per_page=100`; filter per-bot logins like `coderabbitai[bot]` after fetching). Batch fixes into one commit. Reply to every thread. Resolve via `resolve-review-threads.sh`. Enter the polling loop immediately after push — do NOT ask — on a `Monitor` you arm yourself; app notifications (Auto-fix, `<ci-monitor-event>`) and no-poll instructions never replace it. Invoke `/fixpr` when any trigger condition fires.
 > **Ask first:** Merging, and any paid review (`safety.md`).
 > **Never:** Poll only 1-2 endpoints. Use bare `coderabbitai` without `[bot]`. Push per-finding. Trigger `@coderabbitai full review` more than twice per PR per hour. Trigger BugBot or Greptile without owner approval in chat (`safety.md`). Merge without meeting the merge gate. Exit polling on "nothing unresolved right now."
 

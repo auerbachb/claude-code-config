@@ -128,7 +128,7 @@ Exit codes follow `session-state.sh`: 0 ok, 2 usage, 4 refused / invalid / no su
 
 ## How agents apply it (issue #2150)
 
-The default wait is 10 minutes from the HEAD anchor described above in this file. The waiting agent must arm its own persistent `Monitor` when the review is requested or the push lands. A host app's notification promise or a no-poll instruction never replaces that watch. Only `NO_REVIEW_OVERRIDE_MINUTES` changes or disables the wait; prose in a project instruction file does not. On 2026-11-10 a thread in another repo idled past the wait because the number lived only in this file and nothing timed the wait.
+The default wait is 10 minutes from the HEAD anchor described above in this file. The waiting agent must arm its own `Monitor` when the review is requested or the push lands, with `timeout_ms` at the runtime maximum (`persistent: true` only if the schema lists it), and re-arm it on every expiry notice until the gate is met ([`monitor-expiry.md`](monitor-expiry.md)). A host app's notification promise or a no-poll instruction never replaces that watch. Only `NO_REVIEW_OVERRIDE_MINUTES` changes or disables the wait; prose in a project instruction file does not. On 2026-11-10 a thread in another repo idled past the wait because the number lived only in this file and nothing timed the wait.
 
 ## Verified live (issue #2155)
 
@@ -138,6 +138,6 @@ The default wait is 10 minutes from the HEAD anchor described above in this file
 - **Override merge: not exercised.** CodeAnt approved HEAD 90 seconds after the push, so `no_review_override.applied` stayed `false` on every tick and the merge took the reviewed path. On this repo a reviewer answers within about a minute, so the override path has still not been observed live.
 - **Project file demanding a completed review: not run.** It needs a second repository.
 
-Two gaps the run exposed: the desktop `Monitor` expires after 30 minutes and has no persistent mode (Issue #2201, open), and stable-state backoff told a waiting thread to stop polling while the gate was unmet (Issue #2202, fixed by PR #2204 on 2026-11-11).
+Two gaps the run exposed: the desktop `Monitor` expires after 30 minutes and has no persistent mode (Issue #2201: re-arm on expiry, missed re-arms detected — `monitor-expiry.md`), and stable-state backoff told a waiting thread to stop polling while the gate was unmet (Issue #2202, fixed by PR #2204 on 2026-11-11).
 
 An explicit reviewer refusal with no known reset time is ranking evidence only. It never satisfies the all-reviewers-unavailable request skip or shortens the ordinary no-review window; all current-HEAD verdict and CI hard stops remain in force.

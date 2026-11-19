@@ -104,7 +104,7 @@ done
    ```
 
    An `error` line → the same "not started" report as step 3, and stop. Exit 4 → the cadence (or another argument) was refused: report its one stderr line as "not started", and stop. Nothing is armed. An `eod` line (a desk started after `eod_time` that has not swept today) → after the start report, show the sweep (`sweep.md`). A `morning` line (the day's first desk, from 04:00 until `eod_time`) → after the start report, show the morning check-in (`checkin.md`) before the backlog of step 8.
-6. **Arm the Monitor** using the validated initial hold from step 3. The seed records an evidenced held start; step 8 still checks the current hold before displaying anything. Arm with `persistent: true`, description `Desk tick`, and the longest `timeout_ms` the tool allows. Write `DESK`, `SID`, `GEN`, cadence and `DEFAULT` literally, and fill `<HELD_FLAG>` with exactly `--held` or the empty string from step 3:
+6. **Arm the Monitor** using the validated initial hold from step 3. The seed records an evidenced held start; step 8 still checks the current hold before displaying anything. Arm with description `Desk tick`, the longest `timeout_ms` the tool allows, and `persistent: true` only if the Monitor schema lists it (the desktop Monitor has no such parameter — `.claude/reference/monitor-expiry.md`). Write `DESK`, `SID`, `GEN`, cadence and `DEFAULT` literally, and fill `<HELD_FLAG>` with exactly `--held` or the empty string from step 3:
 
    <!-- test-anchor: desk-monitor -->
 
@@ -147,7 +147,7 @@ Each stdout line of the loop arrives as a notification. A line whose generation 
 | `desk-tick <GEN> replaced` | Another session registered as the desk. The loop has exited. Write `.desk=null` (skip with `SESSION_STATE_SH` empty), say `The desk moved to another session; this one has stopped ticking.`, and arm nothing |
 | `desk-tick <GEN> error <cmd> exit <n>: <line>` | One line, action first: `Desk can't reach the store (<cmd> exit <n>) — still retrying every <N> min; once the last tick is older than the live-desk bound (15 min by default), worker threads show their own menus again.` The loop keeps going |
 | `desk-tick <GEN> recovered` | One line: `Store reachable again — desk live.` |
-| The Monitor exited or expired | Re-arm: steps 5–7 with a new generation (no new registration; `register-control` is only for start) |
+| The Monitor exited or expired | Re-arm: steps 5–7 with a new generation (no new registration; `register-control` is only for start). Expiry contract: `.claude/reference/monitor-expiry.md` |
 
 A quiet tick prints nothing, and the desk says nothing about it.
 

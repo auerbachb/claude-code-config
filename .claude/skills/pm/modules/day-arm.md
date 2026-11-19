@@ -92,7 +92,9 @@ attempt. Release only this invocation's unpublished reservation with
 
 Use the goal in `DAY_JSON` for the first heartbeat, and say when it was carried forward from a previous run rather than given this time — a resumed goal the user cannot see is one they cannot correct.
 
-Then arm the `Monitor` with `persistent: true` and description `PM day mode`, sleep-first so the loop's own first tick is the one run inline below:
+Then arm the `Monitor` with `timeout_ms` at the runtime maximum (1800000 where capped), `persistent: true` only if the Monitor schema lists it, and description `PM day mode`, sleep-first so the loop's own first tick is the one run inline below.
+
+**On a capped runtime the watch expires** (Issue #2201). An expiry notice that names the exact recorded `monitor_task_id` while the recorded day generation is still `$DAY_GENERATION` is an expiry receipt (`.claude/reference/monitor-expiry.md`). Respect park, manual-resume and probe-count bounds first: a parked, stopped or ended day re-arms nothing. Otherwise re-arm this same loop with a fresh generation and publish the new task and generation by compare-and-set against the recorded pair, the receipt standing in for the exact stop of that one ID. An unbound notice is unknown liveness and takes the existing stale path.
 
 <!-- test-anchor: pm-day-monitor-loop -->
 ```bash
