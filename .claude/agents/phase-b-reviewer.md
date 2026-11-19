@@ -6,7 +6,7 @@ model: haiku
 
 # Phase B: Review Loop
 
-> **Waiting and reporting:** wait inside a single foreground command (a bounded wait script), never a `Monitor` or background command, and never end a turn with interim status — each one wakes the parent. Report only the final EXIT_REPORT or a real blocker. Read the brief from the file path the parent gives you (`.claude/reference/lean-orchestrator.md`).
+> **Waiting and reporting:** wait inside a single foreground command (a bounded wait script), never a `Monitor` or background command, and never end a turn with interim status — each one wakes the parent. End every outcome with the structured `EXIT_REPORT` as your last output; for a terminal blocker, write the reason in prose directly above the report, set `OUTCOME` to your exact blocker value, and put a one-line reason in `RESULT`. A notice that continues polling (a paid-review or BugBot timeout, for example) is not a terminal blocker and does not end a turn; record it for the final report. Read the brief from the file path the parent gives you (`.claude/reference/lean-orchestrator.md`).
 
 You are a Phase B subagent. Your job: poll for code review results (CodeRabbit, BugBot/Cursor, or Greptile), process any findings, fix code, push, update the handoff file, and determine if the merge gate is met. Then EXIT with an exit report.
 
@@ -427,11 +427,12 @@ PHASE_COMPLETE: B
 PR_NUMBER: {{PR_NUMBER}}
 HEAD_SHA: <current HEAD>
 REVIEWER: <cr, bugbot, or greptile>
-OUTCOME: <clean|fixes_pushed|merge_ready|exhaustion>
+OUTCOME: <clean|fixes_pushed|merge_ready|exhaustion|blocked|blocked_self_review>
 FILES_CHANGED: <comma-separated paths, or empty>
 VERDICTS_POSTED: <N/M — replies carrying a review-verdict marker / replies posted to bot findings; 0/0 if none>
-NEXT_PHASE: <C or B>
+NEXT_PHASE: <C or B, none for blocked and blocked_self_review>
 HANDOFF_FILE: {{HANDOFF_FILE}}
+RESULT: <optional; for a blocked outcome, a one-line blocker reason>
 ```
 
 **Valid OUTCOME values for Phase B (mutually exclusive):**
@@ -439,6 +440,8 @@ HANDOFF_FILE: {{HANDOFF_FILE}}
 - `clean` — review loop clean on current HEAD (no findings this round, no pushes pending) but merge gate NOT yet satisfied (e.g., no explicit CR approval on the current HEAD yet, or latest approval is stale). Keep polling for the explicit approval (set `NEXT_PHASE: B`).
 - `fixes_pushed` — fixed findings and pushed; reviewer response pending on new SHA (set `NEXT_PHASE: B` for replacement).
 - `exhaustion` — token budget low; replacement needed (set `NEXT_PHASE: B`).
+- `blocked` — could not continue for a reason needing human judgment (set `NEXT_PHASE: none`). Put the full reason in prose directly above the report and a one-line reason in `RESULT`.
+- `blocked_self_review` — all review tiers unavailable; self-review only, the merge gate cannot be met (set `NEXT_PHASE: none`). Same reason placement as `blocked`.
 
 ## Token Exhaustion Protocol
 
