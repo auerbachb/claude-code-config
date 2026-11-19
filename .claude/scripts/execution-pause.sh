@@ -127,18 +127,34 @@ MARKER="$MARKER_DIR/claude-execution-pause-v2-$SCOPE_HASH"
 ACTIVATING_PREFIX="$MARKER_DIR/claude-execution-pause-activating-"
 INTENT=""
 
+# Start time of process $1 as `ps` prints it, whitespace squeezed; empty when
+# it cannot be read. With the pid it identifies one process across pid reuse.
+pid_start_time() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//'; }
+
 # 0 when a live activation for scope hash $1 is in flight. A record counts
-# only while it is a regular, non-symlink file of ours, younger than 15
-# minutes, named for a process that is still running: a crashed activation
-# never completed, so its leftover record holds nothing.
+# only while it is a regular, non-symlink file of ours naming a running
+# process. Its first line is `<pid> <start time>`: when both start times can
+# be read, they decide (equal -> held at any age, so an activation stuck
+# behind the lock for a long time still holds — CodeAnt 4636571089; unequal ->
+# the pid was reused, not held). Only when identity cannot be proven does a
+# 15-minute age cutoff bound how long a record can hold. A crashed
+# activation never completed, so its leftover record holds nothing.
 activation_in_flight() {
-  local f pid
+  local f pid line recorded current
   for f in "$ACTIVATING_PREFIX$1".*; do
     [[ -f "$f" && ! -L "$f" && -O "$f" ]] || continue
     pid="${f##*.}"
     [[ "$pid" =~ ^[1-9][0-9]{0,9}$ ]] || continue
-    [[ -n "$(find "$f" -prune -mmin -15 2>/dev/null)" ]] || continue
-    kill -0 "$pid" 2>/dev/null && return 0
+    kill -0 "$pid" 2>/dev/null || continue
+    line=""; IFS= read -r line < "$f" 2>/dev/null || [[ -n "$line" ]] || line=""
+    recorded=""
+    [[ "$line" == "$pid "* ]] && recorded="${line#"$pid "}"
+    current="$(pid_start_time "$pid")"
+    if [[ -n "$recorded" && -n "$current" ]]; then
+      [[ "$recorded" == "$current" ]] && return 0
+      continue
+    fi
+    [[ -n "$(find "$f" -prune -mmin -15 2>/dev/null)" ]] && return 0
   done
   return 1
 }
@@ -425,7 +441,7 @@ if [[ "$MODE" == activate ]]; then
   }
   INTENT="$ACTIVATING_PREFIX$SCOPE_HASH.$$"
   trap '[[ -z "$INTENT" ]] || rm -f -- "$INTENT"' EXIT
-  printf '%s\n' "$$" > "$INTENT" || {
+  printf '%s %s\n' "$$" "$(pid_start_time "$$")" > "$INTENT" || {
     echo "execution-pause.sh: could not write activation record $INTENT" >&2
     exit 5
   }

@@ -323,5 +323,57 @@ if [[ "$got" == "0|active" ]]; then pass; else fail "live activation record shou
 kill "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null
 rm -f "$CLAUDE_EXECUTION_PAUSE_MARKER_DIR"/claude-execution-pause-activating-*
 
+# (5) CodeAnt 4636571089: a LIVE activation record older than the age cutoff
+# (an activation stuck behind the lock that long) must still hold. Identity
+# is the pid plus its recorded start time, so age no longer decides it.
+age_record() { python3 -c 'import os,sys,time; t=time.time()-1200; os.utime(sys.argv[1],(t,t))' "$1"; }
+pid_start() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//'; }
+reset; write_state "$(repo_state "$(jq -nc --arg s "$SID" '{execution_pauses:{($s):{active:false}}}')")"
+sleep 60 & LIVE=$!
+REC="$CLAUDE_EXECUTION_PAUSE_MARKER_DIR/claude-execution-pause-activating-$(scope_hash "$SID").$LIVE"
+printf '%s %s\n' "$LIVE" "$(pid_start "$LIVE")" > "$REC"; age_record "$REC"
+got="$(run_status 0 1 "$SID")"
+if [[ "$got" == "0|active" ]]; then pass; else fail "aged record of a live activation should hold: got [$got]"; fi
+# The same pid with a different recorded start time is a reused pid: no hold.
+printf '%s %s\n' "$LIVE" "Thu Jan  1 00:00:00 1970" > "$REC"; age_record "$REC"
+got="$(run_status 0 1 "$SID")"
+if [[ "$got" == "0|inactive" ]]; then pass; else fail "record naming a reused pid should not hold: got [$got]"; fi
+# No recorded start time (cannot prove identity): the age cutoff applies.
+printf '%s\n' "$LIVE" > "$REC"; age_record "$REC"
+got="$(run_status 0 1 "$SID")"
+if [[ "$got" == "0|inactive" ]]; then pass; else fail "aged record without a start time should not hold: got [$got]"; fi
+kill "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null
+rm -f "$CLAUDE_EXECUTION_PAUSE_MARKER_DIR"/claude-execution-pause-activating-*
+# A real activation records its own start time.
+reset; write_state "$(repo_state "$(jq -nc --arg s "$SID" '{execution_pauses:{($s):{active:false}}}')")"
+STUB2="$TMP/stubbed-scripts-5"; mkdir -p "$STUB2"
+cp "$GATE" "$ROOT/.claude/scripts/state-lock.sh" "$STUB2/"
+cat > "$STUB2/session-state.sh" <<STUBEOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [[ "\$a" == --set ]]; then
+    : > "$TMP/race5.entered"
+    while [[ ! -e "$TMP/race5.release" ]]; do sleep 0.05; done
+    break
+  fi
+done
+exec "$REAL_SS" "\$@"
+STUBEOF
+chmod +x "$STUB2/session-state.sh" "$STUB2/execution-pause.sh"
+"$STUB2/execution-pause.sh" --repo "$REPO" --activate --session "$SID" \
+  --command pause --window-minutes 5 >/dev/null 2>&1 &
+ACTIVATOR=$!
+for _ in $(seq 1 200); do [[ -e "$TMP/race5.entered" ]] && break; sleep 0.05; done
+REC="$CLAUDE_EXECUTION_PAUSE_MARKER_DIR/claude-execution-pause-activating-$(scope_hash "$SID").$ACTIVATOR"
+if [[ -f "$REC" && "$(cut -d' ' -f2- < "$REC")" == "$(pid_start "$ACTIVATOR")" ]]; then
+  pass
+else
+  fail "activation record should carry its pid start time"
+fi
+age_record "$REC"; rm -f "$(marker_of "$SID")"
+got="$(run_status 0 1 "$SID")"
+if [[ "$got" == "0|active" ]]; then pass; else fail "aged live activation with its marker removed should hold: got [$got]"; fi
+: > "$TMP/race5.release"; wait "$ACTIVATOR" 2>/dev/null || true
+
 echo "execution-pause-status: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
