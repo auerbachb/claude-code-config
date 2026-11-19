@@ -1,6 +1,6 @@
 ---
 name: quotas-setup
-description: Use when registering the AI subscription accounts whose quotas you track, adding a second paid Claude Code / Codex / Cursor account, registering the Google Antigravity account, re-logging in an expired one, nicknaming an account, asking which are logged in, installing the daily unattended usage snapshot, generating the shell launchers (`claude-work`, `codex-personal`, …) that start a CLI against one account, or sharing the primary install's skills, rules, hooks, plugins, and MCP servers into an account's profile. Gives each account an isolated login profile — a config dir or a CODEX_HOME; Cursor instead uses the login the Cursor IDE already holds, and Antigravity has no profile (the `agy` CLI holds its login). Display and config only — reads no usage figures, gates no work.
+description: Use when registering the AI subscription accounts whose quotas you track, adding a second paid Claude Code / Codex / Cursor account, registering the Google Antigravity account, re-logging in an expired one, nicknaming an account, asking which are logged in, installing the daily unattended usage snapshot, generating the shell launchers (`claude-work`, `codex-personal`, …) that start a CLI against one account, sharing the primary install's skills, rules, hooks, plugins, and MCP servers into an account's profile, or exporting the account list and importing it on a new computer, a new environment (desktop app to terminal), or a cloud session. Gives each account an isolated login profile — a config dir or a CODEX_HOME; Cursor instead uses the login the Cursor IDE already holds, and Antigravity has no profile (the `agy` CLI holds its login). Display and config only — reads no usage figures, gates no work.
 triggers:
   - quotas-setup
   - register my AI accounts
@@ -15,7 +15,10 @@ triggers:
   - generate the account launchers
   - make a shell function for my second Claude account
   - share my skills and rules with the other profile
-argument-hint: "[list [--json] | add <claude|codex|cursor|antigravity> <label> [--nick <name>] [--no-login] | nick <label> <name> [provider] | plan <label> <tier> [usd_per_month] [provider] | report <label> <window> <used_pct> [reset] [provider] | remove <label> [provider] | relogin <label> [provider] | schedule <install|remove|status> [--hour N] | launchers | share-config <label> [provider]]"
+  - export my AI accounts
+  - import my AI accounts on this machine
+  - set up my quota accounts on a new computer
+argument-hint: "[list [--json] | add <claude|codex|cursor|antigravity> <label> [--nick <name>] [--no-login] | nick <label> <name> [provider] | plan <label> <tier> [usd_per_month] [provider] | report <label> <window> <used_pct> [reset] [provider] | remove <label> [provider] | relogin <label> [provider] | schedule <install|remove|status> [--hour N] | launchers | share-config <label> [provider] | export [--out FILE] | import FILE [--no-login]]"
 model: sonnet
 allowed-tools:
   - Read
@@ -92,6 +95,8 @@ profile directories drift apart.
 | "stop the daily job" | `"$AI_QUOTAS_SETUP_SH" schedule remove` |
 | "generate the launchers", "give me a `claude-work` command", a new account was just added or renamed | `"$AI_QUOTAS_SETUP_SH" launchers` |
 | "share my skills/rules/MCP servers with \<label\>", "make the other profile behave like my main one" | `"$AI_QUOTAS_SETUP_SH" share-config <label> [<provider>]` |
+| "export my accounts", "I'm moving to a new computer", "set these up in the terminal / a cloud session" | `"$AI_QUOTAS_SETUP_SH" export [--out FILE]` — see [Step 3f](#step-3f--moving-the-account-list-to-a-new-environment-2468) |
+| "import my accounts", "set up my accounts from this file" | `"$AI_QUOTAS_SETUP_SH" import FILE [--no-login]` — same step |
 
 `list` is the default when no action is given. `--json` is available on `list` and `doctor` for
 machine consumption (increment 2's `/quotas` reads the config directly). `--no-login`
@@ -318,6 +323,38 @@ Keychain are never touched — and nothing from `.claude.json` is printed. One t
 merge does carry across is the `mcpServers` block itself, and an MCP server entry can hold
 an API key in its `env` block. Sharing preserves those values in the merged JSON;
 serialization can change formatting. The report line gives a count, never a name or a value.
+
+## Step 3f — Moving the account list to a new environment (#2468)
+
+Use `export` and `import` when the accounts already exist somewhere and you are now in a
+place that has none: a **new computer**, a **different environment on the same computer**
+(the desktop app and a terminal keep separate home directories and registries), or a
+**cloud session**. Re-typing every account is how one gets forgotten or misspelled.
+
+1. **Where the accounts are** — run `"$AI_QUOTAS_SETUP_SH" export [--out FILE]` (default
+   `./ai-quotas-accounts.json`, mode 600). It carries each account's provider, label,
+   nickname, any known provider account/org/user IDs, plan override, source order, and
+   login method. It carries **no credential**, no keychain item name, and no profile path.
+2. **Move the file** however suits you (AirDrop, a private gist, a dotfiles repo). It holds
+   **emails and account IDs**, so keep it private even though it holds no secrets.
+3. **Where the accounts should be** — run `"$AI_QUOTAS_SETUP_SH" import FILE`. It recreates
+   every entry with profile directories in *this* environment, then walks the logins one
+   account at a time: an account already signed in is skipped; for the rest it prints the
+   exact step (run the Claude/Codex login, open the Cursor IDE, run `agy`) and **waits for
+   you** — Enter to start a Claude/Codex login or to confirm a Cursor/agy sign-in, `s` to
+   skip. A login is never started for you and nothing is typed on your behalf. It ends
+   with a ready / needs-you summary.
+
+Re-running `import FILE` is safe: entries already here are kept, and the login pass resumes
+with only the accounts that are still signed out. `--no-login` imports the entries and stops
+before the login pass. A field the file states that differs from an entry already here is
+reported as a **conflict** and the entry here is left untouched (exit 3; change it with
+`nick`, `plan`, or `sources` if the file is right). A second Cursor or Antigravity account is
+refused with the one-per-machine message (also exit 3); the rest of the file still imports.
+
+In a **cloud session** (no terminal to answer in) `import` creates the entries and lists
+each login that must happen elsewhere, with its exact step; do those on a machine where you
+can sign in, then re-run `import FILE` there.
 
 ## Step 4 — Report the result
 
