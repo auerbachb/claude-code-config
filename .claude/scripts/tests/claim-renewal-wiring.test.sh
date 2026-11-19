@@ -131,7 +131,8 @@ else
 fi
 
 # --- PR claim line on every issue-PR path (issue #2356) ----------------------
-GOON="$REPO_ROOT/.claude/skills/go-on/SKILL.md"
+# /go-on Step 4 lives in its publish module since the incremental split (issue #2181).
+GOON="$REPO_ROOT/.claude/skills/go-on/modules/review/publish.md"
 LAUNCH="$REPO_ROOT/.claude/skills/pm/modules/flow/launch.md"
 PMCFG="$REPO_ROOT/.claude/skills/pm/modules/shared/config.md"
 for f in "$GOON" "$LAUNCH" "$PMCFG"; do

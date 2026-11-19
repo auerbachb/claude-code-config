@@ -18,6 +18,9 @@ LADDER="$ROOT/.claude/reference/universal-resume.md"
 SCHEMA="$ROOT/.claude/reference/session-state-schema.json"
 REF_README="$ROOT/.claude/reference/README.md"
 HANDOFF_TEMPLATE="$ROOT/.claude/skills/end/references/portable-handoff-template.md"
+# The lane procedures load from modules (issue #2181): the entry keeps Step 0.
+GO_ON_PREPARE="$ROOT/.claude/skills/go-on/modules/review/prepare.md"
+GO_ON_MODULES=("$ROOT"/.claude/skills/go-on/modules/*/*.md)
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 has() { grep -Eq -- "$2" "$1" || fail "$(basename "$1") missing: $2"; }
@@ -39,6 +42,14 @@ printf 'refill={"paused":false}\n' >"$CONTROL"
 for f in "$GO_ON" "$PAUSE" "$PAUSE_RESUME" "$END" "$END_RESUME" "$LADDER"; do
   [[ -f "$f" ]] || fail "missing file: $f"
 done
+[[ ${#GO_ON_MODULES[@]} -eq 8 && -f "${GO_ON_MODULES[0]}" ]] \
+  || fail "expected the 8 /go-on modules, found ${#GO_ON_MODULES[@]}"
+# Some module must hold the pattern.
+has_module() {
+  local f
+  for f in "${GO_ON_MODULES[@]}"; do grep -Eq -- "$1" "$f" && return 0; done
+  fail "no /go-on module contains: $1"
+}
 has "$PAUSE_RESUME" '^name: pause-resume$'
 has "$END_RESUME" '^name: end-resume$'
 
@@ -54,11 +65,11 @@ has "$GO_ON" 'unplanned'
 has "$GO_ON" 'nothing to resume'
 has "$GO_ON" 'unclassifiable'
 # The interrupted-workflow lane it routes to is preserved, not replaced.
-has "$GO_ON" '^## Step 0b: Identify context'
+has "$GO_ON_PREPARE" '^## Step 0b: Identify context'
 for step in 'Step 1: Check for an inherited rebase' 'Step 2: Run local CR review' \
             'Step 6: Check for review response' 'Step 8: Check merge gate' \
             'Step 9: Verify acceptance criteria'; do
-  has "$GO_ON" "$step"
+  has_module "$step"
 done
 
 # --- Precedence is explicit, and parked state outranks stall detection ------
@@ -121,13 +132,15 @@ has "$LADDER" 'validated in 0.2a'
 has "$GO_ON" '\-\-resume-refill'
 has "$GO_ON" 'never writes `refill.paused`'
 # A direct refill write from /go-on would bypass the delegated command's contract.
-hasnt "$GO_ON" 'refill=\{'
-hasnt "$GO_ON" 'refill\.paused='
+for f in "$GO_ON" "${GO_ON_MODULES[@]}"; do
+  hasnt "$f" 'refill=\{'
+  hasnt "$f" 'refill\.paused='
+done
 # Mechanism, not spelling: reject any state-WRITE invocation that mentions
 # refill at all, so a jq-built object or a differently-spelled assignment path
 # reaches this guard too. Reads (--get) stay allowed; probe C reads the refill
 # record as corroborating evidence.
-if grep -nE -- '--set[[:alnum:]-]*.*refill' "$GO_ON"; then
+if grep -nE -- '--set[[:alnum:]-]*.*refill' "$GO_ON" "${GO_ON_MODULES[@]}"; then
   fail "go-on must not write refill state — the delegated resume command owns it"
 fi
 has "$PAUSE_RESUME" 'only with --resume-refill'
