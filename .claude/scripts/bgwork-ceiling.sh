@@ -180,8 +180,9 @@ log_event() {
 
 resolve_tick_stale() {
   local raw="${CLAUDE_BGCEILING_TICK_STALE_SECONDS:-}"
-  if [[ "$raw" =~ ^[0-9]+$ ]] && (( raw > 0 )); then
-    printf '%s' "$raw"
+  # Force base 10: a leading zero would otherwise read as octal ("060" -> 48).
+  if [[ "$raw" =~ ^[0-9]+$ ]] && (( 10#$raw > 0 )); then
+    printf '%s' "$(( 10#$raw ))"
   else
     printf '%s' "$TICK_STALE_S_DEFAULT"
   fi
@@ -308,8 +309,10 @@ case "$MODE" in
     # Armed: the trip point is silence-based, so one live watch covers every
     # later spawn. But "armed" only proves arming was observed; a watch on a
     # runtime that caps timeout_ms expires, so require a recent tick too.
+    # An unreadable marker mtime is unknown liveness, not a healthy tick.
     age="$(tick_age)"
-    [[ "$age" =~ ^[0-9]+$ ]] && (( age > TICK_STALE_S )) && exit 3
+    [[ "$age" =~ ^-?[0-9]+$ ]] || exit 3
+    (( age > TICK_STALE_S )) && exit 3
     exit 0
     ;;
 

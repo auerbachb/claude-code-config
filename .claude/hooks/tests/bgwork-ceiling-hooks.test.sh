@@ -276,6 +276,14 @@ CTX=$(printf '%s' "$OUT" | context_of)
 [[ "$(run_arm "$SID" Read | context_of)" == "" ]] || fail "the arm hook must not nag about a lapse on every tool call"
 ok "a lapsed watch gets one non-blocking Stop notice per lapse, with the re-arm command"
 
+# New background work after a spent lapse notice is advised again, once.
+[[ "$(run_arm "$SID" Agent | context_of)" == *"NOT ARMED"* ]] || \
+  fail "a call that starts new work after a lapse must get the arming advisory"
+[[ "$(run_guard "$SID" | context_of)" == *"CEILING LAPSED"* ]] || \
+  fail "new work after a lapse must reopen the Stop lapse notice"
+[[ "$(run_guard "$SID" | context_of)" == "" ]] || fail "the reopened lapse notice must still fire only once"
+ok "new background work after a spent lapse notice gets the advisory and one more Stop notice"
+
 # Re-arming clears the lapse; a later lapse is reportable again.
 run_arm "$SID" Monitor "$("$CEILING" --arm-command --session "$SID")" >/dev/null
 "$CEILING" --check --session "$SID" || fail "re-arming must make --check pass again"

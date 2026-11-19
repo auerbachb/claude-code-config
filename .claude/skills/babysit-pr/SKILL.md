@@ -1352,9 +1352,11 @@ expiry notice (Issue #2201). Re-arming on that notice is a required step, not an
 inference — the procedure and its terms are in `.claude/reference/monitor-expiry.md`.
 
 1. **Bind the notice.** Read `.prs["$PR"].babysit`. It is an **expiry receipt** only
-   when the notice names the exact recorded `monitor_task_id`, `active == true`,
-   `stop_requested != true` and `cadence_transition != true`. Capture the recorded
-   `monitor_generation`. A notice that does not bind (another ID, a newer generation,
+   when the notice names the exact recorded `monitor_task_id`, `active == true` and
+   `cadence_transition != true`. Capture the recorded `monitor_generation`. With
+   `stop_requested == true` the receipt still binds but re-arms nothing: it stands in
+   for T0's exact `TaskStop` of that ID (an expired task cannot be stopped again), so
+   finish T0's termination and clear the watcher state. A notice that does not bind (another ID, a newer generation,
    a cleared watcher) is not a receipt: liveness is unknown, so take the existing
    stale path (A2 stale reclaim, or `/babysit-pr-stop` then `/babysit-pr`) — silence
    is not death.
@@ -1362,6 +1364,9 @@ inference — the procedure and its terms are in `.claude/reference/monitor-expi
    generation. If it reaches T-END (merged/closed PR, hard blocker, `--max-iter`,
    stable-frozen, user stop), the receipt stands in for T-END's `TaskStop` of that
    exact ID: bind `TERMINAL_STOP_SUCCEEDED=true` and finish T-END. Re-arm nothing.
+   If the tick instead reaches T5's cadence replacement (cadence changed or a new
+   review deadline), do not let T5 attempt a `TaskStop` of the expired task: that
+   replacement **is** step 3, run once with the receipt as its exact stop.
 3. **Otherwise replace the watch through T5's cadence path** with the captured
    generation as `GATE_GENERATION`, `EFFECTIVE_MIN` equal to the recorded
    `cadence_effective_minutes`, and the recorded `armed_review_deadline` (0 if past)

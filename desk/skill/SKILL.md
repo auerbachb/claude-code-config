@@ -104,7 +104,7 @@ done
    ```
 
    An `error` line → the same "not started" report as step 3, and stop. Exit 4 → the cadence (or another argument) was refused: report its one stderr line as "not started", and stop. Nothing is armed. An `eod` line (a desk started after `eod_time` that has not swept today) → after the start report, show the sweep (`sweep.md`). A `morning` line (the day's first desk, from 04:00 until `eod_time`) → after the start report, show the morning check-in (`checkin.md`) before the backlog of step 8.
-6. **Arm the Monitor** using the validated initial hold from step 3. The seed records an evidenced held start; step 8 still checks the current hold before displaying anything. Arm with `persistent: true`, description `Desk tick`, and the longest `timeout_ms` the tool allows. Write `DESK`, `SID`, `GEN`, cadence and `DEFAULT` literally, and fill `<HELD_FLAG>` with exactly `--held` or the empty string from step 3:
+6. **Arm the Monitor** using the validated initial hold from step 3. The seed records an evidenced held start; step 8 still checks the current hold before displaying anything. Arm with description `Desk tick`, the longest `timeout_ms` the tool allows, and `persistent: true` only if the Monitor schema lists it (the desktop Monitor has no such parameter — `.claude/reference/monitor-expiry.md`). Write `DESK`, `SID`, `GEN`, cadence and `DEFAULT` literally, and fill `<HELD_FLAG>` with exactly `--held` or the empty string from step 3:
 
    <!-- test-anchor: desk-monitor -->
 

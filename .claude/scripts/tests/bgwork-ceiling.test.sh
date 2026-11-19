@@ -236,6 +236,7 @@ ST=$("$SCRIPT" --status --session "$SID2")
 [[ "$(jq -r '.tick_stale' <<<"$ST")" == "true" ]] || fail "--status must report tick_stale, got: $ST"
 (( $(jq -r '.tick_age_s' <<<"$ST") >= 2000 )) || fail "--status must report the tick age, got: $ST"
 CLAUDE_BGCEILING_TICK_STALE_SECONDS=86400 "$SCRIPT" --check --session "$SID2" || fail "the stale threshold must be configurable"
+CLAUDE_BGCEILING_TICK_STALE_SECONDS=0086400 "$SCRIPT" --check --session "$SID2" 2>/dev/null || fail "a zero-padded stale threshold must be read as decimal, not octal"
 "$SCRIPT" --tick --session "$SID2" >/dev/null
 "$SCRIPT" --check --session "$SID2" || fail "a new tick makes the watch live again"
 "$SCRIPT" --clear --session "$SID2"

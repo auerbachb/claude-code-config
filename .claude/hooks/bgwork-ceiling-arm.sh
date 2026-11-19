@@ -227,11 +227,20 @@ fi
 # Exit 3 (armed, but the watch stopped ticking) is the Stop guard's to report,
 # once per lapse: the background-work marker is append-only, so advising here
 # would nag on every tool call long after the work ended.
+# The one exception: a call that STARTS new background work after a lapse. The
+# lapse notice may already have been spent (and the thread rightly declined to
+# re-arm because nothing was running then), so this new work would otherwise
+# get neither advice nor a Stop notice. Advise on that call, and withdraw the
+# spent lapse notice so the Stop guard can report the lapse once more.
 CHECK_RC=0
 "$CEILING_SH" --check --session "$SESSION_ID" || CHECK_RC=$?
-if (( CHECK_RC == 0 || CHECK_RC == 3 )); then
+if (( CHECK_RC == 0 )) || (( CHECK_RC == 3 && started == 0 )); then
   echo '{}'
   exit 0
+fi
+if (( CHECK_RC == 3 )); then
+  _lapse_sid="${SESSION_ID//[^[:alnum:]_.-]/_}"
+  rm -f "${CLAUDE_BGWORK_MARKER_DIR:-/tmp}/claude-bgceiling-lapsenotice-${_lapse_sid:-default}" 2>/dev/null || true
 fi
 
 ARM_COMMAND=$("$CEILING_SH" --arm-command --session "$SESSION_ID" 2>/dev/null)

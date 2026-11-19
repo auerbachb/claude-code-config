@@ -109,6 +109,10 @@ if [[ "$hook_event" == "Stop" ]]; then
   repo_key="${CLAUDE_SESSION_REPO:-}"
   [[ -n "$repo_key" ]] || repo_key=$("$state_helper" --repo-key 2>/dev/null)
   repo_key="${repo_key:-this repo}"
+  # PR state is repo-scoped, so the Stop dedupe marker is too: the same PR
+  # number and last_tick_at in another repo must not suppress this warning.
+  repo_safe="${repo_key//[^[:alnum:]_.-]/_}"
+  marker_ns="${marker_ns}-${repo_safe}"
 fi
 
 while IFS=$'\x1f' read -r pr last_tick cadence task_id; do
