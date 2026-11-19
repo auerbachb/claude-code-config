@@ -201,6 +201,8 @@ OUTS="$(set_plan "$CL" "Élite" 50)"; RCS=$?
 check_eq "$RCS" "3" "a non-ASCII tier is refused"
 OUTS="$(set_plan "$CL" "$(printf 'Pro\tX')")"; RCS=$?
 check_eq "$RCS" "3" "a tier with a control character is refused"
+OUTS="$(set_plan "$CL" $'\n' 180)"; RCS=$?
+check_eq "$RCS" "3" "a newline-only tier is refused, not read as clearing"
 
 # Worst case: every value setup accepts, on the widest rows, still fits 140 columns (--json keeps the full value).
 LONGNICK="漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字"

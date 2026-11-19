@@ -453,7 +453,7 @@ case "$ACTION" in
     fi
     [[ -z "$ARG_PLAN_USD" || "$ARG_PLAN_USD" =~ ^[0-9]{1,5}(\.[0-9]{1,2})?$ ]] \
       || die_usage "plan: <usd_per_month> must be a plain amount like 200 or 19.99 (got '${ARG_PLAN_USD}')"
-    [[ -z "$ARG_PLAN_TIER" || -z "$(printf '%s' "$ARG_PLAN_TIER" | LC_ALL=C tr -d '[:print:]')" && ${#ARG_PLAN_TIER} -le 32 && "$ARG_PLAN_TIER" != " "* && "$ARG_PLAN_TIER" != *" " ]] \
+    [[ -z "$ARG_PLAN_TIER" || $(LC_ALL=C; [[ "$ARG_PLAN_TIER" != *[![:print:]]* ]] && echo ok) == ok && ${#ARG_PLAN_TIER} -le 32 && "$ARG_PLAN_TIER" != " "* && "$ARG_PLAN_TIER" != *" " ]] \
       || die_usage "plan: invalid tier (max 32 printable ASCII characters, no leading/trailing spaces)"
     [[ -n "$ARG_PLAN_TIER" || -z "$ARG_PLAN_USD" ]] || die_usage "plan: a price needs a tier"
     ;;
