@@ -119,8 +119,10 @@ def prep(cmd):
     s = HEREDOC.sub(lambda m: "<< " + m.group(2) + m.group(3), s)
     # A command substitution is one dynamic word, not tokens: otherwise its
     # parentheses would hide the command word that follows a VAR=$(...) prefix.
-    s = re.sub(r"\$\([^()]*\)", "$DYN", s)
-    s = re.sub(r"`[^`]*`", "$DYN", s)
+    # A match never spans a quote, separator or newline: a stray $( or backtick
+    # in quoted text must not swallow the next command (it would fail open).
+    s = re.sub(r"\$\([^()'\"`;&|\n]*\)", "$DYN", s)
+    s = re.sub(r"`[^`'\";&|\n]*`", "$DYN", s)
     return "\n".join(l for l in s.split("\n") if not re.match(r"\s*#", l))
 
 
@@ -423,7 +425,7 @@ valid_repo() {
 # Verdict of one holder check, stored in V_*. Returns 0 on `mine` (allow), 1 on
 # any other verdict. A helper fault exits through fault().
 V_verdict=""; V_repo=""; V_claimant=""; V_prov=""; V_dev=""; V_label=""
-V_viewer=""; V_devlocal=""; V_checkout=""; V_form=""; V_ckholder=""
+V_viewer=""; V_devlocal=""; V_checkout=""; V_ckholder=""
 
 check_holder() {  # n dir helper holder repo
   local n=$1 work=$2 helper=$3 holder=$4 repo=$5
@@ -454,7 +456,7 @@ check_holder() {  # n dir helper holder repo
 
   fields=$(printf '%s' "$out" | python3 -c "$PY_VERDICT" "$n" 2>/dev/null) || fault "helper output for issue #$n was unreadable"
   IFS=$'\x1f' read -r V_verdict V_repo V_claimant V_prov V_dev V_label \
-    V_viewer V_devlocal V_checkout V_form V_ckholder <<< "$fields"
+    V_viewer V_devlocal V_checkout _ V_ckholder <<< "$fields"
   [ -n "$V_verdict" ] || fault "helper gave no verdict for issue #$n"
 
   if [ "$V_verdict" = "mine" ]; then

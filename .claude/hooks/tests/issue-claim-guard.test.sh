@@ -495,6 +495,13 @@ expect_deny "#2366 claim in the same command: separate-command line" "$out" "as 
 out="$(run_hook 'git checkout -b issue-214-c' "$WORK")"
 expect_not_deny_text "#2366 no in-command claim: no separate-command line" "$out" "separate command"
 
+# A stray backtick or $( in quoted text must not swallow the next command.
+set_verdict 215 claimed
+out="$(run_hook 'git commit -m "it`s" && git checkout -b issue-215-q && echo "`"' "$WORK")"
+expect_deny "#2366 stray backticks in quotes never hide a branch" "$out" "claimed by another holder"
+out="$(run_hook "git commit -m 'cost \$(5' && git checkout -b issue-215-q && echo 'x)'" "$WORK")"
+expect_deny "#2366 stray \$( in quotes never hides a branch" "$out" "claimed by another holder"
+
 echo
 echo "issue-claim-guard: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
