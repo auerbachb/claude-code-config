@@ -11,7 +11,7 @@
       "tiers": {
         "free":   { "name": "Free",    "usd_per_month": 0,   "match": ["free"] },
         "pro":    { "name": "Pro",     "usd_per_month": 20,  "match": ["pro"] },
-        "max":    { "name": "Max",     "usd_per_month": 100, "match": ["max", "max_5x"] },
+        "max":    { "name": "Max",     "usd_per_month": 100, "match": ["max_5x"], "note": "a bare max names no multiplier, so it carries no price" },
         "ultra":  { "name": "Ultra",   "usd_per_month": 200, "match": ["ultra"] },
         "max20x": { "name": "Max 20x", "usd_per_month": 200, "match": ["max_20x"], "note": "$200/month per the owner and secondary sources; the official page lists the $200 tier as Ultra" }
       }

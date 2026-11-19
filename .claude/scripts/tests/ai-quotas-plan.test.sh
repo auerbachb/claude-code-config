@@ -129,7 +129,7 @@ SVC_PLAN="Claude Code-credentials-PLAN"
 c1="$(seed_claude_profile "$CL" "$SVC_PLAN")"
 write_config "$(account_json claude "$CL" "$c1" "$SVC_PLAN")"
 run --json
-check_eq "$(plan_cells "$CL" 7-day)" "Max|provider|100|list" "the token path: the stored login's subscription type is the tier"
+check_eq "$(plan_cells "$CL" 7-day)" "Max|provider|null|null" "the token path: a bare max names the tier but carries no price"
 
 # A saved reading that says a bare `max` is refined by the stored login's rateLimitTier (Max 20x is $200, not $100).
 fresh
