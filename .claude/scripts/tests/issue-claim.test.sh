@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Offline unit tests for issue-claim.sh (issue #873 — claim an issue at pick time).
 # catalog: tests — Tests for `issue-claim.sh` against a stateful `gh` stub, so a claim written by one run is read back by the next
+# covers: .claude/hooks/issue-claim-guard.sh .claude/scripts/issue-claim.sh .claude/scripts/session-state.sh .claude/scripts/chip-claim-receipt.sh .claude/reference/chip-launching.md .claude/reference/agent-issue-claims-block.md
 #
 # Stubs `gh` on PATH with a STATEFUL fake issue (labels, assignees, comments,
 # timeline) so a claim written by one run is read back by the next — that
@@ -184,6 +185,7 @@ case "${1:-}" in
               --argjson assignees "$(json_array_of_lines "$S/assignees")" \
               --arg state "$(cat "$S/issue_state" 2>/dev/null || echo open)" \
               '{number: 873, state: $state,
+                repository_url: "https://api.github.com/repos/acme/widgets",
                 labels: ($labels | map({name: .})),
                 assignees: ($assignees | map({login: .}))}'
             ;;
@@ -1459,6 +1461,102 @@ run 873 --release --repo acme/widgets --holder "$FORM_A_HOLDER"
 run 873 --claim --repo acme/widgets --holder "$OTHER_HOLDER"
 run 873 --renew --repo acme/widgets --holder "$RECEIPT_OUT"
 check_eq "a valid receipt cannot re-acquire a lost claim on resume" 5 "$RC"
+
+############################################################################
+echo "== (2366) claimant evidence across linked worktrees, and the real guard hook =="
+XA="$TMP/x2366-a"
+XB="$TMP/x2366-b"
+git -C "$ORIGINAL_CHECKOUT" worktree add -qb issue-873-a "$XA"
+git -C "$ORIGINAL_CHECKOUT" worktree add -qb issue-873-b "$XB"
+XA_TOP="$(git -C "$XA" rev-parse --show-toplevel)"
+xrun() { # xrun <dir> <args...> — identity env vars unset, so the default holder decides
+  local dir="$1" errfile="$TMP/err"; shift
+  OUT="$(cd "$dir" && env -u CLAUDE_CLAIM_HOLDER -u CLAUDE_SESSION_ID -u GH_REPO \
+    "$CLAIM_TEST_SHELL" "$SCRIPT" "$@" 2>"$errfile")"; RC=$?
+  ERR="$(cat "$errfile")"
+}
+
+reset_issue
+xrun "$XA" 873 --claim --json
+check_eq "evidence: default claim from worktree A" "0|mine" "$RC|$(jq -r .verdict <<<"$OUT")"
+A_MARKER="$(newest_marker_field '.body | capture("claude-claim: (?<p>.*) -->").p | fromjson | .holder')"
+xrun "$XB" 873 --check --json
+check_eq "evidence: worktree B reads claimed" "1|claimed" "$RC|$(jq -r .verdict <<<"$OUT")"
+check_eq "evidence: repo resolved without --repo" "acme/widgets" "$(jq -r .repo <<<"$OUT")"
+check_eq "evidence: claimant is the viewer" "true" "$(jq -r .claimant_is_viewer <<<"$OUT")"
+check_eq "evidence: claim device is this device" "true" "$(jq -r .claimant_device_is_local <<<"$OUT")"
+check_eq "evidence: claimant_checkout names worktree A" "$XA_TOP" "$(jq -r .claimant_checkout <<<"$OUT")"
+check_eq "evidence: digest form" "digest" "$(jq -r .claimant_checkout_holder_form <<<"$OUT")"
+A_TOKEN="$(jq -r .claimant_checkout_holder <<<"$OUT")"
+check_eq "evidence: locally derived token equals A's default" "$A_MARKER" "$A_TOKEN"
+xrun "$XB" 873 --check --holder "$A_TOKEN"
+check_eq "evidence: A's token checked from B reads mine" "mine" "$OUT"
+xrun "$XB" 873 --check
+check_eq "evidence: B's own default is still not mine (isolation kept)" "claimed" "$OUT"
+FAKE_VIEWER=bob xrun "$XB" 873 --check --json
+check_eq "evidence: another account sees no checkout" "false|null" \
+  "$(jq -r '[(.claimant_is_viewer|tostring), (.claimant_checkout|tostring)] | join("|")' <<<"$OUT")"
+
+reset_issue
+LEGACY_TOKEN="$(hostname -s 2>/dev/null || hostname):$XA_TOP"
+jq --arg h "$LEGACY_TOKEN" --arg at "$(iso_ago 0)" \
+  '. + [{id: 41, created_at: $at, user: {login: "alice"},
+         body: ("🔒 Claimed by `alice` for active work.\n\n<!-- claude-claim: " + ({holder: $h, login: "alice", since: $at} | tojson) + " -->")}]' \
+  "$STATE/comments.json" > "$STATE/c.tmp" && mv "$STATE/c.tmp" "$STATE/comments.json"
+echo in-progress > "$STATE/labels"
+xrun "$XB" 873 --check --json
+check_eq "evidence: legacy raw marker matches worktree A" "$XA_TOP|legacy" \
+  "$(jq -r '[.claimant_checkout, .claimant_checkout_holder_form] | join("|")' <<<"$OUT")"
+
+reset_issue
+run 873 --claim --holder chip:fx:9:9:9:9
+xrun "$XB" 873 --check --json
+check_eq "evidence: explicit chip holder matches no checkout" "null" "$(jq -r .claimant_checkout <<<"$OUT")"
+run 873 --release --holder chip:fx:9:9:9:9
+
+# The real hook, the real helper, a temporary HOME whose skills worktree is this repo.
+GUARD="$REPO_ROOT/.claude/hooks/issue-claim-guard.sh"
+GUARD_HOME="$TMP/guard-home"
+mkdir -p "$GUARD_HOME/.claude"
+ln -s "$REPO_ROOT" "$GUARD_HOME/.claude/skills-worktree"
+echo '{"schema_version":2,"repos":{}}' > "$TMP/guard-state.json"
+hook() { # hook <command> <cwd> -> hook stdout in HOOK_OUT
+  HOOK_OUT="$(jq -nc --arg c "$1" --arg d "$2" \
+      '{session_id:"e2e-2366",cwd:$d,tool_name:"Bash",tool_input:{command:$c}}' \
+    | env -u CLAUDE_CLAIM_HOLDER -u CLAUDE_SESSION_ID -u CLAUDE_SESSION_REPO -u GH_REPO \
+        HOME="$GUARD_HOME" TMPDIR="$TMP/guard-cache" CLAUDE_SESSION_STATE_FILE="$TMP/guard-state.json" \
+        bash "$GUARD")"
+  HOOK_REASON="$(jq -r '.hookSpecificOutput.permissionDecisionReason // empty' <<<"$HOOK_OUT" 2>/dev/null)"
+}
+mkdir -p "$TMP/guard-cache"
+PR_CMD='gh pr create --head issue-873-x --title t --body b'
+
+reset_issue
+xrun "$XA" 873 --claim
+hook "$PR_CMD" "$XB"
+check_contains "hook: own claim from A is reported as not visible from B" "may not be visible from this checkout" "$HOOK_REASON"
+check_contains "hook: the message names worktree A" "$XA_TOP" "$HOOK_REASON"
+FIX_PREFIX="$(printf '%s' "$HOOK_REASON" | sed -n "s/.*\(export CLAUDE_CLAIM_HOLDER='[^']*' && \).*/\1/p")"
+check_contains "hook: the message gives a literal prefix" "export CLAUDE_CLAIM_HOLDER='h-" "$FIX_PREFIX"
+hook "$FIX_PREFIX$PR_CMD" "$XB"
+check_eq "hook: the printed retry is allowed" "" "$HOOK_OUT"
+
+reset_issue
+FAKE_VIEWER=bob run 873 --claim --holder bob-thread
+hook "$PR_CMD" "$XB"
+check_contains "hook: another account's claim keeps the another-holder message" "claimed by another holder" "$HOOK_REASON"
+
+reset_issue
+run 873 --claim --holder chip:fx:1:2:3:5 --json
+receipt_run save "$XB" acme/widgets 873 chip:fx:1:2:3:5 <<<"$OUT"
+check_eq "hook: premise — receipt saved in worktree B" 0 "$RECEIPT_RC"
+hook "$PR_CMD" "$XB"
+check_eq "hook: a Form A receipt in worktree B allows" "" "$HOOK_OUT"
+
+reset_issue
+hook "$SCRIPT 873 --claim && $PR_CMD" "$XA"
+check_contains "hook: claim plus PR in one command asks for a separate claim" "as a separate command first" "$HOOK_REASON"
+check_contains "hook: the separate claim names the resolved repo" "--claim --repo acme/widgets" "$HOOK_REASON"
 
 ############################################################################
 echo "== (2284) who holds it: provider / device / label, hidden default holder =="
