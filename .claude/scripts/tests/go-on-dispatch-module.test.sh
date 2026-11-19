@@ -189,6 +189,8 @@ grep -Fq 'For `token_exhaustion` and `unplanned`, read only the active kind modu
 grep -Fq 'For `pause` / `end` and `usage_limit_park`, read only the active kind module.' "$entry" || fail "delegated-lane compaction rule"
 grep -Fq 'a fresh `/go-on` invocation applies the full 0.4 precedence table again' "$entry" || fail "compaction keeps precedence"
 grep -Fq "re-check Step 0b's authorship guard and Step 1's diff-survival guard" "$entry" || fail "compaction gates"
+grep -Fq 'always re-runs Step 8 (read-only) before Step 9a or Step 10' "$entry" || fail "compaction re-derives CLEAN_BEHIND"
+grep -Fq "Before Step 6 or Step 7, run that module's Step 5" "$token_kind" || fail "token resume reloads the sticky reviewer"
 
 # --- Preflight: a missing lane module blocks before any write ---------------
 # Simulated caller: resolve every lane module, then write the receipt.
