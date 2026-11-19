@@ -330,7 +330,8 @@ Runs right after Step 0b on a user invocation, before 2D.1 and Step 1, only when
 <!-- test-anchor: pm-away-declare -->
 ```bash
 AWAY_SET=false
-if [[ -n "${AWAY_STR:-}" || "${AWAY_BARE:-false}" == true ]]; then
+AWAY_STR="${AWAY_STR:-}"  # a bare --away may leave it unset; the block runs under set -u
+if [[ -n "$AWAY_STR" || "${AWAY_BARE:-false}" == true ]]; then
   AWAY_FLAG=""; AWAY_VAL=""; AWAY_LINE=""; AWAY_OUT=""; AWAY_RC=0
   AWAY_WHY="\"$AWAY_STR\" is not a return time I can read (try overnight, 6h, \"until 8:00 AM\")"
   AWAY_LC=$(printf '%s' "$AWAY_STR" | tr '[:upper:]' '[:lower:]' |
