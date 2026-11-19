@@ -95,8 +95,8 @@ profile directories drift apart.
 | "stop the daily job" | `"$AI_QUOTAS_SETUP_SH" schedule remove` |
 | "generate the launchers", "give me a `claude-work` command", a new account was just added or renamed | `"$AI_QUOTAS_SETUP_SH" launchers` |
 | "share my skills/rules/MCP servers with \<label\>", "make the other profile behave like my main one" | `"$AI_QUOTAS_SETUP_SH" share-config <label> [<provider>]` |
-| "export my accounts", "I'm moving to a new computer", "set these up in the terminal / a cloud session" | `"$AI_QUOTAS_SETUP_SH" export [--out FILE]` — see [Step 3f](#step-3f--moving-the-account-list-to-a-new-environment-2468) |
-| "import my accounts", "set up my accounts from this file" | `"$AI_QUOTAS_SETUP_SH" import FILE [--no-login]` — same step |
+| "export my accounts", "I'm moving to a new computer" | `"$AI_QUOTAS_SETUP_SH" export [--out FILE]` — see [Step 3f](#step-3f--moving-the-account-list-to-a-new-environment-2468) |
+| "import my accounts", "set up my accounts from this file", "set these up in the terminal / a cloud session" (ask for the exported file first; if there is none yet, `export` on the source machine) | `"$AI_QUOTAS_SETUP_SH" import FILE [--no-login]` — same step |
 
 `list` is the default when no action is given. `--json` is available on `list` and `doctor` for
 machine consumption (increment 2's `/quotas` reads the config directly). `--no-login`
@@ -342,14 +342,18 @@ place that has none: a **new computer**, a **different environment on the same c
    account at a time: an account already signed in is skipped; for the rest it prints the
    exact step (run the Claude/Codex login, open the Cursor IDE, run `agy`) and **waits for
    you** — Enter to start a Claude/Codex login or to confirm a Cursor/agy sign-in, `s` to
-   skip. A login is never started for you and nothing is typed on your behalf. It ends
+   skip. A provider whose sign-in cannot be checked is listed under needs-you with no
+   prompt. agy's signed-in email must equal the imported label, or the account is listed
+   under needs-you; Cursor's IDE does not reveal its account, so a signed-in Cursor is
+   marked ready with a note to confirm it is the right one. A login is never started for you and nothing is typed on your behalf. It ends
    with a ready / needs-you summary.
 
 Re-running `import FILE` is safe: entries already here are kept, and the login pass resumes
 with only the accounts that are still signed out. `--no-login` imports the entries and stops
 before the login pass. A field the file states that differs from an entry already here is
 reported as a **conflict** and the entry here is left untouched (exit 3; change it with
-`nick`, `plan`, or `sources` if the file is right). A second Cursor or Antigravity account is
+`nick`, `plan`, or `sources` if the file is right; provider IDs have no such action, so
+`remove` the account and import again). A second Cursor or Antigravity account is
 refused with the one-per-machine message (also exit 3); the rest of the file still imports.
 
 In a **cloud session** (no terminal to answer in) `import` creates the entries and lists

@@ -2998,8 +2998,25 @@ action_share_config() {
 
 EXPORT_SCHEMA="ai-quotas-accounts/1"
 
+# Provider IDs are the one registry value copied from outside this tool, so they get the
+# strictest filter: a known key, one of three exact ID shapes (UUID, digits, or a
+# user-/org-/acct- prefixed token), and not credential-shaped. Anything else is dropped on
+# export and refused on import, so a secret pasted into ids can never ride along.
+# Used by BOTH export_json and IMPORT_VALIDATE_JQ so the two cannot drift.
+IDS_JQ_DEFS='
+  def id_key_ok: IN("account_id", "org_id", "organization_id", "user_id");
+  def credential_shaped:
+    test("(^|[-_.])(sk|pk|rk|ghp|gho|ghs|ghu|xox[a-z]?|bearer|token|secret|key|pass|password|pat|jwt)([-_.]|$)"; "i")
+    or test("^(eyJ|ya29|AIza|AKIA)");
+  def id_value_ok: type == "string" and length > 0 and length <= 64
+    and (test("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+         or test("^[0-9]{1,20}$")
+         or test("^(user|usr|org|organization|acct|acc|account)[-_][A-Za-z0-9-]{3,48}$"; "i"))
+    and (credential_shaped | not);
+'
+
 export_json() { # <config-json> <now-iso> -> the export document on stdout
-  printf '%s' "$1" | jq -S --arg schema "$EXPORT_SCHEMA" --arg now "$2" '
+  printf '%s' "$1" | jq -S --arg schema "$EXPORT_SCHEMA" --arg now "$2" "$IDS_JQ_DEFS"'
     {schema: $schema, exported_at: $now}
     + (if ((.source_failure_threshold | type) == "number") then {source_failure_threshold: .source_failure_threshold} else {} end)
     + {accounts: [ .accounts[]
@@ -3007,8 +3024,7 @@ export_json() { # <config-json> <now-iso> -> the export document on stdout
           + (if ((.nickname | type) == "string" and .nickname != "") then {nickname: .nickname} else {} end)
           + ((.ids // {})
              | if type == "object" then
-                 with_entries(select(.key | IN("account_id", "org_id", "organization_id", "user_id"))
-                              | select(.value | type == "string" and length > 0 and length <= 128 and test("^[A-Za-z0-9@._:+=-]+$")))
+                 with_entries(select(.key | id_key_ok) | select(.value | id_value_ok))
                else {} end
              | if length > 0 then {ids: .} else {} end)
           + (if ((.plan_override | type) == "object" and (.plan_override.tier | type) == "string")
@@ -3021,11 +3037,17 @@ export_json() { # <config-json> <now-iso> -> the export document on stdout
 }
 
 action_export() {
-  local config doc out tmp dir count
+  local config doc out tmp dir count dropped
   config="$(read_config)"
   count="$(printf '%s' "$config" | jq '.accounts | length')"
   [[ "$count" -gt 0 ]] || die 3 "no accounts are registered — nothing to export"
   doc="$(export_json "$config" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")" || die 5 "could not build the export"
+  dropped="$(jq -n --argjson c "$config" --argjson d "$doc" '
+    ([$c.accounts[] | (.ids // {}) | if type == "object" then length else 0 end] | add // 0)
+    - ([$d.accounts[] | (.ids // {}) | length] | add // 0)')" || dropped=0
+  if [[ "${dropped:-0}" -gt 0 ]]; then
+    echo "${SELF_NAME}: ${dropped} provider ID value(s) were left out of the export (not a recognised ID shape, or credential-shaped)." >&2
+  fi
   out="${ARG_OUT:-./ai-quotas-accounts.json}"
   if [[ "$out" == "-" ]]; then
     printf '%s\n' "$doc"
@@ -3034,6 +3056,11 @@ action_export() {
   [[ ! -d "$out" ]] || die 3 "--out names a directory: $out"
   dir="$(dirname "$out")"
   [[ -d "$dir" ]] || die 5 "output directory does not exist: $dir"
+  # The rename below replaces the target: never let it be the live registry (by name,
+  # by symlink, or by hard link), which would swap the accounts for export JSON.
+  if [[ "$out" == "$CONFIG_FILE" || "$out" -ef "$CONFIG_FILE" || "$(cd "$dir" && pwd -P)/$(basename "$out")" == "$(cd "$(dirname "$CONFIG_FILE")" 2>/dev/null && pwd -P)/$(basename "$CONFIG_FILE")" ]]; then
+    die 3 "--out names the live account registry ($CONFIG_FILE); choose a different file"
+  fi
   # 0600 before any content lands, like the registry: the file holds emails and
   # account IDs. Written through a temp file so a failed write never leaves half a file.
   tmp="$(mktemp "${dir}/.ai-quotas-export.XXXXXX")" || die 5 "could not create a temp file in $dir"
@@ -3046,11 +3073,11 @@ action_export() {
 # One line per problem; empty output means the file is importable. Every field is
 # checked against the same rule the matching action enforces, so an import can never
 # register what add/nick/plan/sources would refuse.
-IMPORT_VALIDATE_JQ='
+IMPORT_VALIDATE_JQ="$IDS_JQ_DEFS"'
   def bad_text: test("[\u0000-\u001f\u007f]");
   if type != "object" then "the file is not a JSON object"
   elif ((.schema | type) != "string" or (.schema | startswith("ai-quotas-accounts/") | not)) then "not an ai-quotas account export (no ai-quotas-accounts/<major> schema)"
-  elif ((.schema | split("/")[1]) != "1") then "unsupported export schema \(.schema) (this tool reads ai-quotas-accounts/1)"
+  elif (.schema != "ai-quotas-accounts/1") then "unsupported export schema \(.schema) (this tool reads ai-quotas-accounts/1)"
   elif ((.accounts | type) != "array") then "the export has no accounts list"
   elif (has("source_failure_threshold") and ((.source_failure_threshold | type) != "number" or .source_failure_threshold != (.source_failure_threshold | floor) or .source_failure_threshold < 1 or .source_failure_threshold > 999999)) then "invalid source_failure_threshold (a positive integer of at most six digits)"
   else
@@ -3060,17 +3087,17 @@ IMPORT_VALIDATE_JQ='
        else
          (if ($a.provider | IN("claude", "codex", "cursor", "antigravity")) then empty else "\($w): unknown provider" end),
          (if (($a.label | type) == "string" and ($a.label | test("^[A-Za-z0-9][A-Za-z0-9._@+-]*$")) and ($a.label | length) <= 128) then empty else "\($w): invalid label" end),
-         (if ($a | has("nickname")) and (($a.nickname | type) != "string" or ($a.nickname | length) > 32 or ($a.nickname | bad_text) or ($a.nickname | startswith(" ")) or ($a.nickname | endswith(" "))) then "\($w): invalid nickname" else empty end),
+         (if ($a | has("nickname")) and (($a.nickname | type) != "string" or ($a.nickname | utf8bytelength) > 32 or ($a.nickname | bad_text) or ($a.nickname | startswith(" ")) or ($a.nickname | endswith(" "))) then "\($w): invalid nickname" else empty end),
          (if ($a | has("plan_override")) and (($a.plan_override | type) != "object" or (($a.plan_override | keys - ["tier", "usd_per_month"] | length) > 0) or ((($a.plan_override.tier // null) | type) != "string") or ((($a.plan_override.tier // "") | test("^[ -~]{1,32}$")) | not) or (($a.plan_override.tier // "") | (startswith(" ") or endswith(" ")))
-            or (($a.plan_override | has("usd_per_month")) and (($a.plan_override.usd_per_month | type) != "number" or $a.plan_override.usd_per_month < 0 or $a.plan_override.usd_per_month > 99999.99))) then "\($w): invalid plan_override" else empty end),
+            or (($a.plan_override | has("usd_per_month")) and (($a.plan_override.usd_per_month | type) != "number" or $a.plan_override.usd_per_month < 0 or $a.plan_override.usd_per_month > 99999.99 or ((($a.plan_override.usd_per_month * 100) | round) / 100) != $a.plan_override.usd_per_month))) then "\($w): invalid plan_override" else empty end),
          (({claude: ["oauth-usage", "browser"], codex: ["app-server", "http"], cursor: ["ide-token", "browser"], antigravity: ["backend", "terminal", "observation"]}[$a.provider] // []) as $allowed
           | if ($a | has("sources")) and (($a.sources | type) != "array" or ($a.sources | length) == 0 or (($a.sources | unique | length) != ($a.sources | length))
               or (($a.sources | all(type == "string" and . as $v | $allowed | index($v))) | not))
             then "\($w): invalid sources for \($a.provider) (allowed: \($allowed | join(", ")); no repeats)" else empty end),
          (if ($a | has("ids")) and (($a.ids | type) != "object"
-              or (($a.ids | to_entries | all(.key | IN("account_id", "org_id", "organization_id", "user_id"))) | not)
-              or (($a.ids | to_entries | all(.value | type == "string" and length > 0 and length <= 128 and test("^[A-Za-z0-9@._:+=-]+$"))) | not))
-            then "\($w): invalid ids (allowed keys: account_id, org_id, organization_id, user_id; plain string values)" else empty end)
+              or (($a.ids | to_entries | all(.key | id_key_ok)) | not)
+              or (($a.ids | to_entries | all(.value | id_value_ok)) | not))
+            then "\($w): invalid ids (allowed keys: account_id, org_id, organization_id, user_id; values must be a UUID, digits, or a user-/org-/acct- prefixed ID, never a credential)" else empty end)
        end)
   end'
 
@@ -3095,6 +3122,32 @@ import_is_interactive() {
   [[ -t 0 && -t 1 ]]
 }
 
+# Cursor and agy are one login per machine, so "signed in" says nothing about WHICH account.
+# agy reports its email, which must equal the imported label; Cursor's IDE store is probed
+# for presence only, so its note says the account is unconfirmed. Sets IMPORT_IDENTITY_NOTE;
+# returns 1 on a proven mismatch (the caller counts the account as needing the person).
+IMPORT_IDENTITY_NOTE=""
+import_identity_check() { # <provider> <label>
+  local have want
+  IMPORT_IDENTITY_NOTE=""
+  case "$1" in
+    antigravity)
+      if [[ -n "${ANTIGRAVITY_ACCOUNT:-}" ]]; then
+        have="$(printf '%s' "$ANTIGRAVITY_ACCOUNT" | tr '[:upper:]' '[:lower:]')"
+        want="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
+        if [[ "$have" != "$want" ]]; then
+          IMPORT_IDENTITY_NOTE="agy is signed in as ${ANTIGRAVITY_ACCOUNT}, not '$2' - sign agy in with the right Google account"
+          return 1
+        fi
+      fi
+      ;;
+    cursor)
+      IMPORT_IDENTITY_NOTE=" (this tool cannot read which account the Cursor IDE holds; confirm it is '$2')"
+      ;;
+  esac
+  return 0
+}
+
 # The guided pass over IMPORT_PASS_PROVIDERS / IMPORT_PASS_LABELS: the accounts the file
 # registered or this machine already had. A login is the provider's own and starts only
 # after the person says go; nothing is typed or read for them.
@@ -3117,8 +3170,13 @@ import_login_pass() {
     service="$(printf '%s' "$config" | jq -r --argjson i "$idx" '.accounts[$i].credential_ref.service // ""')"
     account_status "$provider" "$dir" "$service"
     if [[ "$ACCOUNT_STATUS" == ok ]]; then
-      echo "  ready        ${provider} '${label}' - already signed in, skipped"
-      ready=$((ready + 1))
+      if import_identity_check "$provider" "$label"; then
+        echo "  ready        ${provider} '${label}' - already signed in, skipped${IMPORT_IDENTITY_NOTE}"
+        ready=$((ready + 1))
+      else
+        echo "  needs you    ${provider} '${label}' - ${IMPORT_IDENTITY_NOTE}"
+        needs=$((needs + 1)); needs_lines+=("${provider} '${label}': ${IMPORT_IDENTITY_NOTE}")
+      fi
       continue
     fi
     step="$(import_login_step "$provider" "$dir")"
@@ -3159,8 +3217,13 @@ import_login_pass() {
       service="$(printf '%s' "$config" | jq -r --argjson i "$idx" '.accounts[$i].credential_ref.service // ""')"
       account_status "$provider" "$dir" "$service"
       if [[ "$ACCOUNT_STATUS" == ok ]]; then
-        echo "  ready        ${provider} '${label}' - signed in"
-        ready=$((ready + 1))
+        if import_identity_check "$provider" "$label"; then
+          echo "  ready        ${provider} '${label}' - signed in${IMPORT_IDENTITY_NOTE}"
+          ready=$((ready + 1))
+        else
+          echo "  needs you    ${provider} '${label}' - ${IMPORT_IDENTITY_NOTE}"
+          needs=$((needs + 1)); needs_lines+=("${provider} '${label}': ${IMPORT_IDENTITY_NOTE}")
+        fi
         continue
       fi
       echo "    still not signed in: ${CRED_DETAIL}"
@@ -3181,7 +3244,7 @@ import_login_pass() {
 
 action_import() {
   local file="$ARG_FILE" doc errs n i config entry provider label idx existing diffs now dir newentry
-  local added=0 kept=0 conflicts=0 refused=0 changed=0 held threshold
+  local added=0 kept=0 conflicts=0 refused=0 changed=0 held threshold fixhint
   local -a lines=()
   IMPORT_PASS_PROVIDERS=(); IMPORT_PASS_LABELS=()
   [[ -f "$file" && -r "$file" ]] || die 3 "import file not readable: $file"
@@ -3227,7 +3290,11 @@ action_import() {
         ] | join(", ")')" || { state_lock_release || true; die 5 "could not compare '${label}'"; }
       if [[ -n "$diffs" ]]; then
         conflicts=$((conflicts + 1))
-        lines+=("  conflict     ${provider} '${label}' - differs in ${diffs}; the entry here was left untouched (change it with nick, plan, or sources if the file is right)")
+        case "$diffs" in
+          *"provider IDs"*) fixhint="nick, plan and sources cannot change provider IDs: run '${SELF_NAME} remove ${label} ${provider}' and import again if the file is right" ;;
+          *) fixhint="change it with nick, plan, or sources if the file is right" ;;
+        esac
+        lines+=("  conflict     ${provider} '${label}' - differs in ${diffs}; the entry here was left untouched (${fixhint})")
       else
         kept=$((kept + 1))
         lines+=("  kept         ${provider} '${label}' - already registered")

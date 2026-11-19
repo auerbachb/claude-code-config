@@ -15,7 +15,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SCRIPT="$ROOT/.claude/scripts/ai-quotas-setup.sh"
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not installed"; exit 0; }
 SQLITE3_REAL="$(command -v sqlite3 2>/dev/null || true)"
-[[ -n "$SQLITE3_REAL" ]] || { echo "SKIP: sqlite3 not installed"; exit 0; }
+if [[ -z "$SQLITE3_REAL" ]]; then
+  # A silent pass would leave the Cursor and Antigravity cases untested: fail where CI runs it.
+  if [[ -n "${CI:-}" ]]; then echo "FAIL: sqlite3 not installed (required by this suite in CI)" >&2; exit 1; fi
+  echo "SKIP: sqlite3 not installed"; exit 0
+fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -56,7 +60,7 @@ build_cursor_db "$TMP/cursor-in.vscdb" "$JWT" || { echo "FATAL: cursor fixture" 
 build_cursor_db "$TMP/cursor-out.vscdb" "" || { echo "FATAL: cursor fixture" >&2; exit 1; }
 
 AGY_IN="$TMP/agy-in"; AGY_OUT="$TMP/agy-none"
-printf 'go-keyring-base64:%s' "$(printf '{"token":{"access_token":"%s","expiry":"2099-01-01T00:00:00Z","refresh_token":"R-sentinel"},"auth_method":"consumer","id_token_email":"agy@example.test"}' "$SECRET" | base64 | tr -d '\n')" > "$AGY_IN"
+printf 'go-keyring-base64:%s' "$(printf '{"token":{"access_token":"%s","expiry":"2099-01-01T00:00:00Z","refresh_token":"R-sentinel"},"auth_method":"consumer","id_token_email":"agy-one@example.com"}' "$SECRET" | base64 | tr -d '\n')" > "$AGY_IN"
 
 export STUB_CALL_LOG="$TMP/calls.log"
 CURSOR_DB="$TMP/cursor-in.vscdb"
@@ -129,7 +133,7 @@ grep -Fq -e "$SECRET" -e "$JWT" -e "1a2b3c4d" -e "NOT-AN-ID-FIELD" "$EXPORT" && 
 grep -Eq '"/|profile|/Users/|/home/|/private/|/tmp/|\.claude' "$EXPORT" && leaks+="path "
 check_eq "$leaks" "" "the export holds no credential field, token-shaped value, keychain name, or profile path"
 run export --out -
-check_eq "$(printf '%s' "$OUT" | jq -r '.schema')" "ai-quotas-accounts/1" "export --out - prints the document"
+check_eq "$(printf '%s\n' "$OUT" | grep -v 'left out of the export' | jq -r '.schema')" "ai-quotas-accounts/1" "export --out - prints the document"
 
 new_case empty-export
 run export --out "$CASE_DIR/none.json"
@@ -256,6 +260,63 @@ run export --out
 check_eq "$RC" "3" "--out without a path is a usage error"
 run list --out x
 check_eq "$RC" "3" "--out on another action is a usage error"
+
+# --- 7. review-round hardening (#2476) -----------------------------------------
+cp "$EXPORT" "$TMP/export-keep.json"; EXPORT="$TMP/export-keep.json"
+# export --out can never replace the live registry (by path, symlink or hard link)
+seed_source
+BEFORE="$(cat "$CONFIG")"
+run export --out "$CONFIG"
+check_eq "$RC" "3" "export --out naming the live registry is refused"
+check_contains "$OUT" "live account registry" "the refusal names the registry"
+ln -s "$CONFIG" "$CASE_DIR/link.json"
+run export --out "$CASE_DIR/link.json"
+check_eq "$RC" "3" "export --out through a symlink to the registry is refused"
+check_eq "$(cat "$CONFIG")" "$BEFORE" "the registry is untouched by the refused exports"
+
+# a token-shaped provider ID is dropped on export (with a warning) and refused on import
+TOKID="sk-ant-api03-FIXTUREFIXTUREFIXTURE"
+jq --arg t "$TOKID" '.accounts[0].ids = {organization_id: "org-1234", account_id: $t, user_id: "eyJhbGciOiJIUzI1NiJ9.abc.def"}' "$CONFIG" > "$CASE_DIR/c.json" && mv "$CASE_DIR/c.json" "$CONFIG"
+run export --out "$CASE_DIR/leak.json"
+check_eq "$RC" "0" "export with credential-shaped IDs still succeeds"
+check_contains "$OUT" "2 provider ID value(s) were left out" "dropped IDs are reported"
+if grep -q -e "sk-ant" -e "eyJ" "$CASE_DIR/leak.json"; then bad "a token-shaped ID leaked into the export"; else ok "no token-shaped ID is in the export"; fi
+check_eq "$(jq -c '.accounts[0].ids' "$CASE_DIR/leak.json")" '{"organization_id":"org-1234"}' "the legitimate ID survives"
+jq --arg t "$TOKID" '.accounts[0].ids.account_id = $t' "$EXPORT" > "$CASE_DIR/leak2.json"
+new_case leak-import
+run import "$CASE_DIR/leak2.json" --no-login
+check_eq "$RC" "3" "an import carrying a token-shaped ID is refused"
+
+# the schema string must match exactly; nicknames are limited in bytes; prices to 2 decimals
+new_case strict-validation
+jq '.schema = "ai-quotas-accounts/1/2"' "$EXPORT" > "$CASE_DIR/s.json"
+run import "$CASE_DIR/s.json" --no-login
+check_eq "$RC" "3" "a schema with a suffix is refused"
+jq '.accounts[0].nickname = "ééééééééééééééééé"' "$EXPORT" > "$CASE_DIR/n.json"
+run import "$CASE_DIR/n.json" --no-login
+check_contains "$OUT" "invalid nickname" "17 two-byte characters exceed the 32-byte nickname limit"
+jq '.accounts[0].nickname = "éééééééééééééééé"' "$EXPORT" > "$CASE_DIR/n2.json"
+run import "$CASE_DIR/n2.json" --no-login
+check_eq "$RC" "0" "16 two-byte characters (32 bytes) are accepted"
+new_case price
+jq '.accounts[0].plan_override.usd_per_month = 19.999' "$EXPORT" > "$CASE_DIR/p.json"
+run import "$CASE_DIR/p.json" --no-login
+check_contains "$OUT" "invalid plan_override" "a three-decimal price is refused like the plan action"
+jq '.accounts[0].plan_override.usd_per_month = 19.99' "$EXPORT" > "$CASE_DIR/p2.json"
+run import "$CASE_DIR/p2.json" --no-login
+check_eq "$RC" "0" "a two-decimal price is accepted"
+
+# the login pass must not call another account's sign-in "ready"
+new_case identity
+AGY_OTHER="$TMP/agy-other"
+printf 'go-keyring-base64:%s' "$(printf '{"token":{"access_token":"%s","expiry":"2099-01-01T00:00:00Z","refresh_token":"R-sentinel"},"auth_method":"consumer","id_token_email":"someone-else@example.com"}' "$SECRET" | base64 | tr -d '\n')" > "$AGY_OTHER"
+AGY_TOKEN="$AGY_OTHER"
+INTERACTIVE=0
+run import "$EXPORT"
+check_contains "$OUT" "needs you    antigravity 'agy-one@example.com' - agy is signed in as someone-else@example.com" "a different agy account is needs-you, not ready"
+check_contains "$OUT" "cannot read which account the Cursor IDE holds" "Cursor's unconfirmed identity is said plainly"
+AGY_TOKEN="$AGY_IN"
+INTERACTIVE=1
 
 echo
 echo "passed: $PASS  failed: $FAILED"
