@@ -94,7 +94,7 @@ if [ "$SCAN_OK" -eq 1 ] && [ -n "$SCAN_SINCE" ] \
         [ .[] | select(.createdAt >= $since)
               | select(((.assignees // []) | length) == 0)
               | select([(.labels // [])[].name | ascii_downcase]
-                       | any(IN("blocked", "on-hold", "wontfix", "duplicate")) | not)
+                       | any(IN("blocked", "on-hold", "wontfix", "duplicate", "human-tasks")) | not)
               | {number, title, createdAt} ] | sort_by(.createdAt)'); then
   # `gh issue list` returns newest first, so a 500-row cap drops only old
   # issues — unless all 500 are newer than the baseline. Then some new ones
