@@ -32,6 +32,10 @@ EXIT_SECRET=5
 EXIT_NO_PROOF=6
 EXIT_NO_CHECKER=7
 
+# Why a person is needed: one fixed reason, then free text (issue #2561). The
+# list is what a later effort to remove human steps groups tasks by.
+WHY_REASONS="sign-in legal-agreement payment-detail secret-value physical-device judgment-call"
+
 usage() {
   cat <<EOF
 Usage:
@@ -45,8 +49,9 @@ Keeps one list per repo of tasks only the operator can do, stored on GitHub:
 one open tracker issue labelled '$LABEL' per repo, one comment per task.
 
   add     Record a task; prints its stable id (ht-xxxxxxxx). Creates the
-          tracker issue on first use. --source names the thread, PR or issue
-          that raised it.
+          tracker issue on first use. --why is "REASON: free text", REASON
+          one of: $WHY_REASONS.
+          --source names the thread, PR or issue that raised it.
   list    Open tasks for the repo (--all includes done; --all-repos covers
           every repo with a tracker or a pointer entry). --json prints one
           array of {id, repo, what, why, source, created_at, state, done_at,
@@ -67,7 +72,8 @@ like a secret (desk/bin/lib/secrets.sh hq_refuse_secret).
 Exit codes:
   0  ok (list with nothing to show prints [] under --json)
   1  other failure: task id not found, a write failed
-  2  usage error
+  2  usage error, including an add --why that is not "REASON: free text"
+     with a listed REASON; nothing written
   3  no usable location: public repo with no pointer entry, or a bucket that
      is not private; nothing written
   4  a source could not be read (repo, tracker, comments, search, pointer
@@ -357,6 +363,27 @@ render_comment() {
     + (if .state == "done" then "\n\n**Done:** \(.done_at) — \(.proof)" else "" end)'
 }
 
+# check_why WHY -> exit 2 unless WHY is "REASON: free text" with REASON from
+# WHY_REASONS and non-blank free text. Nothing is written on a refusal.
+check_why() {
+  local why="$1" reason text r
+  if [[ $why =~ ^[[:space:]]*$ ]]; then
+    die "$EXIT_USAGE" "add: --why is required (why does this need a person?): \"REASON: free text\", REASON one of: $WHY_REASONS"
+  fi
+  reason="${why%%:*}"
+  if [ "$reason" = "$why" ]; then
+    die "$EXIT_USAGE" "add: --why must start with a reason and a colon, one of: $WHY_REASONS"
+  fi
+  text="${why#*:}"
+  for r in $WHY_REASONS; do
+    if [ "$reason" = "$r" ]; then
+      [[ $text =~ ^[[:space:]]*$ ]] && die "$EXIT_USAGE" "add: --why '$reason:' needs free text after the colon saying why"
+      return 0
+    fi
+  done
+  die "$EXIT_USAGE" "add: unknown --why reason '$reason'; one of: $WHY_REASONS"
+}
+
 # ---- subcommands --------------------------------------------------------------
 cmd_add() {
   local repo="" what="" why="" source="" tracker id t body
@@ -370,12 +397,13 @@ cmd_add() {
     esac
   done
   [ -n "$what" ] || die "$EXIT_USAGE" "add: --what is required"
-  [ -n "$why" ] || die "$EXIT_USAGE" "add: --why is required (why does this need a person?)"
   [ -n "$source" ] || die "$EXIT_USAGE" "add: --source is required (the thread, PR or issue that raised it)"
   # Secret check before any network call: a hit writes nothing.
   check_text what "$what"
   check_text why "$why"
   check_text source "$source"
+  # After the secret check, so a refusal message never echoes a secret prefix.
+  check_why "$why"
   [ -n "$repo" ] || { repo="$(current_repo)" || exit $?; }
   valid_repo "$repo" || die "$EXIT_USAGE" "invalid --repo '$repo'"; repo="$(lower "$repo")"
 
