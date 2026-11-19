@@ -231,6 +231,10 @@ publish_completed_handoff() {
   fi
   completion_handoff=$(resolve_script handoff-state.sh || true)
   [[ -n "$completion_handoff" ]] || return 6
+  # A scoped record that predates owner_repo seeding (issue #2471) would make
+  # both guarded writes below refuse. Attribute it under the lock, only when the
+  # embedded PR and HEAD already match the verified values; fail closed.
+  "$completion_handoff" --owner-repo "$OWNER_REPO" --seed-owner "$PR_NUM" "$HEAD_SHA" || return $?
   "$completion_handoff" --owner-repo "$OWNER_REPO" --require-existing \
     --expect-pr "$PR_NUM" --expect-owner "$OWNER_REPO" --expect-head "$HEAD_SHA" \
     --set "$PR_NUM" ".issue_completion=$COMPLETION_JSON" || return $?
@@ -239,6 +243,19 @@ publish_completed_handoff() {
     --set "$PR_NUM" '.phase_completed="C"'
 }
 ```
+
+### Legacy handoffs without `owner_repo` (issue #2471)
+
+The guarded writes above match the record's embedded `owner_repo`, so a scoped
+record created without one blocked Phase C permanently. New routed Phase A
+records now carry it from creation; `publish_completed_handoff` repairs older
+ones through `handoff-state.sh --owner-repo <repo> --seed-owner <PR> <HEAD>`
+before the guarded writes. The mode acts only on an existing scoped record under
+the lock, needs the explicit scope plus an exactly matching PR and HEAD, fills
+only an absent/null/empty owner, and leaves the guards at full strength. It never
+infers the repo from the PR number or cwd, never creates a record, and does not
+apply to a legacy flat record (select that one with the recipe in
+`wait-handoff-selection.md`).
 
 An intentionally partial issue is not an error to "repair": record its retained
 scope and outstanding delivery, release only the exact completed PR's owned

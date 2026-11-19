@@ -427,6 +427,40 @@ exit "$result"
         p=subprocess.run(['bash','-c',harness],env=dict(env,COMPLETION_JSON=json.dumps(report)),text=True,capture_output=True,timeout=15)
         self.assertNotEqual(p.returncode,0);self.assertFalse(handoff.exists())
 
+    def test_legacy_handoff_without_owner_is_repaired_then_published(self):
+        rc,report=self.complete();self.assertEqual(rc,0)
+        scripts=HELPER.parents[1];helper=str(scripts/'handoff-state.sh')
+        handoff=self.home/'.claude/handoffs/owner/consumer/pr-21-handoff.json'
+        source=(HELPER.parents[2]/'reference/issue-completion.md').read_text()
+        fence=source.split('<!-- test-anchor: issue-completion-publish -->',1)[1].split(chr(96)*3+'bash\n',1)[1].split(chr(96)*3,1)[0]
+        harness="""resolve_script() { printf '%s/%s\\n' "$COMPLETION_SCRIPT_DIR" "$1"; }
+""" + fence + '\npublish_completed_handoff\n'
+        legacy=dict(schema_version='1.0',pr_number=21,head_sha='b'*40,phase_completed='B',reviewer='cr',
+                    threads_replied=['t1'],unknown_future=dict(keep=True),
+                    model_routing={'old-task':{'A':dict(sentinel=True)}})
+        def seed(body):
+            handoff.parent.mkdir(parents=True,exist_ok=True);handoff.write_text(json.dumps(body)+'\n')
+        env=dict(self.env,COMPLETION_SCRIPT_DIR=str(scripts),PR_NUM='21',OWNER_REPO='Owner/Consumer',HEAD_SHA='b'*40)
+        report21=dict(report,pr=21)
+        def publish(r=report21,**more):
+            return subprocess.run(['bash','-c',harness],env=dict(env,COMPLETION_JSON=json.dumps(r),**more),text=True,capture_output=True,timeout=15)
+        # Negative control: the guarded write alone cannot bootstrap a missing owner.
+        seed(legacy)
+        control=subprocess.run([helper,'--owner-repo','owner/consumer','--require-existing','--expect-pr','21','--expect-owner','owner/consumer',
+                                '--expect-head','b'*40,'--set','21','.notes="x"'],env=self.env,text=True,capture_output=True)
+        self.assertEqual(control.returncode,4)
+        # The publisher repairs the legacy record, then publishes; nothing else is lost.
+        p=publish();self.assertEqual(p.returncode,0,p.stderr)
+        recorded=json.loads(handoff.read_text())
+        self.assertEqual(recorded['owner_repo'],'owner/consumer');self.assertEqual(recorded['phase_completed'],'C')
+        self.assertEqual(recorded['issue_completion']['outcome'],'verified')
+        for key in ['schema_version','pr_number','head_sha','reviewer','threads_replied','unknown_future','model_routing']:
+            self.assertEqual(recorded[key],legacy[key],key)
+        # Mismatched HEAD, PR or a foreign owner is refused with the bytes untouched.
+        for body in [dict(legacy,head_sha='d'*40),dict(legacy,pr_number=99),dict(legacy,owner_repo='evil/other')]:
+            seed(body);before=handoff.read_bytes()
+            p=publish();self.assertNotEqual(p.returncode,0);self.assertEqual(handoff.read_bytes(),before)
+
     def test_parent_phase_c_completion_is_conditional_and_agent_cleanup_unconditional(self):
         rules=(HELPER.parents[2]/'rules/phase-protocols.md').read_text()
         section=rules.split('## Phase C Completion Protocol',1)[1].split('## `/wrap`',1)[0]
