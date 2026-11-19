@@ -32,6 +32,8 @@ class Fixture:
         self.no_vercel = False
         self.billed_actions = True
         self.old_vercel_cli = False
+        self.cost_unit = "USD"
+        self.build_unit = "minutes"
         self.preview_count = 70
         self.preview_target = None
         self.merge_count = 5
@@ -44,6 +46,16 @@ class Fixture:
         if tool == "vercel" and args[0] in {"billing", "usage"}:
             if self.old_vercel_cli and args[0] == "billing":
                 raise m.Unavailable("old CLI")
+            if args[0] == "billing":
+                return {"context": "verified owner scope", "costUnit": self.cost_unit,
+                        "period": {"from": "2026-11-01T07:00:00Z", "to": "2026-11-09T21:00:00Z"},
+                        "totals": {"cost": 100}, "groupBy": {"dimension": "project", "data": [
+                            {"name": "app-web", "totals": {"cost": 60}, "services": [
+                                {"name": "Build CPU Minutes", "product": "build-cpu", "quantity": 120,
+                                 "unit": self.build_unit, "cost": 12},
+                                {"name": "Build Minutes", "product": "build", "quantity": 3,
+                                 "unit": "hours", "cost": 3}]}]}}
+            # Older releases: pricingQuantity is a cost in pricingUnit, not usage.
             return {"context": "verified owner scope", "pricingUnit": "USD",
                     "period": {"from": "2026-11-01T07:00:00Z", "to": "2026-11-09T21:00:00Z"},
                     "totals": {"billedCost": 100}, "groupBy": {"dimension": "project", "data": [
@@ -119,6 +131,26 @@ class AuditTest(unittest.TestCase):
         old["provider_scopes"]["vercel"] = "different"
         r = self.collect(f, baseline=old)["repositories"][0]
         self.assertNotIn("vercel_cost_share_jump", {x["code"] for x in r["findings"]})
+
+    def test_cost_share_requires_the_same_mapped_project(self):
+        f = Fixture()
+        old = self.collect(f)
+        old["observed_at"] = "2026-10-09T21:00:00Z"
+        row = old["repositories"][0]
+        row["vercel_usage"]["data"]["provider_billed_cost"]["data"]["share"] = "0.2"
+        row["railway"]["data"]["cost_share"]["share"] = "0.4"
+        row["provider_projects"]["vercel"] = "prj_previous"
+        row["provider_projects"]["railway"] = "railway-previous"
+        codes = {x["code"] for x in self.collect(f, baseline=old)["repositories"][0]["findings"]}
+        self.assertNotIn("vercel_cost_share_jump", codes)
+        self.assertNotIn("railway_cost_share_jump", codes)
+
+    def test_railway_receives_the_requested_month_label(self):
+        f = Fixture()
+        self.collect(f)
+        calls = [args for tool, args, _ in f.calls if tool == "railway"]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][calls[0].index("--period") + 1], "2026-11")
 
     def test_actions_and_railway_compare_their_own_reported_costs(self):
         f = Fixture()
@@ -216,6 +248,26 @@ class AuditTest(unittest.TestCase):
         self.assertEqual(r["vercel_usage"]["status"], "ok")
         self.assertEqual(r["preview_activity"]["status"], "unavailable")
         self.assertNotIn("vercel_preview_volume", {x["code"] for x in r["findings"]})
+        # The older schema's pricingQuantity is a cost, so it never becomes minutes.
+        metric = r["vercel_usage"]["data"]["build_metrics"]["Build CPU Minutes"]
+        self.assertIsNone(metric["minutes"])
+        self.assertEqual(metric["provider_billed_amount"], {"amount": 12, "unit": "USD"})
+
+    def test_vercel_build_units_and_cost_units_are_read_from_their_fields(self):
+        f = Fixture()
+        f.build_unit = "Credits"
+        f.cost_unit = "managed_infrastructure_units"
+        data = self.collect(f)["repositories"][0]["vercel_usage"]["data"]
+        cpu = data["build_metrics"]["Build CPU Minutes"]
+        self.assertIsNone(cpu["minutes"])
+        self.assertEqual((cpu["quantity"], cpu["unit"]), (120, "Credits"))
+        self.assertEqual(cpu["provider_billed_amount"]["unit"], "MIU")
+        self.assertEqual(data["build_metrics"]["Build Minutes"]["minutes"], 180)
+        self.assertEqual(data["provider_billed_cost"]["data"]["unit"], "MIU")
+        f.cost_unit = "EUR"
+        data = self.collect(f)["repositories"][0]["vercel_usage"]["data"]
+        self.assertEqual(data["provider_billed_cost"]["status"], "unavailable")
+        self.assertNotIn("provider_billed_amount", data["build_metrics"]["Build Minutes"])
 
 
 if __name__ == "__main__":

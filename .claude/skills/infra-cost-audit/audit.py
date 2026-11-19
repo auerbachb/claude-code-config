@@ -22,6 +22,12 @@ SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}")
 REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}")
 PERIOD = re.compile(r"20[0-9]{2}-(?:0[1-9]|1[0-2])")
 BUILD_NAMES = {"Build CPU Minutes", "Build Minutes"}
+COST_UNITS = {"USD": "USD", "MIU": "MIU", "managed_infrastructure_units": "MIU"}
+DURATION_MINUTES = {
+    **dict.fromkeys(("second", "seconds", "sec", "secs", "s"), Decimal(1) / 60),
+    **dict.fromkeys(("minute", "minutes", "min", "mins"), Decimal(1)),
+    **dict.fromkeys(("hour", "hours", "hr", "hrs", "h"), Decimal(60)),
+}
 TOOLS = {
     "gh": {"GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR"},
     "vercel": {"VERCEL_TOKEN"},
@@ -261,9 +267,40 @@ def vercel_project(run, settings, row):
     return {"machine": machine, "dashboard_ignore_configured": has_ignore}
 
 
+def vercel_cost_unit(data):
+    # Current CLIs report one top-level costUnit; older ones a top-level pricingUnit.
+    unit = data.get("costUnit", data.get("pricingUnit"))
+    return COST_UNITS.get(unit) if isinstance(unit, str) else None
+
+
+def vercel_cost(row):
+    # Current CLIs report "cost"; older ones "billedCost". Both are in the cost unit.
+    return num(row["cost"] if "cost" in row else row.get("billedCost"))
+
+
+def vercel_build_metric(service, cost_unit):
+    if "quantity" in service:
+        # Current schema: quantity is usage in the product's display unit.
+        quantity, unit = num(service.get("quantity")), service.get("unit")
+        factor = DURATION_MINUTES.get(unit.strip().lower()) if isinstance(unit, str) else None
+        metric = {"quantity": quantity, "unit": unit if isinstance(unit, str) else None}
+        if factor is None:
+            metric.update(minutes=None, hours=None, reason="Vercel build metric unit is not a duration")
+        else:
+            minutes = quantity * factor
+            metric.update(minutes=minutes, hours=minutes / 60)
+    else:
+        # Older schema: pricingQuantity is a cost in pricingUnit, never a usage count.
+        metric = {"minutes": None, "hours": None, "reason": "this Vercel CLI reports cost, not build usage"}
+    if cost_unit is not None:
+        metric["provider_billed_amount"] = {"amount": vercel_cost(service), "unit": cost_unit}
+    return metric
+
+
 def vercel_metrics(usage, mapping, now):
     data, groups, start, end = usage
     group = exact(groups, lambda x: x.get("name") == mapping["name"])
+    unit = vercel_cost_unit(data)
     services = {}
     for service in seq(group.get("services")):
         service = obj(service)
@@ -272,18 +309,11 @@ def vercel_metrics(usage, mapping, now):
             continue
         if name in services:
             raise Unavailable("ambiguous Vercel build metric")
-        unit = service.get("pricingUnit")
-        if not isinstance(unit, str) or not unit:
-            raise Unavailable("Vercel build metric has no unit")
-        quantity = num(service.get("pricingQuantity"))
-        services[name] = {"minutes": quantity, "hours": quantity / 60}
-        if unit in {"USD", "MIU"}:
-            services[name]["provider_billed_amount"] = {"amount": num(service.get("billedCost")), "unit": unit}
-    unit = data.get("pricingUnit")
+        services[name] = vercel_build_metric(service, unit)
     costs = {"status": "unavailable", "reason": "Vercel cost currency not reported"}
-    if isinstance(unit, str) and unit in {"USD", "MIU"}:
-        total = num(obj(data.get("totals")).get("billedCost"))
-        project = num(obj(group.get("totals")).get("billedCost"))
+    if unit is not None:
+        total = vercel_cost(obj(data.get("totals")))
+        project = vercel_cost(obj(group.get("totals")))
         if project <= total:
             costs = {"status": "ok", "data": {"amount": project, "unit": unit,
                                               "share": (project / total if total else None)}}
@@ -371,9 +401,11 @@ def github_metrics(rows, name):
             "actions_net_amount_usd": amount, "cost_share": project_share(amount, all_minutes, "netAmount")}
 
 
-def railway_usage(run, settings, month, now):
-    period = "current" if month == current_month(now) else month
-    d = obj(run.json("railway", "usage", "projects", "--workspace", settings["workspace"], "--period", period, "--json"))
+def railway_usage(run, settings, month):
+    # Always pass YYYY-MM: Railway maps it to the billing period that starts in
+    # that month, so one label names one interval whatever day the audit runs.
+    # "current" would name whichever period is live, which may start a month earlier.
+    d = obj(run.json("railway", "usage", "projects", "--workspace", settings["workspace"], "--period", month, "--json"))
     workspace = obj(d.get("workspace"))
     if settings["workspace"] not in (workspace.get("id"), workspace.get("name")):
         raise Unavailable("Railway workspace identity does not match")
@@ -410,13 +442,22 @@ def comparable_cost(evidence, provider):
     return cost.get("data") if cost.get("status") == "ok" else None
 
 
-def baseline_share(baseline, provider, scope, repo, cost, current_at):
+def provider_projects(row):
+    return {"vercel": obj(row.get("vercel")).get("id") if row.get("vercel") else None,
+            "github": row["repo"], "railway": row.get("railway")}
+
+
+def baseline_share(baseline, provider, scope, row, cost, current_at):
     if not baseline or not scope or obj(baseline.get("provider_scopes", {})).get(provider) != scope:
         return None
+    repo, project = row["repo"], provider_projects(row)[provider]
     if baseline.get("schema") != SCHEMA or date(baseline.get("observed_at")) >= current_at:
         return None
     previous = [x for x in seq(baseline.get("repositories")) if isinstance(x, dict) and x.get("repo") == repo]
-    if len(previous) != 1:
+    if len(previous) != 1 or not project:
+        return None
+    # A remapped provider project is a different series; its share is not comparable.
+    if obj(previous[0].get("provider_projects")).get(provider) != project:
         return None
     old = comparable_cost(previous[0], provider)
     if not isinstance(old, dict) or old.get("unit") != cost.get("unit") or old.get("share") is None:
@@ -446,7 +487,7 @@ def findings(row, evidence, limits, baseline, scopes, now):
         if not isinstance(cost, dict) or cost.get("share") is None:
             continue
         try:
-            old_share = baseline_share(baseline, provider, scope, row["repo"], cost, now)
+            old_share = baseline_share(baseline, provider, scope, row, cost, now)
         except Unavailable:
             old_share = None
         if old_share is not None and cost["share"] - old_share >= num(limits.get("share_jump", "0.15")):
@@ -471,7 +512,7 @@ def audit(run, cfg, month, now, baseline, file_issues):
     vu = (configured(vercel, lambda: vercel_usage(run, vercel)) if live_month else
           {"status": "unavailable", "reason": "Vercel collector currently reads its current billing period"})
     gb = configured(github, lambda: github_billing(run, github, month))
-    rw = configured(railway, lambda: railway_usage(run, railway, month, now))
+    rw = configured(railway, lambda: railway_usage(run, railway, month))
     scopes = {
         "vercel": fingerprint("vercel", vu["data"][0].get("context")) if vu["status"] == "ok" else None,
         "github": fingerprint("github", github["kind"] + ":" + github["account"]) if gb["status"] == "ok" else None,
@@ -481,7 +522,7 @@ def audit(run, cfg, month, now, baseline, file_issues):
               "provider_scopes": scopes, "filing_enabled": file_issues, "repositories": []}
     for row in cfg["repositories"]:
         name = row["repo"]
-        out = {"repo": name}
+        out = {"repo": name, "provider_projects": provider_projects(row)}
         settings = configured(vercel if row.get("vercel") else None, lambda: vercel_project(run, vercel, row))
         out["vercel_settings"] = settings
         if settings["status"] != "ok":

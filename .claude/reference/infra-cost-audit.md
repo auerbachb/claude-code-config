@@ -49,9 +49,12 @@ python3 -I .claude/skills/infra-cost-audit/audit.py \
   --snapshot "$HOME/.claude/infra-cost-audit/snapshot-2026-11.json"
 ```
 
-Pass the last reviewed snapshot with `--baseline`. A snapshot is private and
+Pass the last reviewed snapshot with `--baseline`. A cost share is compared
+only when the provider scope and the mapped project are unchanged. A snapshot is private and
 cannot overwrite an existing file. `--month YYYY-MM` selects a GitHub and
-Railway month; Vercel currently reports its active billing window. Treat an
+Railway month; Vercel currently reports its active billing window, so a run
+for an earlier month reports Vercel usage and preview volume unavailable. Run
+the current month separately to cover Vercel. Treat an
 unavailable provider as a coverage gap, including when its CLI is absent
 from PATH. A missing row does not prove zero usage.
 
@@ -59,7 +62,11 @@ from PATH. A missing row does not prove zero usage.
 
 - **Vercel:** [grouped billing usage](https://vercel.com/docs/cli/usage) supplies
   the provider's billing window and project breakdown. Build CPU Minutes and
-  Build Minutes stay separate; hours are each reported count divided by 60.
+  Build Minutes stay separate. Minutes and hours come only from a usage
+  `quantity` whose `unit` is a duration; any other unit is kept as reported
+  with minutes left empty. Older CLI releases report `pricingQuantity`, which
+  is a cost rather than usage, so they yield no minutes. Costs carry the
+  response's own cost unit (USD or MIU).
   The billed amounts shown by the CLI are not invoice totals. The
   [project API](https://vercel.com/docs/rest-api/projects/find-a-project-by-id-or-name)
   verifies the pinned ID, name and repository link before reporting the build
@@ -75,6 +82,9 @@ from PATH. A missing row does not prove zero usage.
   billing substitute.
 - **Railway:** [project usage](https://docs.railway.com/cli/usage#inspect-usage-by-project)
   supplies current usage dollars for the selected workspace and project.
+  The month is always passed as `YYYY-MM`, which Railway maps to the billing
+  period that starts in that month, so a label names the same interval on
+  every run. A period that has not started yet is reported unavailable.
   Estimates are excluded.
 
 The findings are a premium Vercel machine on a configured personal project,
