@@ -31,7 +31,7 @@ After setup, Claude Code will automatically:
 - **Review locally, then on GitHub** — Runs CodeRabbit CLI reviews before pushing (instant feedback, no PR noise). After PR creation, CodeRabbit is the primary reviewer and CodeAnt provides a supplemental AI review signal; BugBot (Cursor) and Greptile are paid and run only on an owner grant spent through `paid-review-grant.sh` (#1897, #1898); without one, agents keep polling for a free review or the no-review override.
 - **Verify and merge** — Checks every acceptance criteria checkbox against the code, confirms CI is green, then squash-merges. The running worktree and branch are left intact and reaped out-of-band by `/pm-clean`.
 - **Orchestrate multi-agent work** — Decomposes large tasks into phases (fix, review, merge) with health monitoring, handoff files, and heartbeat enforcement.
-- **Manage your project** — 38 slash commands for backlog prioritization, OKR-aware ranking, daily standups, PR-fleet monitoring, and cross-thread orchestration.
+- **Manage your project** — 39 slash commands for backlog prioritization, OKR-aware ranking, daily standups, PR-fleet monitoring, and cross-thread orchestration.
 
 Review ownership is sticky once a fallback tier takes over:
 
@@ -111,7 +111,7 @@ ls -la ~/.claude/skills/       # each skill -> ~/.claude/skills-worktree/.claude
 
 ## Slash Commands
 
-All 38 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
+All 39 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
 
 | Command | Category | Description |
 |---------|----------|-------------|
@@ -153,6 +153,7 @@ All 38 commands are invoked as `/command` in a Claude Code session. They are def
 | `/leave-by` | Workflow | Say once when you have to stop ("I need to leave at 7 PM") — arms that time as the repo's planning deadline so dispatch declines pipelines that cannot finish before it, then checks in unprompted at a configurable lead (default 30 min, `--lead Nm`) and winds down through `/pause`, so everything is merged or resumable by the time you go |
 | `/presence` | Workflow | Say where you are and for how long ("here for 2 hours", "away overnight", "closing the laptop at 7") — one global here-or-away state every thread reads with one call, asked through a single dialog that only one thread opens; away also arms unattended mode, and closing the laptop goes through `/leave-by` |
 | `/afk` | Workflow | Alias of `/presence` for stepping away ("afk 30 min") — first asks, in one bounded menu round, the decisions running and queued work will need while you are gone and records the answers where the work reads them, then sets away; with no duration it asks how long once |
+| `/back` | Workflow | The one command for coming back, after an hour or a night ("I'm back") — marks you here (an early return counts) and asks how long once, then, in this order: every waiting question and Desk Decision as click-through menus four at a time with your answers recorded, your open human tasks as a checklist, and a digest of what happened since you left, scaled to how long you were gone. `/back all` covers every thread and repo and names any source it could not read; it starts nothing and dispatches nothing |
 
 Run `/pm` first to bootstrap the PM config, then use the other PM skills as needed. Workflow commands (`/merge`, `/wrap`, `/go-on`, etc.) work independently.
 
