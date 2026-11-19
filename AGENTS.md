@@ -35,7 +35,7 @@ gh api --paginate repos/{owner}/{repo}/issues/N/comments --jq '.[] | [.id, .crea
 gh issue edit N --remove-label in-progress --remove-assignee @me
 ```
 
-A fallback claim cannot be renewed; it expires after 4 hours without a renewal. If you are still working, first re-read the issue and its comments: if it is closed, someone else's claim is newer, or the read fails, STOP; otherwise post a fresh claim comment. The state screen cannot stop the issue closing after you read it: if it closes while you work, release the claim.
+A fallback claim has no in-place renewal: each claim comment expires 4 hours after it is posted, and a newer one from the same holder restarts that clock. If you are still working, first re-read the issue and its comments: if it is closed, someone else's claim is newer, or the read fails, STOP; otherwise post a fresh claim comment. The state screen cannot stop the issue closing after you read it: if it closes while you work, release the claim.
 
 Working across worktrees? A claim made with the default holder belongs to the checkout it was made in, so a later `gh pr create` from another worktree can be blocked by your own claim. Claim with an explicit `--holder` before you create the worktree and keep that holder. Run the claim as its own command, never in the same command as `git worktree add`, `git checkout -b` or `gh pr create`: the guard checks the whole command before any of it runs. If the guard says your own claim may not be visible from this checkout, rerun the command with the `export CLAUDE_CLAIM_HOLDER='...' && ` prefix it prints, but only if you made that claim. Never copy a holder from the GitHub marker.
 
