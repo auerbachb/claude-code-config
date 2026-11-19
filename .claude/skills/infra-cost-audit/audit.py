@@ -575,7 +575,8 @@ def issue_plan(run, row, items, apply):
     repo = obj(run.json("gh", "repo", "view", name, "--json", "nameWithOwner,isPrivate"))
     if str(repo.get("nameWithOwner", "")).lower() != name.lower():
         raise Unavailable("cannot verify the GitHub filing destination")
-    if repo.get("isPrivate") is not True:
+    # A private destination is a filing requirement; a local preview files nothing.
+    if apply and repo.get("isPrivate") is not True:
         return {"decision": "private_repo_required"}
     issues = seq(run.json("gh", "issue", "list", "--repo", name, "--state", "open", "--limit", "100",
                           "--json", "number,title,body"))

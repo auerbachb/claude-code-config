@@ -204,6 +204,7 @@ class AuditTest(unittest.TestCase):
     def test_public_repo_and_incomplete_dedup_never_file(self):
         f = Fixture()
         f.private = False
+        self.assertEqual(self.collect(f)["repositories"][0]["filing"]["data"]["decision"], "preview")
         self.assertEqual(self.collect(f, apply=True)["repositories"][0]["filing"]["data"]["decision"],
                          "private_repo_required")
         f.private = True
