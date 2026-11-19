@@ -96,6 +96,7 @@ opt-in of issue #1544.
 | [forgotten-pr-triage.test.sh](../tests/forgotten-pr-triage.test.sh) | Tests for `forgotten-pr-triage.sh` |
 | [gh-count.test.sh](../tests/gh-count.test.sh) | Tests the opt-in REST call counter in lib/gh-count.sh and its hook in merge-gate.sh, polling-state-gate.sh and escalate-review.sh |
 | [gh-rate-budget.test.sh](../tests/gh-rate-budget.test.sh) | Tests for `lib/gh-rate-budget.sh` (allowance backoff) and the cr-plan.sh poll wiring |
+| [go-on-dispatch-module.test.sh](../tests/go-on-dispatch-module.test.sh) | Checks /go-on incremental loading — path-only module resolution, per-stoppage-kind read traces, missing-module blocking, compaction re-dispatch, and verbatim parity with the pre-split file. |
 | [go-on-thread-comment-bound.test.sh](../tests/go-on-thread-comment-bound.test.sh) | Runs `/go-on` Step 7's real bot-thread count filter (anchor `go-on-bot-thread-count`) on fixtures — a thread whose comments exceed the 100 returned always counts and is flagged truncated, exact bot-login membership, resolved and human-only threads excluded, null authors safe, one count per thread |
 | [go-on-universal-resume.test.sh](../tests/go-on-universal-resume.test.sh) | Contract tests for `/go-on` as the universal resume front door — stoppage-class detection, precedence, refill-gate safety |
 | [handoff-scoping.test.sh](../tests/handoff-scoping.test.sh) | Tests per-repo handoff path scoping in `handoff-state.sh` |
@@ -116,6 +117,7 @@ opt-in of issue #1544.
 | [leave-time-elicitation.test.sh](../tests/leave-time-elicitation.test.sh) | Runs the real skill-embedded bash for `/subagent` Step 7's leave-time elicitation gate and overrun decision, and `/leave-by`'s "no deadline today" marker and launch-anyway `parks` override (issue #1679), plus the cross-file contracts those four blocks depend on |
 | [leave-time.test.sh](../tests/leave-time.test.sh) | Runs the real skill-embedded bash for `/leave-by`'s lead-time cascade and `/subagent` Step 7's deadline decline (issue #1525), plus the cross-file contracts: one deadline source, Monitor wake, and teardown on both sides of a pause |
 | [local-review.test.sh](../tests/local-review.test.sh) | Tests for `local-review.sh`; every CLI is a stub, so no network and no dependence on which CLIs are installed |
+| [markdown-audit.test.sh](../tests/markdown-audit.test.sh) | Tests the `/markdown-audit` helper (inventory, segment, pairs, report, read-only check) and the skill's real snapshot block |
 | [maybe-trigger-bugbot-daily-cap.test.sh](../tests/maybe-trigger-bugbot-daily-cap.test.sh) | Tests the account daily-cap `@cursor review` skip in `maybe-trigger-ai-review.sh` — over/ok/unknown, dry-run reporting, the open cursor step, and that the tier and refused-HEAD skips still win |
 | [maybe-trigger-bugbot-suppression.test.sh](../tests/maybe-trigger-bugbot-suppression.test.sh) | Tests the BugBot spend-refusal suppression in `maybe-trigger-ai-review.sh` |
 | [maybe-trigger-bugbot-tier.test.sh](../tests/maybe-trigger-bugbot-tier.test.sh) | Tests the review-tier `@cursor review` skip in `maybe-trigger-ai-review.sh` |

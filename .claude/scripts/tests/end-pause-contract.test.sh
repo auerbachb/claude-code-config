@@ -31,6 +31,16 @@ hasnt() {
   grep -Eq -- "$2" "$1" && fail "$(basename "$1") must NOT contain: $2"
   return 0
 }
+# /go-on loads its lane procedures from modules (issue #2181). An absence check
+# scans the entry and every module, so a fragment that moved into a module can
+# never make it pass by mistake; an empty module glob fails rather than passing.
+GO_ON_MODULES=("$ROOT"/.claude/skills/go-on/modules/*/*.md)
+[[ ${#GO_ON_MODULES[@]} -eq 8 && -r "${GO_ON_MODULES[0]}" ]] \
+  || fail "expected the 8 /go-on modules, found ${#GO_ON_MODULES[@]}"
+hasnt_go_on() {
+  local f
+  for f in "$GO_ON" "${GO_ON_MODULES[@]}"; do hasnt "$f" "$1"; done
+}
 
 has "$END" '^name: end$'
 has "$END" 'default: --window 5m'
@@ -116,7 +126,7 @@ has "$SWEEP_SCRIPT" 'not a pause record, or holds a malformed record'
 # No reader may raise out of the combine any more — that is what threw away the
 # surviving slots. (`error(` appears nowhere in these three pause programs.)
 hasnt "$PAUSE_RESUME" 'error\("legacy'
-hasnt "$GO_ON" 'error\("legacy'
+hasnt_go_on 'error\("legacy'
 hasnt "$SWEEP_SCRIPT" 'error\("legacy'
 # A malformed VALUE inside an otherwise-valid map is corrupt too — `select`
 # would drop it silently, reporting a clean no-op over a damaged board.
@@ -144,7 +154,7 @@ has "$GO_ON" 'legacy resume receipt could not be read'
 # so the skills stay free to name the trap in prose, which they do.
 has "$PAUSE_RESUME" 'active != false'
 hasnt "$PAUSE_RESUME" "[(\"']\.active // true"
-hasnt "$GO_ON" "[(\"']\.active // true"
+hasnt_go_on "[(\"']\.active // true"
 has "$PAUSE_RESUME" 'STATE_KEY="suspend"'
 has "$PAUSE_RESUME" 'handoffs/suspend-'
 has "$PAUSE_RESUME" 'MARKER_NAME.*suspend-'
@@ -154,7 +164,7 @@ has "$PAUSE_RESUME" '\.repos\[.*\]\.suspend'
 # Resume receipts are keyed per session too, and the legacy singleton is only
 # consulted when it belongs to the reading session.
 has "$GO_ON" '\.repos\[.*\]\.resumes\[.*SESSION_ID'
-hasnt "$GO_ON" '\.repos\[\\"\$REPO_KEY\\"\]\.resume='
+hasnt_go_on '\.repos\[\\"\$REPO_KEY\\"\]\.resume='
 has "$GO_ON" 'LEGACY_SESSION'
 # One sanitization rule, applied at every site that builds a session key.
 has "$PAUSE" 'SESSION_ID//\[\^\[:alnum:\]_\.-\]'

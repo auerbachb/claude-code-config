@@ -113,42 +113,11 @@ Beside the manual commands, show the returned `launcher_prerequisite`,
 including its installed setup command. The owner runs setup and uses the
 source line it prints; the roster never creates or sources launchers.
 
-## Portable helper resolution (workflow lane)
+<!-- go-on-routing:begin -->
+## Status lines
 
-Resolve every lifecycle helper **before entering Steps 0b–10**, not before Step 0: classification needs only the stop-state helpers resolved in 0.2, and a resume that just routes to `/pause-resume` must not be blocked by a missing merge-gate helper it will never call. Inside the workflow lane a missing helper blocks rather than guessing which completed state is safe.
-
-```bash
-resolve_script() {
-  local name="$1" candidate
-  for candidate in \
-    "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/$name}" \
-    "${HOME:+$HOME/.claude/scripts/$name}" \
-    ".claude/scripts/$name"; do
-    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
-  done
-  return 1
-}
-PR_AUTHORSHIP_SH=$(resolve_script pr-authorship.sh || true)
-DIFF_SURVIVAL_SH=$(resolve_script diff-survival-check.sh || true)
-REVIEWER_OF_SH=$(resolve_script reviewer-of.sh || true)
-PR_STATE_SH=$(resolve_script pr-state.sh || true)
-REPLY_THREAD_SH=$(resolve_script reply-thread.sh || true)
-RESOLVE_REVIEW_THREADS_SH=$(resolve_script resolve-review-threads.sh || true)
-MERGE_GATE_SH=$(resolve_script merge-gate.sh || true)
-CLEAN_BEHIND_SH=$(resolve_script clean-behind-check.sh || true)
-AC_CHECKBOXES_SH=$(resolve_script ac-checkboxes.sh || true)
-[[ -n "$PR_AUTHORSHIP_SH" ]] || { echo "ERROR: pr-authorship.sh not found (checked all three paths) — resume authorship gate unavailable" >&2; exit 1; }
-[[ -n "$DIFF_SURVIVAL_SH" ]] || { echo "ERROR: diff-survival-check.sh not found (checked all three paths) — rebase survival gate unavailable" >&2; exit 1; }
-[[ -n "$REVIEWER_OF_SH" ]] || { echo "ERROR: reviewer-of.sh not found (checked all three paths) — reviewer routing unavailable" >&2; exit 1; }
-[[ -n "$PR_STATE_SH" ]] || { echo "ERROR: pr-state.sh not found (checked all three paths) — PR state unavailable" >&2; exit 1; }
-[[ -n "$REPLY_THREAD_SH" ]] || { echo "ERROR: reply-thread.sh not found (checked all three paths) — review replies unavailable" >&2; exit 1; }
-[[ -n "$RESOLVE_REVIEW_THREADS_SH" ]] || { echo "ERROR: resolve-review-threads.sh not found (checked all three paths) — thread resolution unavailable" >&2; exit 1; }
-[[ -n "$MERGE_GATE_SH" ]] || { echo "ERROR: merge-gate.sh not found (checked all three paths) — merge gate unavailable" >&2; exit 1; }
-[[ -n "$CLEAN_BEHIND_SH" ]] || { echo "ERROR: clean-behind-check.sh not found (checked all three paths) — clean-BEHIND verification unavailable" >&2; exit 1; }
-[[ -n "$AC_CHECKBOXES_SH" ]] || { echo "ERROR: ac-checkboxes.sh not found (checked all three paths) — acceptance verification unavailable" >&2; exit 1; }
-```
-
-Walk through the full review lifecycle checklist in order. At each step, check if it's already been completed. Stop at the first incomplete step and execute it, then continue to the next step. Keep going until the workflow is complete or a blocking condition is hit.
+These apply to Step 0 and to every module the lane reads.
+<!-- go-on-routing:end -->
 
 **Output a status line at each step** so the user can follow along:
 - `[DONE]` — step already completed, moving on
@@ -648,6 +617,10 @@ fi
 
 ### 0.5a Log the stoppage (ranks 2–4 only; issue #2292)
 
+<!-- go-on-routing:begin -->
+For ranks 1–4, run the lane preflight in [module routing](#module-routing) before this step.
+<!-- go-on-routing:end -->
+
 A stop nobody planned is written down once, to the desk's private database, so the causes can be counted later. **Never** for rank 1 (`pause` / `end` are planned stops) or rank 5. Never posted to GitHub or written to a repository file. This step records and never blocks: any failure here is one line, then dispatch continues.
 
 Resolve the desk CLI from installed locations only (`~/.claude/skills-worktree/desk/bin/human-queue.sh`, then `~/.claude/desk/bin/human-queue.sh`); unresolved → one `DEGRADED: human-queue.sh not found — stoppage log unavailable, continuing without it` line.
@@ -695,522 +668,47 @@ For ranks 2–4, run 0.5a first (it records the stoppage and never blocks the di
 
 An unresolved `background-task-registry.sh` or a failed listing is an **unreadable inventory, never an empty one** (the same rule `/pause` Step 0 applies): say the live-task check could not run, and do not launch anything in the `unplanned` or `token_exhaustion` lanes on the assumption nothing is running. Delegation to `/pause-resume` / `/end-resume` still proceeds — their own claims are locked, so they cannot double-launch on a blind check.
 
-- **`pause` / `end`** — invoke `/pause-resume` or `/end-resume`, forwarding `--resume-refill` when given, **and `--generation` when 0.2a validated one**. Forwarding it is what lets a single re-armed `/go-on` wake serve a day-mode park too: with no per-PR park records the ladder falls here, and `/pause-resume` re-validates the same token against the same field before clearing anything. They clear the execution gate, re-arm stopped work, and own the refill decision. Report their outcome; do not re-run their steps here.
-- **`usage_limit_park`** — **only once the window has reopened.** `PARK_ACTIVE=true` means `parked_until` is still in the future: report `parked until <parked_until> — <PARK_WAIT_S>s remaining; resuming automatically when the wake fires` and relaunch nothing, on a manual run and on a `--generation` wake alike (a wake that fires early is a wake whose deadline was mis-derived, and dispatching on it walks straight back into the wall). With the park expired, delegate the whole resume to `/pause-resume --generation "$CALLER_GENERATION"` (omit the flag on a manual run) and **relaunch nothing here**. It owns the execution gate, disarms any still-armed wake, retires the six park fields in one write, and — since issue #1618 — its Step 5 relaunches the parked pipelines themselves, claiming each PR before it launches. `PARK_PIPELINES` is this lane's *expectation*, not a second work list: relaunching from it after Step 5 has already run is how one park becomes two Phase B or C pipelines on one branch, because the list was captured before the delegation and knows nothing of the claims Step 5 took. This is the same rule the `pause` / `end` lane states — report their outcome; do not re-run their steps here — and it is what keeps the design's promise of one set of records, two entry points, and no second resume route.
+<!-- go-on-routing:begin -->
+Each lane's procedure is a module, read only when its class is selected. Use the [module routing](#module-routing) section to resolve them.
 
-Then **reconcile and report, without launching**: re-read `.prs[*]` and compare against `PARK_PIPELINES`. An entry that no longer carries `handoff_reason == "usage_limit_park"` **and no longer carries `usage_limit_relaunching` either** was relaunched by Step 5 — report it as resumed. One reading `usage_limit_relaunching` is *claimed*, which is not the same thing: the claim is taken before the launch, so the value alone says a thread intended to relaunch it, never that anything is running. Report it as claimed-not-confirmed and name it, so a claim whose thread died is visible here instead of being counted as a resume; Step 5's own stale-claim reclaim is what returns it to the retryable set on the next pass. One still carrying it was left behind deliberately (a launch gate declined it, its handoff is missing or contradicts the record, or another thread holds `usage_limit_relaunching`); name it and the reason Step 5 gave, and leave it parked for the next pass rather than launching it here to "finish the job". If the re-read fails, say the reconciliation could not run and name `PARK_PIPELINES` as the unverified expectation — never report those PRs as resumed on an unreadable check. When a parent orchestrator is live for that PR, its `phase-protocols.md` replacement path is preferred and this lane says so rather than racing it — the same rule the token-exhaustion lane follows. Procedure: `.claude/reference/subagent-thread-limit-park.md` §5.
-- **`token_exhaustion`** — read the entry's `phase`, `head_sha`, and `remaining_work`, then continue that phase: enter Steps 0b–10 at the step its `needs` names (`continue_polling` → Step 6, unpushed fixes → Step 1b). The parent's replacement-subagent path (`phase-protocols.md`) is unchanged and still preferred when a parent orchestrator is live — say so rather than racing it.
-- **`unplanned`** — continue to Step 0b. This is the original `/go-on` behavior, unchanged.
+| Class (0.4) | Kind module | Review modules the lane can reach |
+|---|---|---|
+| `pause` / `end` | `kind:planned-stop` | None |
+| `usage_limit_park` | `kind:usage-limit-park` | None |
+| `token_exhaustion` | `kind:token-exhaustion` | `review:prepare` first, then the module holding the step its `needs` names, then onward in order |
+| `unplanned` | `kind:unplanned` | `review:prepare`, `review:publish`, `review:respond`, `review:merge`, in order |
+| `none`, or unclassifiable | None | None: report from Step 0 and read no module |
+
+<!-- go-on-routing:end -->
+
 - **Monitors and artifact watches that died with the session are not re-armed here.** They belong to their owning skills' recovery paths (`/babysit-pr`, `/pr-monitor-and-manage-wake`, `/pm day resume`, `monitor-mode.md` §PM Monitoring Recovery) — the same ones `/pause-resume` Step 5 delegates to. Name what was found and which command owns it.
 
 ---
 
-## Step 0b: Identify context
+<!-- go-on-routing:begin -->
+## Module routing
 
-Reached only from Step 0's `unplanned` or `token_exhaustion` dispatch — the interrupted-review-workflow lane.
+The entry holds the classifier and every gate that must always hold. A lane's procedure loads only after Step 0 selects it. There are no `@` imports. Resolve the dispatcher once at the first lane that needs a module and reuse the path for this invocation. Classification, rank 5, and an unclassifiable report need no dispatcher.
 
+<!-- test-anchor: go-on-module-resolver -->
 ```bash
-BRANCH=$(git branch --show-current)
-echo "Branch: $BRANCH"
-```
-
-If on `main`, stop: `nothing to resume — on main, no interrupted workflow for this checkout` (rank 4; change no state).
-
-Check if a PR exists:
-```bash
-gh pr view --json number,title,headRefName,state 2>/dev/null
-```
-
-Determine the {owner}/{repo} from git remote:
-```bash
-gh repo view --json owner,name --jq '"\(.owner.login)/\(.name)"'
-```
-
-> **Authorship guard (issue #733, `safety.md`).** `/go-on` resumes a write workflow (push, review triggers, thread resolution, merge). Confirm you authored the PR before resuming any write step:
-> ```bash
-> PR_NUM=$(gh pr view --json number --jq .number 2>/dev/null)
-> [ -n "$PR_NUM" ] && "$PR_AUTHORSHIP_SH" "$PR_NUM"   # exit 0 = yours
-> ```
-> Not yours (exit 1) or undetermined (exit 4) → `[BLOCKED]`: "PR #$PR_NUM is not yours — the authorship guard blocks automated writes; name it explicitly to override." Proceed only under an explicit per-PR user override (say you are operating under it). Read-only status inspection is fine.
-
----
-
-## Step 1: Check for an inherited rebase / conflict resolution (issue #757)
-
-**Run this before Step 1b and before any commit or push.** The incident that motivated this guard was exactly a resumed session: an interrupted rebase left a resolution with no conflict markers that was nonetheless byte-identical to main — the whole fix the PR existed to deliver had been silently dropped, and every other gate (clean status, green CI, review) passed it.
-
-```bash
-GUARD="$DIFF_SURVIVAL_SH"
-REBASE_IN_PROGRESS=0
-{ [ -d "$(git rev-parse --git-path rebase-merge)" ] || [ -d "$(git rev-parse --git-path rebase-apply)" ]; } && REBASE_IN_PROGRESS=1
-SNAPSHOT_PRESENT=$("$GUARD" status --json | jq -r '.present')
-```
-
-- **Neither** a rebase in progress nor a snapshot on disk → `[SKIP]` — no inherited resolution to verify. Go to Step 1b.
-- **Otherwise** (mid-rebase, or a snapshot left by a just-completed rebase) → `[ACTION]`:
-
-  ```bash
-  "$GUARD" snapshot --if-absent   # mid-rebase this reconstructs from orig-head, not the half-replayed HEAD
-  "$GUARD" verify; GUARD_RC=$?
-  ```
-
-  - `0` — `[DONE]` diff survived the resolution; continue. (`deferred` also exits 0: commits are still queued for replay — finish the rebase, then re-run before pushing.)
-  - `1` — `[BLOCKED]` the branch's entire diff vanished. Report the guard's output verbatim, including its one legitimate case (main independently landed the identical change → **close the PR**, never force-push an empty branch). Do not commit, push, or "fix" anything.
-  - `2` — `[BLOCKED]` name the files that lost their changes and stop. This is an **unresolved conflict**, not a resumable state — re-resolve those files (whitespace-only survival still counts as lost), then re-run.
-  - `4` — two shapes, both stop-and-report:
-    - `unresolved_conflicts` → `[ACTION]` finish the resolution (optionally via `/merge-conflict`), then re-run `verify` before continuing.
-    - `unverifiable` → `[BLOCKED]` the snapshot's baseline commit *is* the commit being checked, so it proves nothing. This is what a **just-completed** rebase with no snapshot looks like: a baseline cannot be reconstructed after the fact (`--if-absent` only reconstructs from `orig-head` while the rebase is still in progress). Say plainly that the resolution **cannot be verified**, and let the user decide — never report it as clean.
-  - `5` — no snapshot could be established at all → `[BLOCKED]`: same handling as `unverifiable`. Never proceed silently on an unverifiable resolution.
-
-  The guard never repairs; `git rebase --abort` or resetting to `ORIG_HEAD` stays the user's call. After a verified push completes, `"$GUARD" clear` retires the snapshot.
-
----
-
-## Step 1b: Check for uncommitted changes
-
-```bash
-git status --porcelain
-```
-
-- If there are uncommitted changes: `[ACTION]` — Stage and commit changes. Ask the user for a commit message if the changes are ambiguous, otherwise use a descriptive message based on the diff.
-- If clean: `[DONE]` — No uncommitted changes.
-
----
-
-## Step 2: Run local CR review
-
-Find the `coderabbit` CLI:
-```bash
-CR_BIN=$(which coderabbit 2>/dev/null || echo ~/.local/bin/coderabbit)
-test -x "$CR_BIN" && echo "Found: $CR_BIN" || echo "Not found"
-```
-
-If available, run the local review loop:
-```bash
-$CR_BIN review --agent
-```
-
-- If findings are returned: `[ACTION]` — Fix all valid findings. Run `$CR_BIN review --agent` again after fixing.
-- **Exit on 1 clean pass** (no findings returned) — `[DONE]` Local CR review passed.
-- **Max 5 total iterations.** If you hit 5 runs without a clean pass, stop and report: `[BLOCKED]` — CR review not converging after 5 iterations.
-- If CR CLI is not available or errors out: `[SKIP]` — CR CLI unavailable, performing self-review instead:
-  ```bash
-  BASE=$(gh pr view --json baseRefName --jq '.baseRefName' 2>/dev/null || echo main)
-  git diff "$BASE"...HEAD
-  ```
-- **After the local review loop completes**, classify and print coverage: `[COVERAGE] <level> — <reason>` (per `cr-local-review.md` "Coverage classification": `both | cr-only | codeant-only | none`). This flow reaches at most `cr-only` or `none`. For `none`, the line is mandatory before any push.
-
----
-
-## Step 3: Push to remote
-
-First refresh remote refs and check if the remote branch exists:
-```bash
-git fetch origin "$BRANCH" --quiet 2>/dev/null || true
-git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1
-```
-
-- If the remote branch **does not exist**: `[ACTION]` — Pushing new branch:
-  ```bash
-  git push -u origin $BRANCH
-  ```
-- If the remote branch **exists**, check for unpushed commits:
-  ```bash
-  UNPUSHED=$(git log --oneline origin/$BRANCH..$BRANCH | wc -l | tr -d ' ')
-  ```
-  - If `UNPUSHED > 0`: `[ACTION]` — Pushing $UNPUSHED commits.
-    ```bash
-    git push origin $BRANCH
-    ```
-  - If `UNPUSHED == 0`: `[DONE]` — Branch is up to date with remote.
-
----
-
-## Step 4: Ensure PR exists
-
-```bash
-PR_JSON=$(gh pr view --json number,title,body,state 2>/dev/null)
-PR_NUM=$(printf '%s' "$PR_JSON" | jq -r '.number // empty')
-```
-
-Pipe with `printf '%s'`, never `echo` — zsh's builtin `echo` interprets the escape sequences in the PR body and corrupts the JSON, so `jq` errors and `PR_NUM` comes back empty, which reads as "no PR exists" (issue #574).
-
-- If a PR exists and is open: `[DONE]` — PR #$PR_NUM exists. Additionally, always update the `**Local review coverage:**` line in the PR body: if coverage is `both`, remove any existing label (clearing stale degraded markers from prior runs); if coverage is degraded, replace the line if present or append it if missing. Fetch the PR body, apply the change, then `gh pr edit "$PR_NUM" --body "$UPDATED_BODY"`. In the same edit, derive the issue number from the branch name (`ISSUE_NUM=$(echo "$BRANCH" | grep -oE 'issue-([0-9]+)' | grep -oE '[0-9]+')`; it is not set yet on this path), and when it is non-empty and this thread recovered its claim holder from its receipt, replace any existing `<!-- claim-holder: ... -->` line in the body with the output of `pr-claim-line.sh "$ISSUE_NUM" --holder "<recovered holder>"` (resolved as in the creation step below), or append it when missing, so a resumed PR never keeps a missing or stale claim-holder line.
-- If no PR exists: `[ACTION]` — Create one.
-  - Look for an issue number from the branch name (pattern: `issue-N-*`):
-    ```bash
-    ISSUE_NUM=$(echo "$BRANCH" | grep -oE 'issue-([0-9]+)' | grep -oE '[0-9]+')
-    ```
-  - If `ISSUE_NUM` is empty (branch doesn't follow `issue-N-*` pattern): create the PR without a `Closes #N` footer. Note to user: "No linked issue detected from branch name."
-  - If `ISSUE_NUM` is set: read the issue body for context:
-    ```bash
-    gh issue view $ISSUE_NUM --json title,body 2>/dev/null
-    ```
-  - Create the PR with `gh pr create` and a proper body (including `Closes #N` if issue was found) and a Test plan section. When `ISSUE_NUM` is set and this thread recovered its claim holder from its receipt, also put the output of `pr-claim-line.sh "$ISSUE_NUM" --holder "<recovered holder>"` (resolve it to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/pr-claim-line.sh`, `$HOME/.claude/scripts/pr-claim-line.sh`, `.claude/scripts/pr-claim-line.sh` (skip the installed candidates when `HOME` is unset or empty)) on its own line of the body, also when the PR is opened through the REST API (`gh api repos/{owner}/{repo}/pulls`); with no issue or no recovered holder, omit the line. Include a `**Local review coverage:** <level>` labeled line when coverage is anything other than `both` (mandatory for `none` and single-CLI cases). After creation, capture the PR number:
-    ```bash
-    PR_NUM=$(gh pr view --json number --jq '.number')
-    ```
-- If the PR is merged: `[DONE]` — PR is already merged. Nothing to continue.
-- If the PR is closed but not merged: `[BLOCKED]` — PR was closed without merging. It may need to be reopened or a new PR created.
-
----
-
-## Step 5: Determine reviewer ownership
-
-Resolve reviewer ownership via the shared helper (reads `.prs["<N>"].reviewer` from `~/.claude/session-state.json` first, falls back to a paginated live-history scan on all three comment endpoints):
-
-```bash
-REVIEWER=$("$REVIEWER_OF_SH" "$PR_NUM")
-REVIEWER_EXIT=$?
-```
-
-Branch on exit code:
-- `0` → `$REVIEWER` is one of `cr` / `bugbot` / `greptile`. Use it for Step 6.
-- `1` → `unknown` printed; no bot has reviewed yet. Treat as **CR** (the default primary reviewer) and proceed to Step 6 to wait for the first review.
-- `2` → `[BLOCKED]` — script/gh error; surface stderr.
-- `3` → `[BLOCKED]` — PR #$PR_NUM not found (closed, merged, or invalid).
-- `5` → `[BLOCKED]` — `~/.claude/session-state.json` is malformed, wrong shape, or the helper hit a runtime failure (e.g. a racing read between the validation guard and the jq lookup). Surface the helper's stderr, stop polling, and repair or remove the state file before retrying `/go-on`. Do **not** fall through to a live-history scan — sticky reviewer assignments live in session-state, and bypassing them risks mis-routing an already-escalated PR back to CR.
-
-Output: `Reviewer: CR` / `Reviewer: BugBot` / `Reviewer: Greptile`.
-
----
-
-## Step 6: Check for review response
-
-> **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read the cached JSON bundle. The inline `gh api` calls below are legacy check-run and rate-limit spot-checks retained because they target commit-level endpoints (`/commits/{SHA}/check-runs`, `/commits/{SHA}/statuses`) not covered by `pr-state.sh`. For review, inline comment, and conversation endpoint lookups, use `pr-state.sh` exclusively.
-
-### If PR is on CR:
-
-Check the commit status for CodeRabbit:
-```bash
-SHA=$(gh pr view $PR_NUM --json commits --jq '.commits[-1].oid')
-gh api "repos/{owner}/{repo}/commits/$SHA/check-runs" \
-  --jq '.check_runs[] | select(.name == "CodeRabbit") | {status: .status, conclusion: .conclusion, title: .output.title}'
-```
-
-Also check the statuses endpoint as fallback:
-```bash
-gh api "repos/{owner}/{repo}/commits/$SHA/statuses" \
-  --jq '.[] | select(.context | test("CodeRabbit"; "i")) | {state: .state, description: .description}'
-```
-
-**Rate limit detection:** If check-run shows `conclusion: "failure"` with title containing "rate limit" (case-insensitive), OR status shows `description` containing "rate limit" — CodeRabbit reports this status as non-blocking `state: "success"`, so do not gate on `state`:
-- `[ACTION]` — CR is rate-limited. Do NOT hand-roll a fallback: run `escalate-review.sh "$PR_NUM"` and branch on its `STATUS=`. It now returns `no_reviewer` where it used to hand off to BugBot or Greptile (issue #1897): paid reviews need the owner's explicit approval in chat, so post NO `@cursor review` and NO `@greptileai`, keep `reviewer: cr`, report "paid review requires owner approval", and keep polling — CodeRabbit's free allowance may return, and the no-review override (issue #1899), unless `NO_REVIEW_OVERRIDE_MINUTES=off`, turns it into `gate_met` once its window passes. If CodeRabbit offers to pay for a review now, decline it (`.claude/reference/cr-rate-limits.md`). A paid review the owner approves is one grant for this PR and HEAD, posted only through `paid-review-grant.sh --trigger` (issue #1898; `.claude/reference/paid-review-approval.md`).
-
-**Review completion:** If check-run shows `status: "completed"` with `conclusion: "success"`:
-- CR has finished reviewing. Check for findings (Step 7).
-
-**Review pending:** If no completion signal and no rate-limit signal:
-- `[ACTION]` — CR review is still pending. Polling every 60 seconds (12-minute timeout). A clean CR check-run completion short-circuits the timeout wait — but the merge gate still requires an explicit `APPROVED` review on the current HEAD SHA (per `cr-merge-gate.md` Step 1); completion alone does not satisfy it.
-- Poll all 3 endpoints each cycle for new comments from `coderabbitai[bot]`.
-- Check for rate-limit signals on every poll cycle. Rate-limit signals override the timeout — escalate immediately regardless of elapsed minutes.
-- After 12 minutes with no review content and no rate-limit signal: `[ACTION]` — CR timed out. Run `escalate-review.sh "$PR_NUM"` and follow its verdict; `no_reviewer` means the no-reviewer path above, never a paid trigger (issue #1897).
-
-### If PR is on BugBot:
-
-BugBot (`cursor[bot]`) is a PAID reviewer: a PR is here only if it was sticky on BugBot before issue #1897 or the owner approved a BugBot review in chat. Nothing re-invites it on a push; merge gate requires **1 clean BugBot review** on the current HEAD SHA (BugBot's completion signals are reliable).
-
-Check for BugBot reviews on the current HEAD:
-```bash
-gh api --paginate "repos/{owner}/{repo}/pulls/$PR_NUM/reviews?per_page=100" \
-  --jq '[.[] | select(.user.login == "cursor[bot]" and .commit_id == "'"$SHA"'")]'
-gh api --paginate "repos/{owner}/{repo}/pulls/$PR_NUM/comments?per_page=100" \
-  --jq '[.[] | select(.user.login == "cursor[bot]")]'
-gh api --paginate "repos/{owner}/{repo}/issues/$PR_NUM/comments?per_page=100" \
-  --jq '[.[] | select(.user.login == "cursor[bot]")]'
-```
-
-Also check the BugBot check-run for the completion signal:
-```bash
-gh api "repos/{owner}/{repo}/commits/$SHA/check-runs" \
-  --jq '.check_runs[] | select(.name == "Cursor Bugbot") | {status, conclusion}'
-```
-
-- BugBot has posted findings on `$SHA` → `[DONE]` — BugBot review received. Process findings (Step 7). After fixes are pushed, a re-review is a new paid review — only with the owner's approval in chat; otherwise wait for the no-review override. Any reviewer verdict on the new HEAD (a late CodeRabbit review included) disables that override (`.claude/reference/no-review-override.md`), so once one lands, stop waiting and report the blocker: the BugBot gate needs an owner-approved re-review.
-- BugBot has posted a clean review (check-run `completed` with no finding comments) on `$SHA` → `[DONE]` — merge gate met (1 clean pass is sufficient for the BugBot path). Proceed to merge verification.
-- No BugBot response AND <10 min since push → `[ACTION]` — Polling for BugBot (10-min timeout from push). Poll every 60 s.
-- No BugBot response AND ≥10 min since push → BugBot timed out. Do NOT trigger Greptile and do NOT retry `@cursor review` — both are paid and need the owner's approval in chat (issue #1897). Report the blocker and keep polling for the no-review override.
-- Stay on BugBot — do not switch back to CR. Ignore late CR reviews.
-
-### If PR is on Greptile:
-
-Check for Greptile comments:
-```bash
-gh api --paginate "repos/{owner}/{repo}/pulls/{N}/comments?per_page=100" \
-  --jq '[.[] | select(.user.login == "greptile-apps[bot]")]'
-gh api --paginate "repos/{owner}/{repo}/pulls/{N}/reviews?per_page=100" \
-  --jq '[.[] | select(.user.login == "greptile-apps[bot]")]'
-gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
-  --jq '[.[] | select(.user.login == "greptile-apps[bot]")]'
-```
-
-- If Greptile has posted findings: `[DONE]` — Greptile review received. Process findings (Step 7).
-- If no Greptile response: `[ACTION]` — Polling for Greptile (10-minute timeout). Polling cadence stays 60 s; exit immediately when the review lands, do not keep polling to 10 min.
-  - If no response after 10 minutes: `[BLOCKED]` — Greptile timed out. Performing self-review as fallback. Note: self-review does NOT satisfy merge gate.
-
----
-
-## Step 7: Check for unresolved findings
-
-Fetch review threads, 100 per page. While `pageInfo.hasNextPage` is `true`, repeat with `-F after=<endCursor>` and collect every page's `nodes` into one array:
-```bash
-gh api graphql -F after=null -f query='query($after: String) {
-  repository(owner: "{owner}", name: "{repo}") {
-    pullRequest(number: {N}) {
-      reviewThreads(first: 100, after: $after) {
-        pageInfo { hasNextPage endCursor }
-        nodes {
-          id
-          isResolved
-          comments(first: 100) {
-            totalCount
-            pageInfo { endCursor }
-            nodes {
-              body
-              author { login }
-              createdAt
-            }
-          }
-        }
-      }
-    }
-  }
-}'
-```
-
-Count unresolved threads from reviewers by piping the collected thread nodes (one JSON array) through this filter. It selects each unresolved thread once when a returned comment is from a review bot — `coderabbitai`, `cursor`, `codeant-ai`, `greptile-apps`, or the retired `graphite-app` (GraphQL's `author.login` drops the REST `[bot]` suffix) — **or** when the thread has more comments than were returned:
-
-<!-- test-anchor: go-on-bot-thread-count -->
-```bash
-jq -c '["coderabbitai","cursor","codeant-ai","greptile-apps","graphite-app"] as $bots
-  | [ .[]
-      | select(.isResolved == false)
-      | ((.comments.nodes // []) | length) as $got
-      | ((.comments.totalCount // $got) > $got) as $truncated
-      | select($truncated
-               or any((.comments.nodes // [])[]; (.author.login // "") as $l | $bots | index($l) != null))
-      | {id, truncated: $truncated} ]
-  | {count: length, threads: .}'
-```
-
-**Comment bound (issue #1953).** The query reads the first 100 comments of each thread, so a bot comment after the 100th is not in the returned nodes. That can only over-count: a thread with more comments than were returned counts regardless of author, flagged `truncated: true` — read its remaining comments, starting from that thread's `comments.pageInfo.endCursor` (`node(id: "<thread id>") { ... on PullRequestReviewThread { comments(first: 100, after: <cursor>) { pageInfo { hasNextPage endCursor } nodes { body author { login } } } } }`, repeated until `hasNextPage` is `false`) before deciding whether it holds a finding. The Step 8 merge gate (`merge-gate.sh`) paginates every thread and blocks unresolved ones regardless of author (on `ci-only` / `ci+codeant-one-round` a non-severe finding deferred by a human reply's follow-up-issue link is exempt — `review-policy.md`), so this count never decides a merge.
-
-Also check for issue-level review comments that may not have threads. Use the shared `pr-state.sh` helper — it fetches all three endpoints in one call, filters to the review bots (`coderabbitai[bot]`, `cursor[bot]` (BugBot), `codeant-ai[bot]`, `greptile-apps[bot]`), and pre-classifies each comment with `classification.class` (`finding` vs `acknowledgment`). The classifier only runs when `--since <iso>` is passed — pass the PR's `createdAt` to include every bot comment on the PR. The helper writes the JSON bundle to a tempfile and prints its **path** on stdout — capture the path, then read with `jq < "$BUNDLE"`:
-
-```bash
-PR_CREATED=$(gh pr view "$PR_NUM" --json createdAt --jq '.createdAt')
-BUNDLE=$("$PR_STATE_SH" --pr "$PR_NUM" --since "$PR_CREATED")
-jq '.new_since_baseline.conversation | map(select(.classification.class == "finding"))' < "$BUNDLE"
-```
-
-- If there are unresolved findings: `[ACTION]` — Processing N unresolved findings.
-  1. Read each finding carefully
-  2. Verify against actual code before fixing
-  3. Fix ALL valid findings in a single commit
-  4. Push once
-  5. Reply to every finding confirming the fix — each thread, and each issue-level comment that has no thread. Use the shared helper with the finding's comment ID — it tries the inline `/replies` endpoint first, falls back to a PR-level comment on 404 (the path an issue-level comment's ID always takes), and applies reviewer-specific `@mention` rules (prepends `@coderabbitai` for CR; strips `@cursor`/`@greptileai`/`@codeant-ai`/`@graphite-app` for BugBot/Greptile/CodeAnt/the retired Graphite):
-
-     ```bash
-     # $REVIEWER: cr | bugbot | greptile | codeant | graphite (determined from the finding's author;
-     # graphite = the retired graphite-app[bot], kept until its App is uninstalled)
-     # $VERDICT: fixed | deferred | declined; $DEFECT: real | not — mandatory (issue #1842)
-     # $FIX: as-given | adapted | wrong | none — mandatory (issue #1843; scored only when $DEFECT is real)
-     # $REPLY must match $VERDICT: "Fixed in `<sha>`: <what changed>" for fixed,
-     # the follow-up issue link for deferred, the reason for declined
-     "$REPLY_THREAD_SH" <comment_id> --reviewer "$REVIEWER" \
-       --body "$REPLY" --pr N \
-       --verdict "$VERDICT" --defect "$DEFECT" --fix "$FIX"
-     ```
-
-     Never post "Fixed in" for a deferred or declined finding — that reply claims a resolution that did not happen. The verdict flags stamp the `review-verdict` marker the review-cost ledger reads. `--defect real` only when the finding named a behaviour the code would actually have gotten wrong; `not` for style, duplication, or a reviewer misreading. `--fix` is required with `--defect real` (issue #1843): `as-given` (suggestion applied as proposed), `adapted` (right direction, code rewritten), `wrong` (proposed fix incorrect), `none` (no fix suggested). Mapping: `review-stack-audit.md` §The marker.
-
-     Exit code `0` means the reply posted (by either the inline endpoint or the PR-level fallback); the fallback path also emits a note to stderr. Non-zero means a genuine failure to post. See `reply-thread.sh --help` for the full contract, including PR-number-unresolvable-without-`--pr` or both-endpoints-404 (exit 3) and inline-404-then-fallback-non-404 (exit 4).
-
-  6. Resolve the exact thread IDs you read and replied to. Write one handled thread ID per line to a temporary `$TOUCHED_THREADS` file. Include active-reviewer threads, retired Graphite threads, and human-opened threads containing a bot finding. Skip the call when there were no handled threads. The helper paginates. If resolution fails, its minimize fallback requires a bot-authored opening comment. Human-opened threads stay unresolved.
-
-     ```bash
-     "$RESOLVE_REVIEW_THREADS_SH" "$PR_NUM" --thread-ids-file "$TOUCHED_THREADS"
-     ```
-
-     A thread already resolved prints `[ALREADY-RESOLVED] <id> <url> (no mutation)` and counts as success. Exit 1 means at least one requested thread is still unresolved after both mutations, is missing from this PR, or was not found — surface the `[STUCK]` lines to the user and stop. Exit 2 with `ERROR: refused N non-thread ID(s)` means the set held a non-thread ID (a review-comment node ID or numeric `databaseId`); nothing was mutated. Exit 2 without that line is a usage error (malformed arguments, invalid PR number, conflicting options) — fix the invocation. Replace it with the thread ID the `ERROR:` line hints (thread IDs come from `reviewThreads.nodes[].id`, usually `PRRT_…`) and re-run the helper — never fall back to an inline `resolveReviewThread` mutation. Do not proceed with a non-zero exit.
-
-  7. After fixing, go back to **Step 6** to wait for the next review.
-- If no unresolved findings: `[DONE]` — No unresolved findings.
-
----
-
-## Step 8: Check merge gate
-
-Run the shared merge-gate verifier (implements CR 1 explicit APPROVED on current HEAD / BugBot 1-clean / Greptile severity + CI + BEHIND checks):
-
-```bash
-# CLEAN_BEHIND is state derived from THIS evaluation only. Clear it on entry —
-# before the gate runs, ahead of every branch below, including exit 0 — because
-# /go-on re-enters Step 8 (the rebase branch re-runs the gate, and Step 7 loops
-# back through Step 6). A value left over from an earlier pass would re-enter
-# Step 9a on a PR that is no longer BEHIND, where the re-probe returns exit 1
-# ("mergeStateStatus is …, not BEHIND"), item 3 reads that as "genuinely not
-# clean", and the branch is rebased and force-pushed a second time for nothing.
-# Resetting inside the BEHIND bullet alone is NOT enough: the gate-exit-0 path
-# never reaches that bullet.
-CLEAN_BEHIND=0
-
-GATE_JSON=$("$MERGE_GATE_SH" "$PR_NUM")
-GATE_EXIT=$?
-```
-
-Branch on the exit code:
-
-- `0` → `[DONE]` — Merge gate satisfied. Proceed to Step 9 (AC verification). `CLEAN_BEHIND` stays `0` here, so Step 9a correctly `[SKIP]`s: nothing about this pass is a clean-`BEHIND` follow-through.
-- `1` → `[ACTION]` — Gate not met. Parse `missing` from the JSON output and act accordingly:
-  - CR path with **"need 1 explicit CR APPROVED review on HEAD"**: if the current SHA is still within the 12-minute CR polling window, return to **Step 6** and keep polling — do NOT re-trigger yet. Only after the 12-minute timeout, and only within the 2-trigger-per-hour budget, post `@coderabbitai full review` once and return to **Step 6**.
-  - CR path with **"CR approval on HEAD ... retracted by later CHANGES_REQUESTED"**: CR retracted approval. Return to **Step 7** to process the findings. Re-trigger only after fixes are pushed (the new SHA invalidates prior reviews regardless).
-  - CR path with **"CodeRabbit check-run not green on HEAD"** or **"latest CR review on HEAD requests changes"**: CR has findings; return to **Step 7** to process them.
-  - BugBot path with **"no BugBot review on HEAD"**: BugBot hasn't reviewed the current HEAD yet; return to **Step 6** to poll for the review.
-  - BugBot path with **"latest BugBot review on HEAD has findings"**: return to **Step 7** to process findings.
-  - Greptile path with **"unresolved Greptile thread(s)"**: return to **Step 7** to process; if P0 remains after fix, a re-trigger is a new paid review: ask the owner, and post `@greptileai` only on their approval in chat (subject to the 3-review cap per `.claude/rules/greptile.md`).
-  - **"branch is BEHIND base"**: **probe before prescribing anything** (issue #1564). A *verified clean* `BEHIND` is an auto-merge, not a rebase — canonical in `.claude/rules/cr-merge-gate.md` Step 1d and `CLAUDE.md` "PR MERGE AUTHORIZATION" (issue #754), and encoded the same way in `.claude/agents/phase-c-merger.md` (issue #1563) and `fixpr/SKILL.md` Step 6. Rebasing a clean `BEHIND` moves HEAD, discarding the bot approval that had already satisfied the rest of the gate and restarting CI — the treadmill the carve-out exists to avoid.
-
-    **Re-resolve the reviewer before probing — never reuse Step 5's variable.**
-    Step 5 leaves `$REVIEWER` as the literal string `unknown` on its exit-`1`
-    branch (its "treat as CR" instruction changes the *routing*, not the
-    variable), and Step 6's escalations persist the new owner with
-    `"$REVIEWER_OF_SH" --sticky …` **without** reassigning the shell variable. A
-    bare `-n` guard therefore admits two wrong values: `--reviewer unknown` is a
-    usage error (exit `2` → `[BLOCKED]`), and a stale `cr` after a
-    BugBot/Greptile escalation gates the *wrong* path — a gate that can never go
-    green, whose residual blocker reads as "not clean" and buys exactly the
-    rebase this step exists to prevent. Validate the value and pass the flag
-    **only** when it is one of the three the script accepts; otherwise omit it
-    and let `merge-gate.sh` auto-detect, which reads the same sticky assignment
-    Step 6 persisted. Same shape as `.claude/agents/phase-c-merger.md` Step 1
-    (issue #1563).
-
-    ```bash
-    # Re-read rather than reuse: session-state holds any sticky escalation
-    # Step 6 persisted, which never reached this shell's $REVIEWER.
-    CB_REVIEWER=""
-    RESOLVED_EXIT=0
-    RESOLVED=$("$REVIEWER_OF_SH" "$PR_NUM") || RESOLVED_EXIT=$?
-    if [[ "$RESOLVED_EXIT" -eq 5 ]]; then
-      # Malformed session-state — STOP HERE, do not probe. Exit 5 is Step 5's
-      # documented fail-fast, and omitting --reviewer would not be a safe
-      # degradation: it lets merge-gate.sh fall through to a live-history guess
-      # that can mis-route an already-escalated PR back to CR, mark a clean
-      # BEHIND as unclean, and prescribe the rebase this step exists to prevent.
-      # Report [BLOCKED] and leave CLEAN_BEHIND at 0; repair or remove
-      # ~/.claude/session-state.json and re-run /go-on.
-      echo "reviewer-of.sh exit 5: session-state malformed — blocking, not probing." >&2
-      # → [BLOCKED]: skip the probe entirely.
-    else
-      case "$RESOLVED" in
-        cr|bugbot|greptile) CB_REVIEWER="$RESOLVED" ;;
-        *) CB_REVIEWER="" ;;   # `unknown` and anything else → omit the flag
-      esac
-
-      # Reached ONLY when the resolution above did not block. `|| CB_EXIT=$?`,
-      # not a bare assignment: exit 1 is the EXPECTED pre-tick result here, and
-      # under `set -e` a bare assignment would abort the block before the status
-      # was ever captured.
-      CB_EXIT=0
-      if [[ -n "$CB_REVIEWER" ]]; then
-        CB_JSON=$("$CLEAN_BEHIND_SH" "$PR_NUM" --reviewer "$CB_REVIEWER") || CB_EXIT=$?
-      else
-        CB_JSON=$("$CLEAN_BEHIND_SH" "$PR_NUM") || CB_EXIT=$?
-      fi
-    fi
-    ```
-
-    An omitted `--reviewer` is safe **only** on the non-blocking branch, where
-    `reviewer-of.sh` returned a usable answer that simply was not one of the
-    three enum values (`unknown` — no bot has reviewed yet). It is never a
-    substitute for a resolution that failed.
-
-    Read the JSON, never `$?` after a pipe. `CLEAN_BEHIND` was already cleared at
-    Step 8 entry, so only the two clean outcomes below can raise it:
-
-    - `0` (`safe_to_offer: true`) → `[ACTION]` — **verified clean `BEHIND`.** No snapshot, no rebase, no force-push. Set `CLEAN_BEHIND=1` and continue to **Step 9**: this path is **AC-first**, Step 9a finishes the verification, and Step 10 hands the merge to `/wrap`.
-    - `1` whose `reasons_not_safe` / `residual_blockers` are **only** the unchecked-Test-Plan-checkbox count and/or a sole `ac-gate` check-run — **failing *or* still incomplete** — → `[ACTION]` — **clean-`BEHIND` candidate**, i.e. "waiting on Step 9", not a blocker. `clean-behind-check.sh` counts unticked boxes as `reasons_not_safe`, so a pre-tick exit `1` is bookkeeping rather than a real blocker. Treat exactly as `0`: set `CLEAN_BEHIND=1`, continue to Step 9.
-    - `1` with **any other** residual blocker → genuinely non-clean `BEHIND`. Surface `reasons_not_safe`, then `[ACTION]` — `diff-survival-check.sh snapshot`, rebase onto base, then `diff-survival-check.sh verify` (Step 1 branch table) and force-push **only** on exit 0; wait for a fresh review, then re-run the gate.
-    - `2`/`3`/`4` → `[BLOCKED]` — usage error / PR not found or not open / `gh`-network-jq error. Surface the JSON or stderr. Nothing was reported *about this `BEHIND`*, so it is neither clean nor unclean — **never** read a non-`1` failure as a rebase signal, which would buy a rebase on evidence you do not have.
-
-    `churn.advisory` is context, never a gate.
-  - **"CI has N failing check-run(s)"** or **"CI has N incomplete check-run(s)"**: fix CI or wait for incomplete runs, then re-run the gate — **except when the BEHIND bullet above already claimed this pass.** The ordinary pre-tick candidate is a `missing[]` of exactly `BEHIND` + a sole failing-or-incomplete `ac-gate`, so both bullets match the same JSON; the BEHIND bullet wins and this one is `[SKIP]`ped for that `ac-gate` entry. Following this bullet instead would re-enter Step 8 after Step 9's body PATCH, and that read returns `merge_state: "UNKNOWN"` with the `BEHIND` entry **gone from `missing[]`** — so the probe never fires, `CLEAN_BEHIND` stays `0`, Step 9a `[SKIP]`s, and the clean-`BEHIND` path is lost silently. Precedence, concretely: if `missing[]` contains a `BEHIND` entry, resolve the BEHIND bullet first and act on its verdict; only CI entries **other than** that sole pre-tick `ac-gate` (or any CI entry on a pass with no `BEHIND`) belong to this bullet.
-- `3` → `[BLOCKED]` — PR not found (closed or merged).
-- `2`/`4` → `[BLOCKED]` — script or gh error; surface the message to the user.
-
----
-
-## Step 9: Verify acceptance criteria
-
-Run the acceptance criteria check via the shared helper:
-
-```bash
-ITEMS=$("$AC_CHECKBOXES_SH" "$PR_NUM" --extract)
-AC_EXIT=$?
-```
-
-Branch on exit code:
-- `0` → `$ITEMS` is a JSON array of `{index, checked, text}`. For each item with `checked == false`, read the relevant source files and verify the criterion. Tick passing items by index with `"$AC_CHECKBOXES_SH" "$PR_NUM" --tick "0,2,3"` (or `--all-pass` if every unchecked item passed). On a clean-`BEHIND` candidate (`CLEAN_BEHIND=1`), establish `TICK_AT` **on every path through this step, including the one where nothing needs ticking** — Step 9a item 1 compares it against the `ac-gate` run's `started_at`, and an unset baseline makes that comparison meaningless. A candidate can arrive here already fully ticked (Step 8 admits a `missing[]` of `BEHIND` + a sole `ac-gate` with every box already checked), in which case the tick command never runs:
-
-  ```bash
-  if [[ -n "$TICKED_ANY" ]]; then
-    # A --tick/--all-pass actually ran: the body reached its final state now.
-    TICK_AT=$(date -u +%FT%TZ)
-  else
-    # Nothing to tick — the body was already final before this step. Use the
-    # PR's updatedAt as a conservative upper bound on the last body write: a
-    # body edit always bumps it, so a run started after it definitely read the
-    # final body. (Other events bump it too, which only makes the baseline
-    # later — erring toward "pre-tick suspect", the safe direction.)
-    TICK_AT=$(gh pr view "$PR_NUM" --json updatedAt --jq .updatedAt)
+GO_ON_MODULE_DISPATCH=""
+for candidate in \
+  "${HOME:+$HOME/.claude/skills-worktree/.claude/skills/go-on/scripts/dispatch-module.sh}" \
+  "${HOME:+$HOME/.claude/skills/go-on/scripts/dispatch-module.sh}" \
+  ".claude/skills/go-on/scripts/dispatch-module.sh"; do
+  if [[ -x "$candidate" ]]; then
+    GO_ON_MODULE_DISPATCH="$candidate"
+    break
   fi
-  ```
-
-  If neither can be established, do **not** guess: treat every failing `ac-gate` as pre-tick-suspect and take item 1's single-rerun path, which is bounded and cannot loop.
-- `1` → `[BLOCKED]` — PR body is missing a Test Plan section. Every PR must include one (per CLAUDE.md). The PR is NOT merge-ready until the body is fixed — report this to the user and do not continue to the merge decision.
-- `3` → `[BLOCKED]` — PR not found.
-- `2`/`4` → `[BLOCKED]` — script or gh error; surface stderr to user.
-
-- If all items pass after ticking: `[DONE]` — All acceptance criteria verified and checked off.
-- If any item fails: `[ACTION]` — Fix the failing criteria, then re-verify.
-
----
-
-## Step 9a: Clean-`BEHIND` follow-through (candidates only)
-
-`[SKIP]` unless Step 8 set `CLEAN_BEHIND=1`. Ticking AC has two after-effects; both must settle before Step 10, and they overlap, so run them in this order and wait once. Mirrors `.claude/agents/phase-c-merger.md` Step 2a (issue #1563).
-
-1. **Re-run the `ac-gate` check — but only if it is terminal and failing.** `ac-gate.yml` triggers on `opened`/`synchronize`/`reopened`, so a PR-body edit never re-fires it — a red `ac-gate` on an unticked PR is by design and stays red until rerun. Read the `ac-gate` check-run's **current** status on HEAD first and branch on it; `merge-gate.sh` reports only *failing* checks in `ci_status.blocking[]`, so an absent id means "not failing", never "green":
-   - **`completed` + failing** → rerun it. The id in `ci_status.blocking[].id` is a **job** id: `gh run rerun --job "$AC_GATE_JOB_ID"`. A rejected rerun (stale id, permissions, GitHub error) means `ac-gate` was never re-fired, so waiting would burn the whole deadline for nothing → `[BLOCKED]`, reporting the `gh` error and the job id, without entering the wait. The rerun publishes a **new** job id on the same run, so poll that one (or re-read the check-run by name from the HEAD SHA); the old id stays `failure` forever, so polling it would never terminate.
-   - **`queued` / `in_progress`** (the Step 8 candidate shape admits this) → **do not rerun *yet*.** GitHub rejects a rerun of a run that is still going, and an in-flight job only publishes another id to chase. But do **not** record this run as authoritative either: by this step's own premise it was fired by the last `synchronize`, i.e. **before** Step 9's tick, and whether its body read lands before or after the PATCH is a race. So wait it out under item 2's deadline, then judge it by **when it started, not by its conclusion** — compare the check-run's `started_at` against `TICK_AT`, the body's final-state baseline that Step 9 establishes on every path (post-`--tick`/`--all-pass` clock reading, or the PR's `updatedAt` when nothing needed ticking):
-     - `started_at` **after** `TICK_AT` → the run definitively read the ticked body; its conclusion is authoritative (green → item 2's mergeability wait; failing → a real AC failure, back to Step 9).
-     - `started_at` **at or before** `TICK_AT` → pre-tick-suspect. A green conclusion is still trustworthy (it passed on a body that was *less* complete). A **failing** one is not evidence of anything — it is the by-design pre-tick red — so once the run is terminal, rerun it **once** via the `completed` + failing branch above and wait again on the new job id. One rerun only: a second failing conclusion from a run started after `TICK_AT` is a real AC failure.
-   - **`completed` + green** → nothing to rerun, but do **not** skip item 2: the body PATCH still invalidated mergeability, and that has to settle before the re-probe.
-2. **Wait out the mergeability recompute.** `ac-checkboxes.sh --tick` / `--all-pass` PATCHes the PR body, and GitHub invalidates mergeability on any body write — the next gate read returns `merge_state: "UNKNOWN"` with the `BEHIND` entry **gone from `missing[]`**. That is not a new blocker and never a reason to rebase. Proceed only when **both** hold: the `ac-gate` check-run on HEAD has reached a terminal `status: "completed"` (any conclusion), **and** `gh pr view "$PR_NUM" --json mergeStateStatus` is no longer `UNKNOWN` (~30–60s). Advancing on mergeability alone hands item 3 a still-queued `ac-gate`, which `clean-behind-check.sh` reports as an *incomplete*-CI residual — read as a non-clean `BEHIND`, that triggers exactly the rebase this path exists to prevent. **Both waits share one 10-minute deadline, started on entry to this item** — `WAIT_UNTIL=$(( $(date -u +%s) + 600 ))` as the first thing item 2 does. Anchoring it to "the rerun" would leave two of item 1's three branches with no clock at all (`queued`/`in_progress` and `completed` + green both arrive here having reran nothing), so the wait would either have no bound or compare against an unset value and `[BLOCKED]` on its first tick. Item 1's single rerun, when it fires, **restarts** the deadline from that moment — a fresh job id is fresh work, and it must not inherit time already spent waiting on the run it replaced. The deadline is a stop condition, never a licence to proceed with a condition unmet. Either still unmet at the deadline → `[BLOCKED]`, naming which one did not settle plus the job's URL and status: do **not** re-probe and do **not** rebase — an unsettled wait is not evidence the `BEHIND` is unclean. An `ac-gate` that completes with a **failing** conclusion is a real AC failure → back to Step 9, not a rerun loop — but only once item 1 has established the run actually started **after** `TICK_AT`. A failing conclusion from a pre-tick run is the by-design red, not an AC failure; item 1 sends that one back for its single rerun instead.
-3. **Re-probe.** Run `clean-behind-check.sh` again — same invocation *and the same exit-code table* as Step 8, so `2`/`3`/`4` block here too rather than being read as an unclean `BEHIND`. Exit `0` / `safe_to_offer: true` is the authorization Step 10 carries. A still-**incomplete** `ac-gate` in `residual_blockers` here means item 2's wait was left early — go back and finish it. Exit `1` once AC is ticked and `ac-gate` has completed **green** → the `BEHIND` genuinely is not clean: take the Step 8 non-clean rebase path.
-
----
-
-## Step 10: Report completion
-
-Output a summary:
-
-```
-=== /go-on complete ===
-
-Stoppage: <pause | end | token_exhaustion | unplanned> (recorded <record_at>)
-Branch: $BRANCH
-PR: #$PR_NUM
-Reviewer: CR / Greptile
-Merge gate: MET / MET (clean BEHIND — cleared by /wrap Step 2.4) / NOT MET
-Acceptance criteria: ALL PASSED / N FAILED
-Refill: <still paused — clear with /go-on --resume-refill | cleared via <command> --resume-refill | not paused>
-Status: Ready for wrap
+done
 ```
 
-A delegated lane (`pause` / `end`) reports the companion command's own board instead of this block, plus the `Stoppage:` and `Refill:` lines. Ranks 4 and unclassifiable report only what was found — no board, no status line, no state change.
+Call `"$GO_ON_MODULE_DISPATCH" OPERATION PHASE` and read only its returned path. The operations are `kind` (`planned-stop`, `usage-limit-park`, `token-exhaustion`, `unplanned`) and `review` (`prepare`, `publish`, `respond`, `merge`).
 
-If the merge gate is met and all AC pass, run `/wrap` immediately — no pre-merge prompt (`CLAUDE.md` "PR MERGE AUTHORIZATION"). Honor an explicit user opt-out ("don't merge" / "wait for my approval") if given in chat.
+**Preflight before any write.** After 0.5 finds no matching receipt (or `--again` was passed), and before 0.5a, the receipt write, or any delegation, launch or other side effect, call the dispatcher for every module the selected lane can reach: the kind module, plus all four review modules for `unplanned`, and for `token_exhaustion` `review:prepare` plus every review module from the one holding the step its `needs` names onward (Step 6 or Step 7: `review:respond` and `review:merge`; Step 1b: all four). Keep the returned paths. The preflight checks that each module is present and reads none of them. Then read the kind module. Read a review module only when the lane reaches it. Reuse a module already read in this valid context.
 
-**A verified clean `BEHIND` counts as met for this hand-off (issue #1564).** `BEHIND` is cleared *by* the merge, so on that path the gate still reports exit `1` with the `BEHIND` entry present — the same loop-exit rule `/wrap` applies to itself (gate exit `1` with `BEHIND` as the sole `missing[]` item; issue #1425). When Step 9a's re-probe returned exit `0`, dispatch `/wrap` on that basis rather than reporting NOT MET. **`/wrap` Step 2.4 is the merge executor** — it runs `admin-merge.sh "$PR_NUM" --auto-plain --ac-verified` itself, with no `AskUserQuestion` (issue #754): the plain shape modifies no branch protection, so it needs no user turn. **Do not run `admin-merge.sh` from `/go-on`** — `--auto-plain` carries a repeat guard, so a call here would consume the one attempt and `/wrap`'s would then refuse with exit `8`, merging nothing. Step 2.4 owns that script's semantics; its exits map as: `0` → merged, relay the `AUTO_PLAIN_MERGED` evidence block; `8` → the shape needs a protection change (or an auto attempt already ran) → **surface `/admin-merge $PR_NUM` as a user choice and never auto-run it**; `1` → the clean state no longer held at merge time (main advanced) → Step 2.4's own rebase fall-through and recovery loop.
+**A missing module is a recoverable blocker.** An unresolved dispatcher, or exit 2 or 3 from it, stops the lane. Never fall back to another module, to a remembered older version, or to a copy in a different checkout. Print `[BLOCKED] /go-on module unavailable: <operation:phase>` with the dispatcher's message, then the class, repository, PR or issue, evidence digest (0.5), last completed step, and next step. Write no receipt. When the preflight failed, nothing was written, so the next step is: restore the skill install, then rerun `/go-on`. When a module disappears after the receipt was written, the next step is: restore it, then rerun `/go-on --again`.
+
+**Compaction or restart.** Reload this entry and re-run the 0.2a generation check and the live-work check. Keep the class Step 0 already selected; a fresh `/go-on` invocation applies the full 0.4 precedence table again. The receipt this invocation wrote marks the dispatch as done, so continue the active lane rather than dispatching again. For `pause` / `end` and `usage_limit_park`, read only the active kind module. For `token_exhaustion` and `unplanned`, read only the active kind module, `review:prepare`, and the active review module. Reading `review:prepare` again does not re-run its completed steps: it re-resolves the lifecycle helpers, and before any write re-check Step 0b's authorship guard and Step 1's diff-survival guard. Each step's own `[DONE]` check then decides where to resume. Variables a step set before the compaction are gone, so a lane resuming in `review:merge` always re-runs Step 8 (read-only) before Step 9a or Step 10: that re-derives `CLEAN_BEHIND` from the current evaluation instead of letting Step 9a skip its clean-`BEHIND` follow-through. Never repeat a commit, push, reply, thread resolution or delegation that current evidence (HEAD, PR state, threads, the delegate's state) shows complete.
+<!-- go-on-routing:end -->

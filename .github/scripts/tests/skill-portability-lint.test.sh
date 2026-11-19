@@ -32,7 +32,7 @@ make_fixture() {
   while IFS= read -r skill; do
     mkdir -p "$dir/.claude/skills/${skill}"
     cp "$REPO_ROOT/.claude/skills/${skill}/SKILL.md" "$dir/.claude/skills/${skill}/"
-    if [[ "$skill" == "issue-maker" || "$skill" == "pm" ]]; then
+    if [[ "$skill" == "issue-maker" || "$skill" == "pm" || "$skill" == "go-on" ]]; then
       cp -R "$REPO_ROOT/.claude/skills/${skill}/modules" "$dir/.claude/skills/${skill}/"
     fi
     if [[ -d "$REPO_ROOT/.claude/skills/${skill}/references" ]]; then
@@ -104,6 +104,24 @@ link_pm_modules_directory() {
   ln -s ../../../detached-modules .claude/skills/pm/modules
 }
 expect "linked PM module directory fails closed" 3 'PM module sources must be regular files' link_pm_modules_directory
+
+# /go-on loads its lane procedures from modules (issue #2181).
+poison_go_on_module() {
+  printf '\nUse .claude/scripts/issue-claim.sh directly.\n' >> .claude/skills/go-on/modules/review/merge.md
+}
+expect "/go-on module gets portable-path enforcement" 1 'merge.md.*issue-claim.sh|issue-claim.sh' poison_go_on_module
+
+hide_go_on_modules() {
+  mv .claude/skills/go-on/modules .claude/skills/go-on/modules-missing
+}
+expect "missing /go-on module directory fails closed" 3 'Guarded module directory missing: .claude/skills/go-on/modules' hide_go_on_modules
+
+link_go_on_module() {
+  mv .claude/skills/go-on/modules/review/merge.md detached-merge.md
+  printf '\nUse .claude/scripts/issue-claim.sh directly.\n' >> detached-merge.md
+  ln -s ../../../../../detached-merge.md .claude/skills/go-on/modules/review/merge.md
+}
+expect "/go-on module cannot escape the lint through a link" 3 '/go-on module sources must be regular files' link_go_on_module
 
 noop() { :; }
 
