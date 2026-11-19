@@ -908,7 +908,12 @@ set_log() {
     assert r.returncode==0 and r.stdout=='' and d['active_set'] is None and d['coherence_runs'][0]['status']=='skipped' and [x['set_id'] for x in d['issues']]==[sid,sid],(r.stdout,r.stderr,d)
     d['active_set']=dict(set_id='x',repository='other/repo',has_chain=False,source=dict(ask='q',ref=None));log.write_text(json.dumps(d));before=log.read_bytes()
     r=run(setup+'SOURCE_ASK=q\n'+open_set); assert r.returncode!=0 and log.read_bytes()==before
-    print('ok workflow: a two-issue batch closes its set silently; an open set is reused only to continue its own filing, and a foreign one is refused')
+    seed([]); run(setup+'SOURCE_ASK="abandoned"\n'+open_set); old=state()['active_set']['set_id']; file_member(1)
+    r=run(setup+'SOURCE_ASK="next filing"\n'+open_set); assert r.returncode!=0,r.stderr
+    d=state(); d['issues'][0]['status']='closed'; log.write_text(json.dumps(d))
+    r=run(setup+'SOURCE_ASK="next filing"\n'+open_set); d=state()
+    assert r.returncode==0 and d['active_set']['set_id']!=old and d['active_set']['source']['ask']=='next filing' and d['coherence_runs'][-1]['set_id']==old and d['coherence_runs'][-1]['status']=='abandoned',(r.stderr,d)
+    print('ok workflow: a two-issue batch closes its set silently; an open set is reused only to continue its own filing, a foreign one is refused, and a set whose members were all retracted is closed as abandoned')
     seed([]); run(setup+'SOURCE_ASK="three things"\n'+open_set); sid=state()['active_set']['set_id']
     for n in (1,2): file_member(n)
     file_member(9,member=False); assert state()['issues'][-1]['set_id'] is None

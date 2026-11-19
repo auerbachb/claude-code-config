@@ -17,19 +17,26 @@ If the user describes multiple issues in one message (a numbered/bulleted list, 
 
 A batch or chain is read back as a whole once its last member is filed (`create:coherence`). That pass needs to know which rows belong to this filing and what they were cut from, after compaction as well as in context, so the set is recorded explicitly — never inferred from titles, labels, timestamps, or the word "epic".
 
-Run this block **before the first create** of every batch, and again when any request (or a single ask) becomes a chain — with `IS_CHAIN_SET=true`, before `create:increment-draft`'s identity block. Set `SOURCE_ASK` to the user's original ask text, verbatim (the whole batch message for a batch). A set already open is kept only when this run continues the **same** filing — a chain inside the open batch, `create:doc-gate` adding the document reference, or a recovered session resuming it — and the caller says so with `SET_CONTINUE=true`. A chain inside a batch then joins the batch's set and the pass runs once for the whole filing. A new filing that finds a set still open stops instead: an unfinished earlier filing must reach its coherence step (or be closed) first, so two filings never share one set or one source ask.
+Run this block **before the first create** of every batch, and again when any request (or a single ask) becomes a chain — with `IS_CHAIN_SET=true`, before `create:increment-draft`'s identity block. Set `SOURCE_ASK` to the user's original ask text, verbatim (the whole batch message for a batch). A set already open is kept only when this run continues the **same** filing — a chain inside the open batch, `create:doc-gate` adding the document reference, or a recovered session resuming it — and the caller says so with `SET_CONTINUE=true`. A chain inside a batch then joins the batch's set and the pass runs once for the whole filing. A new filing that finds a set still open stops instead: an unfinished earlier filing must reach its coherence step (or be closed) first, so two filings never share one set or one source ask. The one exception is an abandoned filing: an open set in this repository whose filed members were all retracted (none left open) and whose pass never started is closed as `abandoned` in `.coherence_runs`, and the new set opens in its place.
 
 <!-- test-anchor: issue-maker-coherence-open-set -->
 ```bash
 : "${SOURCE_ASK:?capture the original ask text before opening the set}"
 SET_ID=$(python3 -c 'import uuid; print(uuid.uuid4())') || exit 1
-set_log 'if .active_set != null and .active_set.repository != $repo then error("a coherence set is still open for another repository; finish it there first")
+set_log "$MINE_DEF"'(.active_set.set_id // "") as $open
+  | (if .active_set != null and $continue != true and .active_set.repository == $repo and .active_set.review == null
+        and ([.issues[] | select(same_repo and .set_id == $open)] | length) > 0
+        and ([.issues[] | mine | select(.set_id == $open)] | length) == 0
+     then .coherence_runs = ((.coherence_runs // []) + [{set_id:$open, repository:$repo, status:"abandoned", completed_at:$ts, report:[]}])
+       | .active_set = null else . end)
+  | if .active_set != null and .active_set.repository != $repo then error("a coherence set is still open for another repository; finish it there first")
   elif .active_set != null and $continue != true then error("a coherence set is still open from an unfinished filing; finish or close it before starting another")
   elif .active_set != null then .active_set.has_chain = (.active_set.has_chain or $chain)
     | if $ref != "" then .active_set.source.ref = $ref else . end
   else .active_set = {set_id:$id, repository:$repo, has_chain:$chain,
     source:{ask:$ask, ref:(if $ref == "" then null else $ref end)}, review:null, applied_fixes:[]} end' \
   --arg id "$SET_ID" --arg repo "$REPO" --arg ask "$SOURCE_ASK" --arg ref "${SOURCE_REF:-}" \
+  --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
   --argjson chain "${IS_CHAIN_SET:-false}" --argjson continue "${SET_CONTINUE:-false}" || {
   echo "ERROR: could not open the coherence set; do not file the first member" >&2
   exit 1
