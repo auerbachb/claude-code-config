@@ -172,6 +172,32 @@ assert_eq 0 "$(grep -q 'only on explicit request' .claude/skills/issue-maker/mod
 assert_eq "$ROOT/.claude/skills/issue-maker/modules/session-mode.md" "$("$DISPATCH" session mode)" 'mode-switch requests dispatch to the dedicated mode module'
 assert_eq 0 "$(grep -q 'switch to rapid-fire mode.*session:mode' .claude/skills/issue-maker/SKILL.md; echo $?)" 'entry classifies explicit mode switches'
 
+# Document gate (#2543): its own module, wired from sizing, never keyed on "epic".
+DOC_GATE="$ROOT/.claude/skills/issue-maker/modules/create/doc-gate.md"
+assert_eq "$DOC_GATE" "$("$DISPATCH" create doc-gate)" 'oversized asks dispatch to the document gate module'
+assert_eq 0 "$(grep -q 'test-anchor: issue-maker-doc-gate-tiers' "$DOC_GATE"; echo $?)" 'document gate holds the one tier definition'
+assert_eq 0 "$(grep -q 'load `create:doc-gate` first' .claude/skills/issue-maker/modules/create/reflect-and-draft.md; echo $?)" 'sizing loads the document gate before chain modules'
+assert_eq 0 "$(grep -q 'picked \*\*File as-is\*\*' .claude/skills/issue-maker/modules/create/crossrefs.md; echo $?)" 'the re-cut question follows the gate only on file as-is'
+assert_eq 0 "$(grep -q 'Nothing here reads the word "epic"' "$DOC_GATE"; echo $?)" 'the gate never keys on the word epic'
+assert_eq 0 "$(grep -qF 'heading `## Increment chain`' "$DOC_GATE"; echo $?)" 'gate checklist uses the /subagent Step 5.1 heading'
+assert_eq 0 "$(grep -qF '\n\n## Increment chain\n\n' .claude/skills/subagent/SKILL.md; echo $?)" '/subagent still writes the shared checklist heading'
+assert_eq 1 "$(grep -Eiq 'label.*epic|epic.*label' .claude/skills/issue-maker/scripts/*.sh; echo $?)" 'no issue-maker script reads an epic label'
+record_chain_snippet=$(awk '/^RECORD_CHAIN=null$/{f=1} f{print} f&&/^fi$/{exit}' .claude/skills/issue-maker/modules/create/file.md)
+parent_chain=$(IS_INCREMENT=true CHAIN_ID=c POSITION=0 TOTAL=3 CHAIN_ROLE=parent bash -c "$record_chain_snippet"'
+printf "%s" "$RECORD_CHAIN"')
+member_chain=$(IS_INCREMENT=true CHAIN_ID=c POSITION=1 TOTAL=3 CHAIN_ROLE= bash -c "$record_chain_snippet"'
+printf "%s" "$RECORD_CHAIN"')
+assert_eq '{"chain_id":"c","position":0,"total":3,"role":"parent"}' "$parent_chain" 'tracking parent records its role at position 0'
+assert_eq '{"chain_id":"c","position":1,"total":3}' "$member_chain" 'chain members keep the unchanged record shape'
+assert_eq 0 "$(grep -qF '`- Parent: #<parent>`' "$DOC_GATE"; echo $?)" 'children carry the Parent marker /subagent reads'
+assert_eq 1 "$(grep -rqF 'Part of #' .claude/skills/issue-maker; echo $?)" 'no issue-maker module writes the unread Part of marker'
+assert_eq 0 "$(grep -qF "sed -n 's/^- Parent: #" .claude/skills/subagent/SKILL.md; echo $?)" '/subagent still reads the Parent marker'
+MINE_DEF_LINE=$(grep -m1 '^MINE_DEF=' .claude/skills/issue-maker/modules/session-state.md)
+runnable_rows=$(eval "$MINE_DEF_LINE"; printf '%s' '{"issues":[{"number":1,"url":"https://github.com/o/r/issues/1","status":"open","origin":"create","chain":{"chain_id":"c","position":0,"total":2,"role":"parent"}},{"number":2,"url":"https://github.com/o/r/issues/2","status":"open","origin":"create","chain":{"chain_id":"c","position":1,"total":2}},{"number":3,"url":"https://github.com/o/r/issues/3","status":"open","origin":"create","chain":null}]}' | jq -c --arg repo o/r "$MINE_DEF"'[.issues[] | runnable | .number]')
+assert_eq '[2,3]' "$runnable_rows" 'the inline offer and hand-off exclude a tracking parent'
+assert_eq 0 "$(grep -qF '(.issues[] | runnable | .chip_task_id) = $tok' .claude/skills/issue-maker/modules/create/postfile.md; echo $?)" 'the offer stamp skips a tracking parent'
+assert_eq 0 "$(grep -qF 'never offer `"Re-cut remainder"`' .claude/skills/issue-maker/modules/retract.md; echo $?)" 'parent retract offers exactly two unambiguous options'
+
 
 set +e
 "$DISPATCH" create unknown >/dev/null 2>&1

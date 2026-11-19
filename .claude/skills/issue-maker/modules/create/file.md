@@ -44,6 +44,10 @@ done
 RECORD_CHAIN=null
 if [ "${IS_INCREMENT:-false}" = true ]; then
   RECORD_CHAIN=$(jq -cn --arg id "$CHAIN_ID" --argjson position "$POSITION" --argjson total "$TOTAL" '{chain_id:$id,position:$position,total:$total}') || exit 1
+  # A tracking parent (create:doc-gate) files at position 0 and carries its role.
+  if [ "${CHAIN_ROLE:-}" = parent ]; then
+    RECORD_CHAIN=$(printf '%s' "$RECORD_CHAIN" | jq -c '. + {role:"parent"}') || exit 1
+  fi
 fi
 ISSUE_URL=""; ISSUE_NUMBER=""; FILE_RC=0
 if [ -z "$ISSUE_FILE" ]; then
