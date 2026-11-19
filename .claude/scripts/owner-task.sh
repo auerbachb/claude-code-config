@@ -72,7 +72,8 @@ like a secret (desk/bin/lib/secrets.sh hq_refuse_secret).
 Exit codes:
   0  ok (list with nothing to show prints [] under --json)
   1  other failure: task id not found, a write failed
-  2  usage error
+  2  usage error, including an add --why that is not "REASON: free text"
+     with a listed REASON; nothing written
   3  no usable location: public repo with no pointer entry, or a bucket that
      is not private; nothing written
   4  a source could not be read (repo, tracker, comments, search, pointer
