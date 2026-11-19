@@ -104,6 +104,14 @@ check_eq "children: checklist source recorded" '["increment-chain"]' "$(jq -c '.
 check_eq "children: body + sub-issue sources merged" '["task-list","sub-issue"]' "$(jq -c '.children[] | select(.number == 104) | .sources' <<< "$out")"
 check_eq "children: sub-issues read" "read" "$(jq -r '.sub_issues' <<< "$out")"
 
+# ---- fences close only on a same-character marker at least as long (CommonMark) --
+BODY500=$'````\n~~~\n- [ ] #201 inside a 4-backtick fence after a tilde line\n```\n- [ ] #202 inside after a shorter backtick marker\n````\n- [ ] #101 after the fence closes\n~~~~\n```\n- [ ] #203 inside a tilde fence after a backtick line\n~~~\n- [ ] #204 inside after a shorter tilde marker\n~~~~ info\n- [ ] #205 a closer cannot carry an info string\n~~~~~\n- [ ] #104 after the longer tilde closer\n'
+issue 500 open "Fence parent" "$BODY500"
+for n in 201 202 203 204 205; do issue "$n" open "Fenced $n" ""; done
+out=$("$SCRIPT" children acme/w 500); rc=$?
+check_eq "fences: exits 0" "0" "$rc"
+check_eq "fences: nested/shorter markers keep the fence open" "101,104" "$(jq -r '[.children[] | select(.sources | index("task-list")) | .number] | join(",")' <<< "$out")"
+
 # ---- sub-issue API unavailable: body still stands ------------------------------
 rm "$TMP/fx/sub-100.json"
 out=$("$SCRIPT" children acme/w 100); rc=$?

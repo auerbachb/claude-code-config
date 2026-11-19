@@ -97,7 +97,20 @@ fetch_issue() {
 body_children() {
   local body="$1" self="$2"
   printf '%s\n' "$body" | tr -d '\r' | awk -v self="$self" '
-    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
+    # CommonMark fences: a fence closes only on a marker of the same character,
+    # at least as long as the opener, with nothing but whitespace after it.
+    match($0, /^[[:space:]]*(`{3,}|~{3,})/) {
+      run = substr($0, RSTART, RLENGTH)
+      sub(/^[[:space:]]*/, "", run)
+      ch = substr(run, 1, 1)
+      if (!fence) {
+        fence = 1; fch = ch; flen = length(run)
+        next
+      }
+      tail = substr($0, RSTART + RLENGTH)
+      if (ch == fch && length(run) >= flen && tail ~ /^[[:space:]]*$/) fence = 0
+      next
+    }
     fence { next }
     /^##[[:space:]]/ { chain = ($0 ~ /^##[[:space:]]+Increment chain[[:space:]]*$/) }
     {
