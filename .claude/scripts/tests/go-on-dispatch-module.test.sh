@@ -147,10 +147,14 @@ token_trace() { # token_trace <step from needs>
   trace_of "$pairs"
 }
 token_kind="$skill/modules/kinds/token-exhaustion.md"
-grep -Fq '`continue_polling` → Step 6, unpushed fixes → Step 1b' "$token_kind" || fail "token needs mapping moved"
-grep -Fq '`review:prepare` for Step 1b, `review:respond` for Step 6' "$token_kind" || fail "token module header"
+grep -Fq '`continue_polling` → Step 6, `continue_fixes` → Step 7, unpushed fixes → Step 1b' "$token_kind" || fail "token needs mapping moved"
+grep -Fq '`review:prepare` for Step 1b, `review:respond` for Step 6 and Step 7' "$token_kind" || fail "token module header"
+# phase-a-fixer's token-exhaustion handoff writes needs: continue_fixes.
+grep -Fq '"needs": "continue_fixes"' "$root/.claude/agents/phase-a-fixer.md" || fail "phase-a-fixer no longer writes continue_fixes"
 [[ "$(token_trace 6)" == 'modules/kinds/token-exhaustion.md modules/review/prepare.md modules/review/respond.md modules/review/merge.md' ]] \
   || fail "continue_polling trace: $(token_trace 6)"
+[[ "$(token_trace 7)" == 'modules/kinds/token-exhaustion.md modules/review/prepare.md modules/review/respond.md modules/review/merge.md' ]] \
+  || fail "continue_fixes trace: $(token_trace 7)"
 [[ "$(token_trace 1b)" == 'modules/kinds/token-exhaustion.md modules/review/prepare.md modules/review/publish.md modules/review/respond.md modules/review/merge.md' ]] \
   || fail "unpushed-fixes trace: $(token_trace 1b)"
 
@@ -208,6 +212,25 @@ grep -Fq 'modules/review/merge.md' "$scratch/error" || fail "preflight error doe
 preflight_then_write "$scratch/install/scripts/dispatch-module.sh" "$scratch/receipt" kind:planned-stop \
   || fail "planned-stop preflight blocked on an unrelated module"
 [[ -e "$scratch/receipt" ]] || fail "planned-stop preflight wrote nothing"
+# A continue_polling token_exhaustion resume never reaches review:publish, so
+# its preflight resolves only the modules token_trace 6 reads; a missing
+# publish.md does not block it, while the Step 1b route still does.
+cp "$skill/modules/review/merge.md" "$scratch/install/modules/review/merge.md"
+rm "$scratch/install/modules/review/publish.md" "$scratch/receipt"
+grep -Fq 'Step 6 or Step 7: `review:respond` and `review:merge`; Step 1b: all four' "$entry" || fail "token preflight scope"
+token_preflight() { # <step>
+  local pairs=(kind:token-exhaustion review:prepare) phase
+  for phase in $(from_phase "$(module_with_step "$1")"); do
+    [[ "$phase" == prepare ]] || pairs+=("review:$phase")
+  done
+  preflight_then_write "$scratch/install/scripts/dispatch-module.sh" "$scratch/receipt" "${pairs[@]}"
+}
+token_preflight 6 || fail "continue_polling preflight blocked on unreached publish.md"
+[[ -e "$scratch/receipt" ]] || fail "continue_polling preflight wrote nothing"
+rm "$scratch/receipt"
+status=0
+token_preflight 1b 2> /dev/null || status=$?
+[[ "$status" == 3 && ! -e "$scratch/receipt" ]] || fail "unpushed-fixes preflight ignored missing publish.md ($status)"
 grep -Fq '[BLOCKED] /go-on module unavailable: <operation:phase>' "$entry" || fail "blocker line"
 grep -Fq 'Never fall back to another module' "$entry" || fail "no-fallback rule"
 grep -Fq 'Write no receipt.' "$entry" || fail "missing module writes a receipt"
@@ -293,9 +316,17 @@ def lines(path, markers):
 
 before = Counter(lines(sys.argv[1], False))
 after = Counter(line for path in sys.argv[2:] for line in lines(path, True))
-# Deliberate deviations from the pre-split text, each counted exactly.
-# The BugBot branch of Step 6 read $SHA, assigned only in the CR branch
-# (PR #2533 review finding); review/respond.md now assigns it there too.
+# Deliberate deviations from the pre-split text, each counted exactly
+# (PR #2533 review findings on pre-existing behaviour).
+# 1. The BugBot branch of Step 6 read $SHA, assigned only in the CR branch;
+#    review/respond.md now assigns it there too.
+# 2. The token_exhaustion lane had no step for phase-a-fixer's
+#    `needs: continue_fixes`; kinds/token-exhaustion.md maps it to Step 7.
+TOKEN_OLD = "`continue_polling` → Step 6, unpushed fixes → Step 1b"
+TOKEN_NEW = "`continue_polling` → Step 6, `continue_fixes` → Step 7, unpushed fixes → Step 1b"
+for line in list(before):
+    if TOKEN_OLD in line:
+        before[line.replace(TOKEN_OLD, TOKEN_NEW)] += before.pop(line)
 deliberate = Counter({
     "SHA=$(gh pr view $PR_NUM --json commits --jq '.commits[-1].oid')": 1,
 })
