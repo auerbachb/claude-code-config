@@ -33,12 +33,26 @@
 #              explicit thread IDs. An empty id file is a valid no-op (prints
 #              addressed=0 and exits 0). Exit 1 if any expected ID is missing or unresolved.
 #
+# Explicit IDs (issue #2431):
+#   Thread IDs come from reviewThreads.nodes[].id — usually `PRRT_…`, but IDs are
+#   opaque (legacy Base64 IDs are valid), so there is no prefix check. Before any
+#   mutation (and in --dry-run / --verify-only) every explicit ID is classified:
+#   an exact inventory thread ID is valid; an inventory opener-comment ID, a
+#   purely numeric databaseId, or any other non-thread node type (read-only
+#   node(id:) lookup) is refused with one `ERROR:` line per ID and exit 2 — no
+#   mutation runs for any ID in the set. A thread on another PR or a node that is
+#   not found stays in the set and is reported dangling with a precise reason.
+#   An explicit ID already resolved in the first fetch prints
+#   `[ALREADY-RESOLVED] <id> <url> (no mutation)` and counts as success when the
+#   final verification still reads isResolved == true.
+#
 # Exit codes:
 #   0  All addressed/matching threads verified resolved (or dry-run OK)
 #   1  At least one thread is still dangling after retry/fallback verification
-#   2  Usage error
+#      (unresolved, isResolved not true, not on this PR, or not found)
+#   2  Usage error, including an explicit ID that is not a review-thread ID
 #   3  PR not found
-#   4  gh / network error
+#   4  gh / network error (including a failed node-type lookup)
 #
 # See .claude/rules/cr-github-review.md "Processing CR Feedback" step 4.
 
@@ -266,7 +280,8 @@ collect_threads() {
 MATCHES_FILE=$(mktemp -t resolve-threads.XXXXXX)
 EXPECTED_FILE=$(mktemp -t resolve-expected.XXXXXX)
 DANGLING_FILE=$(mktemp -t resolve-dangling.XXXXXX)
-trap 'rm -f "$MATCHES_FILE" "$EXPECTED_FILE" "$DANGLING_FILE"' EXIT
+CLASS_FILE=$(mktemp -t resolve-class.XXXXXX)
+trap 'rm -f "$MATCHES_FILE" "$EXPECTED_FILE" "$DANGLING_FILE" "$CLASS_FILE"' EXIT
 
 append_thread_ids() {
   local raw="$1"
@@ -301,10 +316,10 @@ write_unresolved_matches() {
       | jq -r --argjson expected "$expected" '
           .[]
           | select(.id as $id | $expected | index($id))
-          | select(.isResolved == false)
+          | select(.isResolved != true)
           | [.id,
              (.comments.nodes[0] | if .author.__typename == "Bot" then (.id // "-") else "-" end),
-             (.comments.nodes[0].author.login // ""), (.comments.nodes[0].url // "")]
+             (.comments.nodes[0].author.login // "-"), (.comments.nodes[0].url // "")]
           | @tsv
         ' > "$MATCHES_FILE"
   elif [[ "$EXPLICIT_IDS_MODE" -eq 1 ]]; then
@@ -319,7 +334,7 @@ write_unresolved_matches() {
           | select((.comments.nodes[0].author.login // "") | test($re))
           | [.id,
              (.comments.nodes[0] | if .author.__typename == "Bot" then (.id // "-") else "-" end),
-             (.comments.nodes[0].author.login // ""), (.comments.nodes[0].url // "")]
+             (.comments.nodes[0].author.login // "-"), (.comments.nodes[0].url // "")]
           | @tsv
         ' > "$MATCHES_FILE"
   fi
@@ -328,23 +343,126 @@ write_unresolved_matches() {
 write_dangling_threads() {
   local threads_json="$1"
   if [[ -s "$EXPECTED_FILE" ]]; then
-    local expected
+    local expected classes
     expected=$(expected_json)
+    classes=$(jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: .[1]}) | from_entries' "$CLASS_FILE")
+    # Empty fields become "-" so tab-splitting `read` never collapses them and
+    # shifts the reason into another column. Only isResolved == true counts.
     printf '%s' "$threads_json" \
-      | jq -r --argjson expected "$expected" '
+      | jq -r --argjson expected "$expected" --argjson classes "$classes" --arg pr "$PR_NUMBER" '
+          def nz: if . == null or . == "" then "-" else tostring end;
           def row($id; $comment_id; $author; $url; $reason):
-            [$id, $comment_id, $author, $url, $reason] | @tsv;
+            [$id, ($comment_id | nz), ($author | nz), ($url | nz), $reason] | @tsv;
           ([.[] | {key: .id, value: .}] | from_entries) as $by_id
           | $expected[]
           | . as $id
           | ($by_id[$id] // null) as $thread
           | if $thread == null then
-              row($id; ""; ""; ""; "thread not returned by GraphQL")
-            elif $thread.isResolved == false then
-              row($id; ($thread.comments.nodes[0].id // ""); ($thread.comments.nodes[0].author.login // ""); ($thread.comments.nodes[0].url // ""); "isResolved=false")
+              row($id; ""; ""; "";
+                (if $classes[$id] == "other_pr" then "thread is not on PR #\($pr)"
+                 elif $classes[$id] == "not_found" then "node not found or inaccessible"
+                 else "thread not returned by GraphQL" end))
+            elif $thread.isResolved != true then
+              row($id; $thread.comments.nodes[0].id; $thread.comments.nodes[0].author.login; $thread.comments.nodes[0].url;
+                "isResolved=\($thread.isResolved | if . == null then "null" else tostring end)")
             else empty
             end
         ' > "$DANGLING_FILE"
+  fi
+}
+
+print_stuck_rows() {
+  local thread_id _comment_id author url reason
+  while IFS=$'\t' read -r thread_id _comment_id author url reason; do
+    [[ -z "$thread_id" ]] && continue
+    if [[ -n "$url" && "$url" != "-" ]]; then
+      echo "[STUCK] $thread_id  ($author) — $reason — $url" >&2
+    else
+      echo "[STUCK] $thread_id  ($author) — $reason" >&2
+    fi
+  done < "$DANGLING_FILE"
+}
+
+# Read-only node-type lookup for an explicit ID absent from the PR inventory.
+# Sets LOOKUP_KIND to a GraphQL __typename or "not_found". Exits 4 on transport
+# failure, malformed JSON, or any GraphQL error other than NOT_FOUND — an
+# inconclusive lookup is never evidence of the ID's type. Must run in the main
+# shell (not inside $(...)) so the exit stops the script.
+LOOKUP_KIND=""
+lookup_node_type() {
+  local id="$1" resp rc=0 err_file verdict
+  err_file=$(mktemp -t resolve-lookup.XXXXXX)
+  resp=$(gh api graphql -f id="$id" -f query='query($id: ID!) { node(id: $id) { __typename id } }' \
+    </dev/null 2>"$err_file") || rc=$?
+  verdict=$(printf '%s' "$resp" | jq -r '
+      if type != "object" then "invalid"
+      elif ((.errors // []) | length) > 0 then
+        (if all(.errors[]; .type == "NOT_FOUND") then "not_found" else "error" end)
+      elif (.data | type) != "object" then "invalid"
+      elif .data.node == null then "not_found"
+      else (.data.node.__typename // "invalid") end' 2>/dev/null) || verdict="invalid"
+  [[ -n "$verdict" ]] || verdict="invalid"
+  if [[ "$verdict" == "invalid" || "$verdict" == "error" ]] ||
+     [[ "$rc" -ne 0 && "$verdict" != "not_found" ]]; then
+    echo "ERROR: node-type lookup for $id failed (gh exit $rc): $(tr '\n' ' ' < "$err_file")${resp:+ response: $resp}" >&2
+    rm -f "$err_file"
+    exit 4
+  fi
+  rm -f "$err_file"
+  LOOKUP_KIND="$verdict"
+}
+
+refuse_id() {
+  local id="$1" kind="$2" hint="${3:-}"
+  local msg="ERROR: $id is a $kind, not a review thread ID — expected a PullRequestReviewThread node id (usually PRRT_…) from reviewThreads.nodes[].id"
+  if [[ -n "$hint" && "$hint" != "-" ]]; then
+    msg="$msg; thread for this comment: $hint"
+  fi
+  echo "$msg" >&2
+}
+
+# Classify every explicit ID before any mutation. Refuses comment / numeric /
+# other non-thread IDs (exit 2); records other-PR and not-found IDs in
+# CLASS_FILE for precise dangling reasons.
+validate_explicit_ids() {
+  local threads_json="$1"
+  : > "$CLASS_FILE"
+  [[ -s "$EXPECTED_FILE" ]] || return 0
+  local classified
+  classified=$(printf '%s' "$threads_json" | jq -r --argjson expected "$(expected_json)" '
+      . as $threads
+      | ([$threads[] | select(.comments.nodes[0].id != null) | {key: .comments.nodes[0].id, value: .id}] | from_entries) as $openers
+      | $expected[] | . as $id
+      | if any($threads[]; .id == $id) then [$id, "thread", "-"]
+        elif $openers[$id] != null then [$id, "comment", $openers[$id]]
+        elif test("^[0-9]+$") then [$id, "numeric", "-"]
+        else [$id, "lookup", "-"] end
+      | @tsv')
+  local refused=0 id kind hint
+  while IFS=$'\t' read -r id kind hint; do
+    [[ -z "$id" ]] && continue
+    case "$kind" in
+      thread) ;;
+      comment)
+        refuse_id "$id" "PullRequestReviewComment (opener of a thread on PR #$PR_NUMBER)" "$hint"
+        refused=$((refused + 1)) ;;
+      numeric)
+        refuse_id "$id" "numeric databaseId"
+        refused=$((refused + 1)) ;;
+      *)
+        lookup_node_type "$id"
+        case "$LOOKUP_KIND" in
+          PullRequestReviewThread) printf '%s\t%s\n' "$id" "other_pr" >> "$CLASS_FILE" ;;
+          not_found) printf '%s\t%s\n' "$id" "not_found" >> "$CLASS_FILE" ;;
+          *)
+            refuse_id "$id" "$LOOKUP_KIND"
+            refused=$((refused + 1)) ;;
+        esac ;;
+    esac
+  done <<< "$classified"
+  if [[ "$refused" -gt 0 ]]; then
+    echo "ERROR: refused $refused non-thread ID(s); no thread was mutated. Pass the thread IDs and re-run." >&2
+    exit 2
   fi
 }
 
@@ -359,6 +477,7 @@ if [[ "$VERIFY_ONLY" -eq 1 ]]; then
   fi
   ADDRESSED_COUNT=$(wc -l < "$EXPECTED_FILE" | tr -d ' ')
   VERIFY_THREADS=$(collect_threads)
+  validate_explicit_ids "$VERIFY_THREADS"
   write_dangling_threads "$VERIFY_THREADS"
   DANGLING_COUNT=$(wc -l < "$DANGLING_FILE" | tr -d ' ')
   RESOLVED_COUNT=$((ADDRESSED_COUNT - DANGLING_COUNT))
@@ -367,14 +486,7 @@ if [[ "$VERIFY_ONLY" -eq 1 ]]; then
   fi
   echo "[VERIFY] addressed=$ADDRESSED_COUNT resolved=$RESOLVED_COUNT dangling=$DANGLING_COUNT"
   if [[ "$DANGLING_COUNT" -gt 0 ]]; then
-    while IFS=$'\t' read -r THREAD_ID _COMMENT_ID AUTHOR URL REASON; do
-      [[ -z "$THREAD_ID" ]] && continue
-      if [[ -n "$URL" ]]; then
-        echo "[STUCK] $THREAD_ID  ($AUTHOR) — $REASON — $URL" >&2
-      else
-        echo "[STUCK] $THREAD_ID  ($AUTHOR) — $REASON" >&2
-      fi
-    done < "$DANGLING_FILE"
+    print_stuck_rows
     echo "ERROR: $DANGLING_COUNT thread(s) not verified resolved" >&2
     exit 1
   fi
@@ -413,7 +525,23 @@ resolve_or_minimize() {
 }
 
 ALL_THREADS=$(collect_threads)
+validate_explicit_ids "$ALL_THREADS"
 write_unresolved_matches "$ALL_THREADS"
+
+# Explicit IDs already resolved in the first fetch: idempotent success, no
+# mutation. Final verification below stays the authority.
+print_already_resolved() {
+  [[ -s "$EXPECTED_FILE" ]] || return 0
+  local prefix="$1" tid url
+  printf '%s' "$ALL_THREADS" \
+    | jq -r --argjson expected "$(expected_json)" '
+        .[] | select(.isResolved == true) | select(.id as $id | $expected | index($id))
+        | [.id, (.comments.nodes[0].url // "-" | if . == "" then "-" else . end)] | @tsv' \
+    | while IFS=$'\t' read -r tid url; do
+        [[ -z "$tid" ]] && continue
+        echo "${prefix}$tid ${url} (no mutation)"
+      done
+}
 
 if [[ -s "$EXPECTED_FILE" ]]; then
   ADDRESSED_COUNT=$(wc -l < "$EXPECTED_FILE" | tr -d ' ')
@@ -425,6 +553,7 @@ fi
 MATCH_COUNT=$(wc -l < "$MATCHES_FILE" | tr -d ' ')
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
+  print_already_resolved "[DRY-RUN] [ALREADY-RESOLVED] "
   if [[ "$MATCH_COUNT" -eq 0 ]]; then
     echo "[DRY-RUN] no unresolved addressed/matching threads"
   else
@@ -445,6 +574,8 @@ if [[ "$ADDRESSED_COUNT" -eq 0 ]]; then
   fi
   exit 0
 fi
+
+print_already_resolved "[ALREADY-RESOLVED] "
 
 attempt=1
 while [[ "$attempt" -le "$MAX_ATTEMPTS" ]]; do
@@ -472,14 +603,7 @@ fi
 echo "[VERIFY] addressed=$ADDRESSED_COUNT resolved=$RESOLVED_COUNT dangling=$DANGLING_COUNT"
 
 if [[ "$DANGLING_COUNT" -gt 0 ]]; then
-  while IFS=$'\t' read -r THREAD_ID _COMMENT_ID AUTHOR URL REASON; do
-    [[ -z "$THREAD_ID" ]] && continue
-    if [[ -n "$URL" ]]; then
-      echo "[STUCK] $THREAD_ID  ($AUTHOR) — $REASON — $URL" >&2
-    else
-      echo "[STUCK] $THREAD_ID  ($AUTHOR) — $REASON" >&2
-    fi
-  done < "$DANGLING_FILE"
+  print_stuck_rows
   echo "ERROR: $DANGLING_COUNT thread(s) remain dangling after retry/fallback verification" >&2
   exit 1
 fi

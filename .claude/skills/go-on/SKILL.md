@@ -979,7 +979,7 @@ jq '.new_since_baseline.conversation | map(select(.classification.class == "find
      "$RESOLVE_REVIEW_THREADS_SH" "$PR_NUM" --thread-ids-file "$TOUCHED_THREADS"
      ```
 
-     Exit 1 means at least one thread failed both mutations — surface to the user and stop. Do not proceed with a non-zero exit.
+     A thread already resolved prints `[ALREADY-RESOLVED] <id> <url> (no mutation)` and counts as success. Exit 1 means at least one requested thread is still unresolved after both mutations, is missing from this PR, or was not found — surface the `[STUCK]` lines to the user and stop. Exit 2 means the set held a non-thread ID (a review-comment node ID or numeric `databaseId`); nothing was mutated. Replace it with the thread ID the `ERROR:` line hints (thread IDs come from `reviewThreads.nodes[].id`, usually `PRRT_…`) and re-run the helper — never fall back to an inline `resolveReviewThread` mutation. Do not proceed with a non-zero exit.
 
   7. After fixing, go back to **Step 6** to wait for the next review.
 - If no unresolved findings: `[DONE]` — No unresolved findings.

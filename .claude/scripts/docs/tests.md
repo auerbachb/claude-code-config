@@ -203,6 +203,7 @@ opt-in of issue #1544.
 | [repo-root.test.sh](../tests/repo-root.test.sh) | Tests `repo-root.sh`'s resolution contract and its wall-clock bound |
 | [report-path.test.sh](../tests/report-path.test.sh) | Tests the collision-free monthly report destination for `/review-stack-audit`, over two series, with a month-only negative control |
 | [rerun-cancelled-required-ci.test.sh](../tests/rerun-cancelled-required-ci.test.sh) | Exercises the exact cancelled-required-job retry, GitHub identity checks and repo-scoped CAS. |
+| [resolve-review-threads.test.sh](../tests/resolve-review-threads.test.sh) | Tests for `resolve-review-threads.sh` already-resolved and non-thread-ID handling |
 | [review-availability-choose.test.sh](../tests/review-availability-choose.test.sh) | Tests the free-reviewer choice and request log in `review-availability.sh` (choose, record-request) — earliest answer, limited and capped reviewers, fewer-recent tie-break, alternation across PRs, recorded choice |
 | [review-availability.test.sh](../tests/review-availability.test.sh) | Tests the account-wide reviewer availability record and the request-skip decision in `review-availability.sh` — recording, decide, mark-skip, check-skip, fail-toward-asking cases |
 | [review-ci-report.test.sh](../tests/review-ci-report.test.sh) | Tests that the review timing report keeps CodeAnt pre-review approvals and refusals out of the review count, measures response time from the request when one exists and from push otherwise, and reports a failed query as unread with a non-zero exit |
