@@ -137,4 +137,10 @@ report A pushed_fixes B "RESULT: created issue 2460" > "$TMP/r.txt"; run "$TMP/r
 [[ "$(field RESULT)" == "created issue 2460" ]] || fail "RESULT lost: $OUT"
 pass "RESULT field extracted"
 
+# A blocked report carries its one-line blocker reason in RESULT; blocked without RESULT stays valid.
+{ none_report A blocked; printf 'RESULT: unresolvable conflict in foo.ts\n'; } > "$TMP/r.txt"
+run --phase A "$TMP/r.txt"
+[[ $RC -eq 0 && "$(field OUTCOME)" == blocked && "$(field RESULT)" == "unresolvable conflict in foo.ts" ]] || fail "blocked RESULT (rc=$RC out=$OUT)"
+pass "blocked report forwards its RESULT blocker reason"
+
 echo "All exit-report-extract tests passed."
