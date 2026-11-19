@@ -44,8 +44,10 @@ done
 ```
 
 `back-report.sh` is **required**: when it is empty, print
-`ERROR: back-report.sh not found (checked all three paths) — /back unavailable`, run only Step 1 items 1
-and 2 (never `ask`: no menu follows to carry the question, so no dialog claim is left held), and stop.
+`ERROR: back-report.sh not found (checked all three paths) — /back unavailable`, run only Step 1 item 1
+(and item 3's `set here` when his words gave a duration), and stop. Never item 2 or `ask`: no menu follows,
+so a claimed or asked dialog would be marked handled with nobody asking it; left alone, his next message's
+prompt hook asks it.
 A missing `presence.sh` prints `DEGRADED: presence.sh not found (checked all three paths) — presence not
 updated, continuing without it`. `owner-task.sh` and `human-queue.sh` are optional; the report says when
 their sources could not be read.
@@ -91,13 +93,19 @@ round.
   `<text> (Recommended)` (`recommended`, or a Decision's `default_option`), then at most two other
   recorded options, and always a last `Leave it open`. Recorded options that do not fit are listed in
   the question text; he picks one by typing it in the tool's free-text "Other" answer, recorded as typed.
-  With no recorded options: the recommendation and `Leave it open`.
+  With no recorded options: the recommendation and `Leave it open`. With no recommendation (`recommended`
+  or `default_option` null): no option is marked `(Recommended)`; offer up to three recorded options and
+  `Leave it open`, and with none recorded, `Leave it open` alone and say in the question text that he
+  answers by typing in "Other".
 - **Recording each answer** (his menu pick is his own chat answer):
   - Unattended: `"$UNATTENDED_SH" answer U-<n> --answer '<answer>' --by operator --repo <repo>`.
   - Desk: `"$HQ_SH" answer D-<n> --stdin <<<'<answer>'`.
   - Both: single-quote the answer with each `'` inside it written `'\''` (`Don't` becomes
     `'Don'\''t'`), so the text is stored unchanged.
   - `Leave it open`, a dismissed menu, or no answer: record nothing; it stays open and listed.
+  - A refused write (exit non-zero): another thread may have resolved it since the report was read. Say
+    in one line `<id> not recorded: <its error line>. Your answer was: <answer>`, so his choice is not
+    lost silently, and go on with the rest; never retry it or force it.
 - A live desk may capture the menu (`human-queue.md` §After asking): print the receipt it names and go
   on; the desk records those answers.
 - In thread scope, when `other_threads_open` is above 0, say in one line:
