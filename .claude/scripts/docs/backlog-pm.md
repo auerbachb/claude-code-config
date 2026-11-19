@@ -31,6 +31,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [park-wake-publish.sh](../park-wake-publish.sh) | Publishes a wake identity onto its bound park; recovery can replace a proven-dead wake |
 | [pm-board-page.sh](../pm-board-page.sh) | Publish a private read-only project board from verified PM evidence. |
 | [pm-config-get.sh](../pm-config-get.sh) | Extract a named section from `.claude/pm-config.md` |
+| [pm-epic.sh](../pm-epic.sh) | `/pm epic #N` (issue #2545): parse the epic argument, read a named parent's same-repo children from its `## Increment chain` checklist, GitHub sub-issues and `#N` task-list items, and close the parent once every child is verified closed |
 | [pm-priority.sh](../pm-priority.sh) | Operator backlog priority for `/pm` (`<main-root>/.claude/pm-priority.json`) — `/desk` records `top`/`bump`/`park`/`drop`, `/pm` overlays it on its ranking with `apply` |
 | [pm-rank-cache.sh](../pm-rank-cache.sh) | `/pm`'s latest backlog ranking cache (`~/.claude/pm-rank/<owner>-<repo>.json`): `/pm` 1B.4c writes the order it presents, the desk's derived impact reads an issue's rank while the cache is under 24 hours old (else rank unknown) |
 | [pm-run-receipt.sh](../pm-run-receipt.sh) | Record and render the step receipt for a /pm invocation. |
