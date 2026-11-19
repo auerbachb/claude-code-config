@@ -7,6 +7,7 @@
 # rather than inherited. No network access.
 #
 # Run from repo root: bash .claude/scripts/tests/churn-hotspots.test.sh
+# covers: .claude/scripts/README.md .claude/scripts/docs/tests.md desk/skill/todo.md
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

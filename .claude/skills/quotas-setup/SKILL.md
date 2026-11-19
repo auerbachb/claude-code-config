@@ -1,6 +1,6 @@
 ---
 name: quotas-setup
-description: Use when registering the AI subscription accounts whose quotas you track, adding a second paid Claude Code / Codex / Cursor account, re-logging in an expired one, nicknaming an account, asking which are logged in, installing the daily unattended usage snapshot, generating the shell launchers (`claude-work`, `codex-personal`, …) that start a CLI against one account, or sharing the primary install's skills, rules, hooks, plugins, and MCP servers into an account's profile. Gives each account an isolated login profile — a config dir or a CODEX_HOME; Cursor instead uses the login the Cursor IDE already holds. Display and config only — reads no usage figures, gates no work.
+description: Use when registering the AI subscription accounts whose quotas you track, adding a second paid Claude Code / Codex / Cursor account, registering the Google Antigravity account, re-logging in an expired one, nicknaming an account, asking which are logged in, installing the daily unattended usage snapshot, generating the shell launchers (`claude-work`, `codex-personal`, …) that start a CLI against one account, sharing the primary install's skills, rules, hooks, plugins, and MCP servers into an account's profile, or exporting the account list and importing it on a new computer, a new environment (desktop app to terminal), or a cloud session. Gives each account an isolated login profile — a config dir or a CODEX_HOME; Cursor instead uses the login the Cursor IDE already holds, and Antigravity has no profile (the `agy` CLI holds its login). Display and config only — reads no usage figures, gates no work.
 triggers:
   - quotas-setup
   - register my AI accounts
@@ -15,7 +15,10 @@ triggers:
   - generate the account launchers
   - make a shell function for my second Claude account
   - share my skills and rules with the other profile
-argument-hint: "[list [--json] | add <claude|codex|cursor> <label> [--nick <name>] [--no-login] | nick <label> <name> [provider] | remove <label> [provider] | relogin <label> [provider] | schedule <install|remove|status> [--hour N] | launchers | share-config <label> [provider]]"
+  - export my AI accounts
+  - import my AI accounts on this machine
+  - set up my quota accounts on a new computer
+argument-hint: "[list [--json] | add <claude|codex|cursor|antigravity> <label> [--nick <name>] [--no-login] | nick <label> <name> [provider] | plan <label> <tier> [usd_per_month] [provider] | report <label> <window> <used_pct> [reset] [provider] | remove <label> [provider] | relogin <label> [provider] | schedule <install|remove|status> [--hour N] | launchers | share-config <label> [provider] | export [--out FILE] | import FILE [--no-login]]"
 model: sonnet
 allowed-tools:
   - Read
@@ -81,6 +84,8 @@ profile directories drift apart.
 | "add \<provider\> \<label\>" | `"$AI_QUOTAS_SETUP_SH" add <provider> <label>` |
 | "register it now, I'll log in later" | `"$AI_QUOTAS_SETUP_SH" add <provider> <label> --no-login` |
 | "call it \<name\>", "nickname this account" | `"$AI_QUOTAS_SETUP_SH" nick <label> "<name>" [<provider>]` |
+| "this account is on the Max 20x plan, $200 a month", "set the plan for \<label\>", "I get a discount" | `"$AI_QUOTAS_SETUP_SH" plan <label> "<tier>" [<usd_per_month>] [<provider>]` — a manual override shown with `*` in the TIER and $/MO columns of `/quotas`; an empty tier clears it. Display only |
+| "record 86% for \<label\>, resets Nov 17", "I can see the figure, the reader can't" | `"$AI_QUOTAS_SETUP_SH" report <label> <window> <used_pct> [<reset>] [<provider>]` — stored as owner-reported; the next usable live read replaces it |
 | "use <order> for <label>", "reset source order" | `"$AI_QUOTAS_SETUP_SH" sources <label> <comma-separated order\|default> [<provider>]` |
 | "recommend a source change after N failures" | `"$AI_QUOTAS_SETUP_SH" sources threshold <N>` |
 | "remove \<label\>" | `"$AI_QUOTAS_SETUP_SH" remove <label> [<provider>]` |
@@ -90,6 +95,8 @@ profile directories drift apart.
 | "stop the daily job" | `"$AI_QUOTAS_SETUP_SH" schedule remove` |
 | "generate the launchers", "give me a `claude-work` command", a new account was just added or renamed | `"$AI_QUOTAS_SETUP_SH" launchers` |
 | "share my skills/rules/MCP servers with \<label\>", "make the other profile behave like my main one" | `"$AI_QUOTAS_SETUP_SH" share-config <label> [<provider>]` |
+| "export my accounts", "I'm moving to a new computer" | `"$AI_QUOTAS_SETUP_SH" export [--out FILE]` — see [Step 3f](#step-3f--moving-the-account-list-to-a-new-environment-2468) |
+| "import my accounts", "set up my accounts from this file", "set these up in the terminal / a cloud session" (ask for the exported file first; if there is none yet, `export` on the source machine) | `"$AI_QUOTAS_SETUP_SH" import FILE [--no-login]` — same step |
 
 `list` is the default when no action is given. `--json` is available on `list` and `doctor` for
 machine consumption (increment 2's `/quotas` reads the config directly). `--no-login`
@@ -98,7 +105,7 @@ launching a login, which is what you want when the user cannot complete an inter
 flow right now. `list` reports whether the credential is present: a reserved slot can
 already report `ok` if the registered profile or Cursor IDE holds one.
 
-Providers are `claude`, `codex`, and `cursor`. The label is what the user types — for
+Providers are `claude`, `codex`, `cursor`, and `antigravity`. The label is what the user types — for
 these accounts, the email on the subscription. Ask for it rather than guessing; the
 label names the profile directory and is how `remove` and `relogin` find the account
 later.
@@ -131,6 +138,21 @@ login. Its status still reflects the credential the helper can see.
   (two labels would otherwise render two `/quotas` rows with identical usage).
   A `relogin` no longer retires anything: signing in again in the IDE replaces the token,
   so there is no profile to move aside and nothing to roll back.
+- **`antigravity`** (Issue #2407) — **no profile directory and no login to launch.** `agy` holds
+  one signed-in Google account, so one machine registers one (a second label is refused with
+  exit `3`). `add` and `list` check that the `agy` CLI is installed (they never run it) **and say
+  whether it is signed in and as which account** (Issue #2467): the sign-in is read in memory
+  from the keychain item `agy` keeps, and only the state and the account email are shown, never
+  a credential. Signed out prints the sign-in step (`run agy and sign in with your Google
+  account`) and `add` still registers the slot; `list` shows `needs-login`. A lapsed access
+  token with a refresh token still counts as signed in (it renews the next time `agy` runs).
+  `/quotas` reads the figures itself from Google's quota service with
+  the sign-in `agy` holds (Issue #2465; source `backend`, used in memory only, never stored). If
+  that fails, the fallback is the `/usage` panel text: tell the user to run `agy` and sign in, or
+  to run `agy`, type `/usage`, copy the panel, then run `pbpaste | quotas-antigravity-capture.sh --stdin` (`--stdin` reads piped input, not the
+  clipboard itself; or `--from-file <file>`); `--live` tries
+  `agy -p "/usage"` and is unverified. `/quotas` shows whether a saved panel exists and how old it
+  is. Display only.
 
 The `claude` and `codex` logins are interactive and blocking. Tell the user one is about
 to open, and let it run — a magic link or SSO round trip can take a minute. Adding a
@@ -207,6 +229,10 @@ last unattended reading happened.
 - **The job never gates anything.** It reads figures and appends them to
   `~/.claude/ai-quotas-history.jsonl`. Nothing consults that file to decide whether work
   may proceed, and you must not either.
+- It records Antigravity through the `backend` source only, never the terminal or a saved
+  panel: a failed backend read is an `unreadable` row with the reason and appends nothing.
+  Its readings build the history that fills the START, %/DAY and LEFT forecast columns for
+  Antigravity rows after two or more days.
 - It opens **no browser at all** (#1703 removed the last one). A Cursor IDE that is
   signed out records as `needs-login` and waits for the user to sign in there; nothing
   is recorded for that row — an unread row appends no snapshot rather than a fabricated
@@ -262,6 +288,16 @@ primary install:
   onboarding state is what makes it that account's).
 - **`codex`** — symlinks `rules` and copies `config.toml` from `~/.codex`.
 
+**Desk notice (issue #2185, `claude` profiles only).** The `settings.json` copy strips any
+`HUMAN_QUEUE_SCHEMA` entry from `.env`, because a desk binding belongs to one account in
+the registry and never to a profile. The stripping is reported as
+`stripped HUMAN_QUEUE_SCHEMA from settings.json`, without the value. After the summary
+line, one nonfatal line names the desk queue for the profile: `desk queue: <name> (<schema>)`,
+or `no desk queue — run <bind command>` with the profile's config directory in the command.
+Relay that line. A new account starts unbound, so a fresh `share-config` reports the bind
+command, not a queue. Only `desk queue: unknown (<reason>)` means the desk or registry could
+not be read; the share itself still succeeded.
+
 Anything already in the wanted state is `kept`, so a re-run changes nothing; anything in
 the way is moved aside as `<name>.pre-share` and **never deleted** — the summary line says
 so and gives the counts. A primary item that does not exist is `skipped` rather than
@@ -287,6 +323,42 @@ Keychain are never touched — and nothing from `.claude.json` is printed. One t
 merge does carry across is the `mcpServers` block itself, and an MCP server entry can hold
 an API key in its `env` block. Sharing preserves those values in the merged JSON;
 serialization can change formatting. The report line gives a count, never a name or a value.
+
+## Step 3f — Moving the account list to a new environment (#2468)
+
+Use `export` and `import` when the accounts already exist somewhere and you are now in a
+place that has none: a **new computer**, a **different environment on the same computer**
+(the desktop app and a terminal keep separate home directories and registries), or a
+**cloud session**. Re-typing every account is how one gets forgotten or misspelled.
+
+1. **Where the accounts are** — run `"$AI_QUOTAS_SETUP_SH" export [--out FILE]` (default
+   `./ai-quotas-accounts.json`, mode 600). It carries each account's provider, label,
+   nickname, any known provider account/org/user IDs, plan override, source order, and
+   login method. It carries **no credential**, no keychain item name, and no profile path.
+2. **Move the file** however suits you (AirDrop, a private gist, a dotfiles repo). It holds
+   **emails and account IDs**, so keep it private even though it holds no secrets.
+3. **Where the accounts should be** — run `"$AI_QUOTAS_SETUP_SH" import FILE`. It recreates
+   every entry with profile directories in *this* environment, then walks the logins one
+   account at a time: an account already signed in is skipped; for the rest it prints the
+   exact step (run the Claude/Codex login, open the Cursor IDE, run `agy`) and **waits for
+   you** — Enter to start a Claude/Codex login or to confirm a Cursor/agy sign-in, `s` to
+   skip. A provider whose sign-in cannot be checked is listed under needs-you with no
+   prompt. agy's signed-in email must equal the imported label, or the account is listed
+   under needs-you; Cursor's IDE does not reveal its account, so a signed-in Cursor is
+   marked ready with a note to confirm it is the right one. A login is never started for you and nothing is typed on your behalf. It ends
+   with a ready / needs-you summary.
+
+Re-running `import FILE` is safe: entries already here are kept, and the login pass resumes
+with only the accounts that are still signed out. `--no-login` imports the entries and stops
+before the login pass. A field the file states that differs from an entry already here is
+reported as a **conflict** and the entry here is left untouched (exit 3; change it with
+`nick`, `plan`, or `sources` if the file is right; provider IDs have no such action, so
+`remove` the account and import again). A second Cursor or Antigravity account is
+refused with the one-per-machine message (also exit 3); the rest of the file still imports.
+
+In a **cloud session** (no terminal to answer in) `import` creates the entries and lists
+each login that must happen elsewhere, with its exact step; do those on a machine where you
+can sign in, then re-run `import FILE` there.
 
 ## Step 4 — Report the result
 
@@ -361,7 +433,7 @@ over the journal.
 
 ## Usage source preferences
 
-Run `ai-quotas-setup.sh sources <label> <comma-separated order> [<provider>]` to choose the account source order, or use `default` to restore it. Allowed sources: Claude `oauth-usage`; Codex `app-server,http`; Cursor `ide-token,browser`. `sources threshold <N>` sets the positive consecutive-failure recommendation threshold (default 3). Preferences contain source names only, never credentials. Listing shows effective sources. Browser remains interactive-only regardless of its position.
+Run `ai-quotas-setup.sh sources <label> <comma-separated order> [<provider>]` to choose the account source order, or use `default` to restore it. Allowed sources: Claude `oauth-usage`; Codex `app-server,http`; Cursor `ide-token,browser`; Antigravity `backend,terminal,observation` (default order `backend,terminal,observation`; `terminal` runs interactive `agy` in a visible terminal on attended runs only, Issue #2466). `sources threshold <N>` sets the positive consecutive-failure recommendation threshold (default 3). Preferences contain source names only, never credentials. Listing shows effective sources. Browser remains interactive-only regardless of its position.
 
 ## Session ledger hooks
 

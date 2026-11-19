@@ -24,6 +24,7 @@
 #
 # Usage: bash .claude/scripts/tests/claude-config-sync.test.sh
 # Exit code: 0 = all pass, 1 = any fail
+# covers: .claude/agents/phase-a-fixer.md .claude/rules/safety.md CLAUDE.md
 
 set -uo pipefail
 

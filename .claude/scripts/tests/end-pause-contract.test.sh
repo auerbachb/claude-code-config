@@ -9,7 +9,7 @@ END_RESUME="$ROOT/.claude/skills/end-resume/SKILL.md"
 PAUSE_RESUME="$ROOT/.claude/skills/pause-resume/SKILL.md"
 GO_ON="$ROOT/.claude/skills/go-on/SKILL.md"
 SWEEP_SCRIPT="$ROOT/.claude/scripts/candidate-ownership.sh"
-PM="$ROOT/.claude/skills/pm/SKILL.md"
+PM="$ROOT/.claude/skills/pm/modules/day-park-reactive.md"
 PHASES="$ROOT/.claude/rules/phase-protocols.md"
 SETTINGS="$ROOT/global-settings.json"
 ARM_HOOK="$ROOT/.claude/hooks/bgwork-ceiling-arm.sh"
@@ -264,7 +264,10 @@ scan_legacy_command() {
     probe=${line#"$target"}
     # sed is the only command in this substitution, so its rc is read directly and
     # never after a pipe. A filter that cannot run fails closed; it never passes.
-    residue=$(sed -E "s#(pause|resume|re-arm|exit|widen)${LEGACY_COMMAND}##g" <<<"$probe") \
+    # A longer word that merely starts with the command (`<cmd>page` in a path or
+    # a file name) is not the command either; only the bare token is.
+    residue=$(sed -E -e "s#(pause|resume|re-arm|exit|widen)${LEGACY_COMMAND}##g" \
+      -e "s#${LEGACY_COMMAND}[A-Za-z0-9_]+##g" <<<"$probe") \
       || return 2
     case "$residue" in
       *"$LEGACY_COMMAND"*) kept+="$line"$'\n' ;;
@@ -299,6 +302,19 @@ COMPOUND=$(scan_legacy_command "$SCAN_FIXTURE") \
   || fail "scan control: the scan could not run over its own fixture"
 [[ -z "$COMPOUND" ]] \
   || fail "scan control: legitimate compound forms were flagged as stale references"
+
+# A longer word that starts with the command (a path like `<cmd>page.sh`) is not
+# a reference, while a bare reference beside it still is.
+printf 'see lib%spage.sh and docs%spages.md\n' "$LEGACY_COMMAND" "$LEGACY_COMMAND" >"$SCAN_FIXTURE/planted.txt"
+LONGER=$(scan_legacy_command "$SCAN_FIXTURE") \
+  || fail "scan control: the scan could not run over its own fixture"
+[[ -z "$LONGER" ]] \
+  || fail "scan control: a longer word starting with the retired command was flagged"
+printf 'lib%spage.sh then invoke %s here\n' "$LEGACY_COMMAND" "$LEGACY_COMMAND" >"$SCAN_FIXTURE/planted.txt"
+LONGER_MIXED=$(scan_legacy_command "$SCAN_FIXTURE") \
+  || fail "scan control: the scan could not run over its own fixture"
+[[ -n "$LONGER_MIXED" ]] \
+  || fail "scan control: a bare reference beside a longer word was masked"
 
 # A compound form and a genuine bare reference on the SAME line. Whole-line
 # filtering dropped this line and reported clean; the per-occurrence filter must

@@ -18,7 +18,7 @@ root = Path(sys.argv[1])
 script = root / '.claude/scripts/model-route.sh'
 report = []
 base = {
-    'task': 'fixture-task', 'phase': 'A', 'launch_allowed': True,
+    'task': 'fixture-task', 'phase': 'A', 'tier': 'Light', 'launch_allowed': True,
     'permissions_preserved': True, 'attempts': [],
     'runtime': {'version':'2.1.312', 'model_override_forced':False},
     'models': [dict(model=m, available=True, capable=True, budget_allowed=True,
@@ -42,7 +42,7 @@ def attempt(n, **changes):
 with tempfile.TemporaryDirectory() as tmp:
     request = Path(tmp) / 'request.json'
 
-    def check(name, data, action, model=None, code=0):
+    def check(name, data, action, model=None, code=0, fallback=None, gaps=None, reason=None):
         request.write_text(json.dumps(data), encoding="utf-8")
         started = time.monotonic()
         run = subprocess.run([str(script), '--input', str(request)], capture_output=True, text=True)
@@ -51,6 +51,15 @@ with tempfile.TemporaryDirectory() as tmp:
         assert run.returncode == code, (name, run.returncode, result, run.stderr)
         assert result['action'] == action, (name, result)
         assert result['model'] == model, (name, result)
+        if action != 'invalid':
+            assert isinstance(result['capability_fallback'], list) and isinstance(result['capability_gaps'], list), (name, result)
+        if fallback is not None:
+            assert action != 'invalid', (name, result)
+            assert [(n['model'], n['basis']) for n in result['capability_fallback']] == fallback, (name, result)
+        if gaps is not None:
+            assert [(n['model'], n['kind']) for n in result['capability_gaps']] == gaps, (name, result)
+        if reason is not None:
+            assert all(part in result['reason'] for part in reason), (name, result)
         report.append(dict(scenario=name, passed=True, action=action, model=model,
                            router_elapsed_seconds=round(measured, 6), metrics=result.get('metrics')))
         return result
@@ -102,7 +111,10 @@ with tempfile.TemporaryDirectory() as tmp:
     data['models'][0]['available'] = False
     check('initial unavailable cheapest tier', data, 'start', 'sonnet')
     data['models'][1]['capable'] = False
-    check('required context or tool support filters candidate', data, 'start', 'opus')
+    data['models'][1]['capability_gap'] = dict(kind='context', detail='needs the unattended phase brief',
+                                               evidence='fixture/context-gap.json')
+    check('required context or tool support filters candidate', data, 'start', 'opus',
+          fallback=[], gaps=[('sonnet', 'context')])
     data['owner_model'] = 'haiku'
     check('unavailable owner pin never substituted', data, 'blocked', code=3)
     data['owner_model'] = 'opus'
@@ -123,6 +135,108 @@ with tempfile.TemporaryDirectory() as tmp:
     for row in data['models']:
         row.pop('capable')
     check('unknown capability is not available', data, 'blocked', code=3)
+
+    # Capability basis: an explicit capable:false needs a valid capability_gap to exclude a tier.
+    GAP = dict(kind='tool', detail='needs the repo-local MCP tool', evidence='fixture/tool-gap.json')
+
+    def row_of(d, model):
+        return next(r for r in d['models'] if r['model'] == model)
+
+    data = copy.deepcopy(base)
+    row_of(data, 'haiku')['capable'] = False
+    result = check('capable false without basis falls back to haiku', data, 'start', 'haiku',
+                   fallback=[('haiku', 'missing')], gaps=[],
+                   reason=['disregarded for haiku', 'basis missing'])
+    data = copy.deepcopy(base)
+    row_of(data, 'haiku')['capable'] = False
+    row_of(data, 'haiku')['capability_gap'] = GAP
+    check('documented haiku gap allows the step-up', data, 'start', 'sonnet',
+          fallback=[], gaps=[('haiku', 'tool')], reason=['skipped for accepted tool capability gap'])
+    for label, gap in [
+            ('invalid kind', dict(GAP, kind='network')),
+            ('blank detail', dict(GAP, detail='   ')),
+            ('blank evidence', dict(GAP, evidence='')),
+            ('non-object gap', 'tool')]:
+        data = copy.deepcopy(base)
+        row_of(data, 'haiku')['capable'] = False
+        row_of(data, 'haiku')['capability_gap'] = gap
+        check('malformed basis (' + label + ') falls back', data, 'start', 'haiku',
+              fallback=[('haiku', 'malformed')], gaps=[])
+    data = copy.deepcopy(base)
+    row_of(data, 'haiku')['capable'] = False
+    row_of(data, 'haiku')['available'] = False
+    check('unavailable haiku with capable false is ineligible without a note', data, 'start', 'sonnet',
+          fallback=[], gaps=[])
+    data = copy.deepcopy(base)
+    row_of(data, 'haiku')['capable'] = True
+    row_of(data, 'haiku')['capability_gap'] = GAP
+    check('capable true ignores a stray gap', data, 'start', 'haiku', fallback=[], gaps=[])
+    data = copy.deepcopy(base)
+    for model in ('haiku', 'sonnet'):
+        row_of(data, model)['capable'] = False
+        row_of(data, model)['capability_gap'] = dict(GAP)
+    check('two documented gaps climb to opus with both recorded', data, 'start', 'opus',
+          fallback=[], gaps=[('haiku', 'tool'), ('sonnet', 'tool')])
+    data = copy.deepcopy(base)
+    for model in ('haiku', 'sonnet', 'opus'):
+        row_of(data, model)['capable'] = False
+    check('every tier capable false without basis selects cheapest', data, 'start', 'haiku',
+          fallback=[('haiku', 'missing')], gaps=[])
+    data = copy.deepcopy(base)
+    for model in ('haiku', 'sonnet', 'opus'):
+        row_of(data, model)['capable'] = False
+        row_of(data, model)['capability_gap'] = dict(GAP)
+    check('every tier documented as incapable blocks', data, 'blocked', code=3,
+          fallback=[], gaps=[('haiku', 'tool'), ('sonnet', 'tool'), ('opus', 'tool')])
+    data = copy.deepcopy(base)
+    data['submission'] = dict(local_checks_passed=True, distinct_changes=True, batched=True)
+    row_of(data, 'haiku')['capable'] = False
+    result = check('basis fallback keeps submission guard usable', data, 'start', 'haiku',
+                   fallback=[('haiku', 'missing')], gaps=[])
+    assert result['submission_allowed'] is True
+    data = copy.deepcopy(base)
+    data['current_model'] = 'haiku'
+    data['attempts'] = [attempt(1), attempt(2)]
+    row_of(data, 'sonnet')['capable'] = False
+    data['diagnosis'] = dict(model='haiku', kind='stuck_bug', attempt_ids=['a1', 'a2'],
+                             evidence=['fixture/diagnosis.json'], approaches_verified=True,
+                             why_more_retries_unlikely='Two distinct precedence approaches failed without new evidence.')
+    check('escalation to sonnet without basis falls back to sonnet', data, 'escalate', 'sonnet',
+          fallback=[('sonnet', 'missing')], gaps=[])
+    row_of(data, 'sonnet')['capability_gap'] = dict(GAP)
+    check('escalation with sonnet gap skips to opus', data, 'escalate', 'opus',
+          fallback=[], gaps=[('sonnet', 'tool')])
+    # Routing moves past a disregarded current tier: reason must name it even though sonnet is chosen.
+    data = copy.deepcopy(base)
+    data['current_model'] = 'haiku'
+    data['attempts'] = [attempt(1), attempt(2)]
+    row_of(data, 'haiku')['capable'] = False
+    data['diagnosis'] = dict(model='haiku', kind='stuck_bug', attempt_ids=['a1', 'a2'],
+                             evidence=['fixture/diagnosis.json'], approaches_verified=True,
+                             why_more_retries_unlikely='Two distinct precedence approaches failed without new evidence.')
+    result = check('escalation past disregarded haiku names it in reason', data, 'escalate', 'sonnet',
+                   fallback=[('haiku', 'missing')], gaps=[], reason=['disregarded for haiku (basis missing); not selected'])
+    assert result['reason'].endswith('Unsupported capable:false disregarded for haiku (basis missing); not selected.'), result
+    row_of(data, 'sonnet')['available'] = False
+    row_of(data, 'opus')['available'] = False
+    result = check('blocked escalation still names disregarded haiku', data, 'blocked', code=3,
+                   fallback=[('haiku', 'missing')], gaps=[], reason=['disregarded for haiku (basis missing); not selected'])
+    row_of(data, 'sonnet')['available'] = True
+    row_of(data, 'opus')['available'] = True
+    # Control: when the disregarded tier is the chosen one, the clause keeps its original wording.
+    data = copy.deepcopy(base)
+    row_of(data, 'haiku')['capable'] = False
+    result = check('chosen disregarded haiku keeps original clause', data, 'start', 'haiku',
+                   fallback=[('haiku', 'missing')], gaps=[])
+    assert result['reason'].endswith(' Unsupported capable:false disregarded for haiku (basis missing).'), result
+    data = copy.deepcopy(base)
+    data['owner_model'] = 'opus'
+    row_of(data, 'opus')['capable'] = False
+    check('owner pin with unsupported capable false keeps owner and names disregard', data, 'start', 'opus',
+          fallback=[('opus', 'missing')], gaps=[], reason=['disregarded for opus'])
+    row_of(data, 'opus')['capability_gap'] = dict(GAP)
+    check('owner pin with documented gap is blocked', data, 'blocked', code=3, fallback=[], gaps=[('opus', 'tool')],
+          reason=['blocked by accepted tool capability gap', 'never substitute silently'])
     data = copy.deepcopy(base)
     result = check('unknown local checks cannot submit', data, 'start', 'haiku')
     assert result['submission_allowed'] is False
@@ -153,6 +267,11 @@ with tempfile.TemporaryDirectory() as tmp:
     check('asserted progress requires new evidence', data, 'invalid', code=2)
     data['attempts'][0]['new_evidence'] = ['fixture/new-cause.json']
     check('documented progress retains cheap model', data, 'retry', 'haiku')
+    gapped = copy.deepcopy(data)
+    row_of(gapped, 'haiku')['capable'] = False
+    row_of(gapped, 'haiku')['capability_gap'] = dict(GAP)
+    check('retry on a tier with a valid gap blocks instead of moving', gapped, 'blocked', code=3,
+          gaps=[('haiku', 'tool')], reason=['blocked by accepted tool capability gap'])
     data['attempts'][0]['cost_usd'] = float('nan')
     check('nonfinite spend never becomes known', data, 'invalid', code=2)
     data = copy.deepcopy(base)
@@ -181,14 +300,112 @@ with tempfile.TemporaryDirectory() as tmp:
     data['attempts'] = [dict(id='exhaust-1', model='haiku', outcome='exhaustion',
                              evidence=['fixture/valid-handoff.json'], next_action='resume preserved investigation')]
     check('exhaustion is not a quality failure', data, 'retry', 'haiku')
+
+    # Run mode x issue tier: starting model with every tier available (fable included, never a start).
+    START = {
+        ('default', 'Light'): 'haiku', ('default', 'Standard'): 'sonnet', ('default', 'Heavy'): 'opus',
+        ('speed', 'Light'): 'sonnet', ('speed', 'Standard'): 'opus', ('speed', 'Heavy'): 'opus',
+        ('cheap', 'Light'): 'haiku', ('cheap', 'Standard'): 'haiku', ('cheap', 'Heavy'): 'haiku',
+    }
+    for (mode, tier), expected in START.items():
+        data = copy.deepcopy(base)
+        data.update(mode=mode, tier=tier)
+        result = check(f'{mode} mode {tier} starts on {expected}', data, 'start', expected)
+        assert result['mode'] == mode and result['tier'] == tier, result
+    data = copy.deepcopy(base)
+    data['tier'] = 'Heavy'
+    check('absent mode reads as default', data, 'start', 'opus', reason=['default mode'])
+    data['mode'] = 'turbo'
+    assert check('unknown mode reads as default', data, 'start', 'opus')['mode'] == 'default'
+    # An unresolved tier (no tier key, or null) routes as Standard and the reason says so.
+    no_tier = copy.deepcopy(base)
+    del no_tier['tier']
+    assert check('no tier routes as standard', no_tier, 'start', 'sonnet',
+                 reason=['Tier unresolved; routed as Standard'])['tier'] == 'Standard'
+    null_tier = copy.deepcopy(base)
+    null_tier.update(mode='speed', tier=None)
+    check('null speed tier routes as standard on opus', null_tier, 'start', 'opus',
+          reason=['Tier unresolved; routed as Standard'])
+    check('supplied tier names no unresolved note', copy.deepcopy(base), 'start', 'haiku', reason=[])
+    data = copy.deepcopy(base)
+    data['tier'] = 'Huge'
+    check('unrecognized tier is invalid', data, 'invalid', code=2)
+    # Fable is never a starting tier in any mode: speed Heavy starts on opus even with fable
+    # available, and an unavailable opus falls back to sonnet (never fable) with a note.
+    data = copy.deepcopy(base)
+    data.update(mode='speed', tier='Heavy')
+    check('speed heavy with fable available starts on opus', data, 'start', 'opus')
+    next(r for r in data['models'] if r['model'] == 'opus')['available'] = False
+    check('speed opus unavailable falls back to sonnet and says so', data, 'start', 'sonnet',
+          reason=['preferred opus unavailable', 'started on sonnet'])
+    # Owner pins win in every mode; an unavailable pin still blocks in every mode.
+    for mode in ('default', 'speed', 'cheap'):
+        data = copy.deepcopy(base)
+        data.update(mode=mode, tier='Heavy', owner_model='haiku')
+        check(f'{mode} owner pin overrides mode', data, 'start', 'haiku')
+        next(r for r in data['models'] if r['model'] == 'haiku')['available'] = False
+        check(f'{mode} unavailable owner pin blocks', data, 'blocked', code=3)
+    # Speed escalates after one failure without new evidence; default and cheap do not.
+    for mode, action, model in (('speed', 'escalate', 'opus'), ('default', 'retry', 'sonnet'),
+                                ('cheap', 'retry', 'sonnet')):
+        data = copy.deepcopy(base)
+        data.update(mode=mode, current_model='sonnet', attempts=[attempt(1, model='sonnet')])
+        check(f'{mode} one failed attempt', data, action, model)
+    # Two equivalent failures: diagnosis is still required in default and cheap; speed moves up.
+    two = copy.deepcopy(base)
+    two.update(current_model='sonnet', attempts=[attempt(1, model='sonnet'), attempt(2, model='sonnet')])
+    for mode in ('default', 'cheap'):
+        data = copy.deepcopy(two)
+        data['mode'] = mode
+        check(f'{mode} two failures need diagnosis', data, 'diagnose', 'sonnet', 3)
+        data['diagnosis'] = dict(model='sonnet', kind='stuck_bug', attempt_ids=['a1', 'a2'],
+                                 evidence=['fixture/diagnosis.json'], approaches_verified=True,
+                                 why_more_retries_unlikely='Two distinct approaches failed without new evidence.')
+        check(f'{mode} diagnosed failures escalate', data, 'escalate', 'opus')
+    data = copy.deepcopy(two)
+    data['mode'] = 'speed'
+    check('speed two failures escalate', data, 'escalate', 'opus')
+    # Speed escalation reaches fable only from an opus worker, and only when fable is eligible.
+    for mode in ('speed',):
+        data = copy.deepcopy(base)
+        data.update(mode=mode, tier='Heavy', current_model='opus', attempts=[attempt(1, model='opus')])
+        check('speed opus one failure escalates to fable', data, 'escalate', 'fable')
+        next(r for r in data['models'] if r['model'] == 'fable')['available'] = False
+        check('speed opus one failure with fable unavailable retries opus', data, 'retry', 'opus')
+        two_opus = copy.deepcopy(base)
+        two_opus.update(mode='speed', tier='Heavy', current_model='opus',
+                        attempts=[attempt(1, model='opus'), attempt(2, model='opus')])
+        check('speed opus two failures escalate to fable', two_opus, 'escalate', 'fable')
+    # Default and cheap never escalate opus to fable: one failure retries, and a diagnosed
+    # repeat has no eligible next tier (blocked) rather than fable.
+    for mode in ('default', 'cheap'):
+        data = copy.deepcopy(base)
+        data.update(mode=mode, tier='Heavy', current_model='opus', attempts=[attempt(1, model='opus')])
+        check(f'{mode} opus one failure never reaches fable', data, 'retry', 'opus')
+        two_opus = copy.deepcopy(base)
+        two_opus.update(mode=mode, tier='Heavy', current_model='opus',
+                        attempts=[attempt(1, model='opus'), attempt(2, model='opus')])
+        two_opus['diagnosis'] = dict(model='opus', kind='stuck_bug', attempt_ids=['a1', 'a2'],
+                                     evidence=['fixture/diagnosis.json'], approaches_verified=True,
+                                     why_more_retries_unlikely='Two distinct approaches failed without new evidence.')
+        check(f'{mode} diagnosed opus has no fable escalation', two_opus, 'blocked', code=3)
+    # A speed-started fable worker is kept (no owner pin); other modes block it as before.
+    fable_run = copy.deepcopy(base)
+    fable_run.update(current_model='fable', attempts=[attempt(1, model='fable')], mode='speed')
+    check('speed fable worker retries on fable', fable_run, 'retry', 'fable')
+    fable_run['mode'] = 'default'
+    check('default mode does not keep an unpinned fable worker', fable_run, 'blocked', code=3)
+    # A mode change affects only later launches: a running cheap-tier worker keeps its model.
+    running = copy.deepcopy(base)
+    running.update(mode='speed', current_model='opus',
+                   attempts=[attempt(1, model='opus', outcome='progress', new_evidence=['fixture/ok.json'])])
+    check('mode change keeps running worker model', running, 'retry', 'opus')
     # The caller examples must still feed all three phase call sites through routing.
     skill = (root / '.claude/skills/subagent/SKILL.md').read_text(encoding="utf-8")
     assert skill.count('`model: ROUTED_MODEL`') == 3
     assert 'model-route.sh' in skill and 'failed write' in skill
     pmm = (root / '.claude/skills/pr-monitor-and-manage/references/pmm-act.md').read_text(encoding="utf-8")
-    forgotten = (root / '.claude/skills/pm-forgotten-pr/SKILL.md').read_text(encoding="utf-8")
     assert 'model: ROUTED_MODEL' in pmm and 'task-model-route-dispatch' in pmm
-    assert 'model: ROUTED_MODEL' in forgotten and 'task-model-route-dispatch' in forgotten
     reference = (root / '.claude/reference/task-model-routing.md').read_text(encoding='utf-8')
     handoff_block = reference.split('# routed-handoff-write\n', 1)[1].split('\n```', 1)[0]
     submission_block = reference.split('# model-route-submission\n', 1)[1].split('\n```', 1)[0]

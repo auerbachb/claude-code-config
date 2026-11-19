@@ -21,7 +21,10 @@ class PrStatePayloadTests(unittest.TestCase):
         self.scripts.mkdir()
         (self.scripts / "lib").mkdir()
         shutil.copy2(SOURCE, self.scripts / "pr-state.sh")
-        shutil.copy2(ROOT / ".claude/scripts/check-runs-dedup.sh", self.scripts / "check-runs-dedup.sh")
+        for helper in ("check-runs-dedup.sh", "check-runs-snapshot.sh"):
+            shutil.copy2(ROOT / ".claude/scripts" / helper, self.scripts / helper)
+        shutil.copy2(ROOT / ".claude/scripts/lib/check_run_workflows.py",
+                     self.scripts / "lib/check_run_workflows.py")
         # Copy the actual helper dependencies, without relying on the owner's HOME.
         for p in (ROOT / ".claude/scripts/lib").glob("*.jq"):
             shutil.copy2(p, self.scripts / "lib" / p.name)
@@ -58,7 +61,16 @@ elif args[:2]==['api','graphql']:
 elif args and args[0]=='api':
  endpoint=next((a for a in args[1:] if a.startswith('repos/')), '')
  if '/check-runs?' in endpoint:
-  for item in json.loads((root/'checks.json').read_text()):print(json.dumps(item))
+  if (root/'checks-404').exists():
+   print('HTTP 404 test marker',file=sys.stderr);sys.exit(1)
+  checks=json.loads((root/'checks.json').read_text())
+  print(json.dumps({'total_count':len(checks),'check_runs':checks}))
+  sys.exit(0)
+ if '/actions/runs?' in endpoint:
+  print(json.dumps({'total_count':1,'workflow_runs':[{'id':1,'workflow_id':1,'run_attempt':1,
+   'event':'push','head_branch':'fixture','head_sha':'a'*40,'pull_requests':[],
+   'check_suite_id':1,'html_url':'https://github.com/fixture/repository/actions/runs/1',
+   'status':'completed','conclusion':'success'}]}))
   sys.exit(0)
  if '/statuses?' in endpoint:name='statuses'
  elif '/reviews?' in endpoint:name='reviews'
@@ -128,6 +140,12 @@ os.execv(os.environ['JQ_REAL'],[os.environ['JQ_REAL']]+sys.argv[1:])
     def shells(self):
         return [p for p in ("/bin/bash", "/opt/homebrew/bin/bash") if Path(p).is_file()]
 
+    def test_missing_check_endpoint_is_api_failure_not_missing_pr(self):
+        (self.fixture / "checks-404").touch()
+        for shell in self.shells():
+            with self.subTest(shell=shell):
+                self.run_snapshot(shell, success=False)
+
     def test_large_endpoints_and_classification(self):
         # Each body exceeds 1 MiB; the combined bundle exceeds 5 MiB. Full
         # sentinels at the end prevent a truncating implementation from passing.
@@ -178,7 +196,8 @@ os.execv(os.environ['JQ_REAL'],[os.environ['JQ_REAL']]+sys.argv[1:])
                 self.assertEqual(d["threads"], {"total": 0, "resolved_count": 0, "unresolved_count": 0, "unresolved": [], "all": []})
                 self.assertEqual(d["comments"], {"reviews": [], "inline": [], "conversation": []})
                 self.assertEqual(d["unmarked_replies"], 0)
-                self.assertEqual(d["check_runs"]["all"][0]["name"], "fixture-ci")
+                self.assertEqual({run["name"] for run in d["check_runs"]["all"]},
+                                 {"fixture-ci", "workflow: 1 (push)"})
                 self.assertEqual(d["merge_state"], {"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "reviewDecision": "APPROVED"})
 
     def test_failure_cleans_scratch_and_publishes_no_path(self):

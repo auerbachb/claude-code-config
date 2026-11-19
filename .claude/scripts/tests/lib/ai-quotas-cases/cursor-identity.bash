@@ -4,7 +4,7 @@
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ai-quotas-fixtures.bash"
 
 # --- 13f4. protected Cursor identity stages and stdin-only payload (#1870) ---
-IDENTITY_PROBE=$(python3 - "$SCRIPT" <<'PY'
+IDENTITY_PROBE=$(python3 - "${SCRIPT%/*}/lib/ai-quotas-cursor.sh" <<'PY'
 from pathlib import Path
 import base64,json,os,re,shutil,subprocess,sys,tempfile
 source=Path(os.environ.get('CURSOR_IDENTITY_SOURCE',sys.argv[1])).read_text()

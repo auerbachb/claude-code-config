@@ -170,7 +170,7 @@ The later increments cover the rest:
 
 - **#1727** (landed): a follow-up-issue reply clears a deferred finding in the `ci-only` and `ci+codeant-one-round` tiers. See [Deferred findings](#deferred-findings).
 - **#1728** (landed): BugBot is invited only on `full` and `legacy`. See [BugBot triggering](#bugbot-triggering).
-- **#1729** (landed): a repo sets its own per-thread pipeline ceiling with `PIPELINE_CEILING` in the `## Active work` section of its `.claude/pm-config.md`, which `/subagent`, `/pm`, `/wave` and `/pm-forgotten-pr`'s merge dispatch honour; it stays subordinate to `ACTIVE_WORK_CAP` (`min()`, never `max()`). See [`active-work-cap.md` §Subordination](active-work-cap.md#subordination--min-never-max).
+- **#1729** (landed): a repo sets its own per-thread pipeline ceiling with `PIPELINE_CEILING` in the `## Active work` section of its `.claude/pm-config.md`, which `/subagent`, `/pm` and `/wave` honour; it stays subordinate to `ACTIVE_WORK_CAP` (`min()`, never `max()`). See [`active-work-cap.md` §Subordination](active-work-cap.md#subordination--min-never-max).
 
 The two-round cap on core PRs stays a process limit, not gate logic.
 
@@ -214,7 +214,7 @@ The merge gate honours the tier, and since #1749 so does every path that **invit
 .claude/scripts/review-triggers-allowed.sh <pr> --release <reviewer> [--repo …]
 ```
 
-`<reviewer>` is `codeant`, `cursor`, or `coderabbit` (Graphite was retired 2026-11-03, #1889, and is rejected). The full contract is in `--help`.
+`<reviewer>` is `codeant`, `cursor`, or `coderabbit`. Graphite was retired in #1889. Both CI views ignore checks published by the retired app. The native required-context gate still enforces a configured Graphite context, and changing that context follows the owner-approved protection workflow. See `--help` for trigger modes.
 
 ### Modes
 

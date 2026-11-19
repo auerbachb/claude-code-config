@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # report-path.sh — Choose a report destination that cannot overwrite a prior one.
-# catalog: utilities — Return a collision-free monthly report path for `/review-stack-audit` and `/harness-audit`, so a second same-month audit cannot overwrite the first
+# catalog: utilities — Return a collision-free monthly report path for `/review-stack-audit`, so a second same-month audit cannot overwrite the first
 #
 # PURPOSE
 #   A monthly audit writes one report per run. Both /review-stack-audit and
-#   /harness-audit used to derive that path from the calendar month alone, so
-#   two audits landing in the same month resolved to the same file and the
-#   second silently destroyed the first. That is not hypothetical: it happened
-#   to /review-stack-audit in 2026-08 and PR #1338 had to invent a per-report
-#   deviation to work around it (#1345, fixed by PR #1511; the /harness-audit
-#   instance is #1519).
+#   the audit used to derive that path from the calendar month alone, so two
+#   audits landing in the same month resolved to the same file and the second
+#   silently destroyed the first. That is not hypothetical: it happened to
+#   /review-stack-audit in 2026-08 and PR #1338 had to invent a per-report
+#   deviation to work around it (#1345, fixed by PR #1511).
 #
 #   This script is that decision, made once and made testable. Given a target
 #   directory, a month, and a series it returns the canonical name when that
@@ -64,9 +63,8 @@
 #             be readable and searchable.
 #   --month   Report month, `YYYY-MM`.
 #   --series  Filename series — the calling skill's own name, e.g.
-#             `review-stack-audit` or `harness-audit`. REQUIRED, deliberately:
-#             this engine serves more than one audit, and a default would let a
-#             forgotten flag file one skill's report under another skill's
+#             `review-stack-audit`. REQUIRED, deliberately: a default would let
+#             a forgotten flag file one skill's report under another skill's
 #             series. Writing into someone else's slot is the failure #1345
 #             already had to undo by hand — it must not be the fallback.
 #
@@ -86,8 +84,6 @@
 #   .claude/scripts/report-path.sh \
 #     --dir ~/.claude/review-stack-audit --month 2026-08 --series review-stack-audit
 #
-#   .claude/scripts/report-path.sh \
-#     --dir "$WORKTREE_ROOT/.claude/reference" --month 2026-08 --series harness-audit
 
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "${HOME:-/tmp}/.claude/script-usage.log" || true
@@ -149,7 +145,7 @@ done
 # No default series. Two skills call this, so a default would silently file one
 # skill's report under the other's name on a forgotten flag — the same
 # wrong-slot failure #1345 documents, arrived at from the other direction.
-[[ -n "$SERIES" ]] || usage_error "--series is required (the calling skill's own name, e.g. review-stack-audit or harness-audit)"
+[[ -n "$SERIES" ]] || usage_error "--series is required (the calling skill's own name, e.g. review-stack-audit)"
 
 # A malformed month would silently produce a name outside the series, which no
 # later run would recognise as a month-mate — so it would stop colliding by

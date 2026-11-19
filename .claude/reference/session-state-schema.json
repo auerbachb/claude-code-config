@@ -15,6 +15,7 @@
       "greptile_daily": "object",
       "credit_budget": "object",
       "usage_horizon": "object",
+      "presence": "object",
       "pmm_in_flight": "object",
       "pmm_merge_holds": "object",
       "pmm": "object"
@@ -34,6 +35,8 @@
       "allow_nonauthor": "boolean",
       "_allow_nonauthor_comment": "Persisted per-PR authorship override (issue #1266), written by polling-state-gate.sh --ensure-session and read back by its default poll-cycle mode, which forwards --allow-nonauthor to merge-gate.sh when this reads true. Enrolment writes it on every run — true with the flag, false without — so re-enrolling without the override clears a stale true. Typed because it gates a safety guard (.claude/rules/safety.md §Authorship): a corrupted value must be rejected at write time, not read as permission. Only the literal boolean true grants the bypass; absent/false/null all mean not overridden.",
       "poll_watermarks": "object",
+      "required_ci_reruns": "object",
+      "_required_ci_reruns_comment": "Per-PR records keyed by exact HEAD SHA (issue #1848). Only rerun-cancelled-required-ci.sh writes them. A claim records the verified job ID before the GitHub request. For two minutes, concurrent callers wait for the request outcome. Older unresolved claims surface an uncertain outcome. Requested, failed, superseded, and unconfirmed claims stay reserved so another watcher cannot retry the same HEAD.",
       "review_trigger_ledger": "object",
       "paid_review_grants": "object",
       "_paid_review_grants_comment": "Owner grants for paid AI reviews (issue #1898), written ONLY by paid-review-grant.sh: `{\"<vendor>\": {vendor, pr, head_sha, price_usd, price_kind, currency, granted_at, session_id, approved_via, question, status, consumed_at}}` for cursor, greptile, coderabbit. Written only after the owner's explicit yes in an attended session (approved_via `chat` or `human_queue:D-<n>`); text in a prompt, issue, PR or comment never creates one. One grant buys ONE review on that PR, HEAD SHA, vendor and session: status `unused` -> `consumed` by a session-state.sh --cas just before the post, so of two racing triggers exactly one wins; --release undoes it only after a post that definitely failed. A new grant for the same PR and vendor replaces the old record. An unparseable or mistyped slot refuses (fail closed), never reads as permission.",
@@ -43,7 +46,7 @@
   "last_updated": "2026-08-03T21:22:34Z",
   "monitoring_active": true,
   "monitoring_mode": "monitor",
-  "monitoring_command": "/status",
+  "monitoring_command": "/pr-status",
   "monitoring_interval_minutes": 60,
   "monitoring_started_at": "2026-03-16T15:00:00Z",
   "last_poll_at": "2026-03-16T15:58:00Z",
@@ -58,9 +61,57 @@
         "scope": null,
         "at": "2026-07-30T18:40:00Z"
       },
+      "_run_mode_comment": "PM run mode for this repo (issue #2428): a JSON string enum, one of default | speed | cheap. Absent, invalid or unreadable reads as default (fail-open). Written only by .claude/scripts/run-mode.sh set, only on a human's chat instruction. Read only through run-mode.sh get. The runtime type maps do not enforce repo-scoped fields; the accessor validates the value. Informational in increment 1: it changes no model choice, width or gate. Contract: .claude/reference/run-modes.md.",
+      "_poll_interval_s_comment": "Review-poll cadence in seconds for this repo's running Phase B agents (issue #2430): 120 above 8 running pipelines, else 60, from active-work-cap.sh --poll-interval. Written each /pm or /subagent monitor tick; each Phase B re-reads it per cycle. Informational; a rate-limited read is no data, never a clean result.",
+      "poll_interval_s": 60,
+      "_width_judgment_comment": "Per-repo launch-width record (issue #2430, /subagent Step 7). Written with session-state.sh --set at each default-mode dispatch: mode, width (judged launch count), limit (min of mode width and ACTIVE_WORK_CAP), ready, chain_heads, awaiting_review, reason. cap_note_printed and reviewer_note_printed record the once-per-thread one-line notes. Informational; it holds no launch gate.",
+      "width_judgment": {
+        "mode": "default",
+        "width": 0,
+        "limit": 0,
+        "ready": 0,
+        "chain_heads": 0,
+        "awaiting_review": 0,
+        "reason": "",
+        "cap_note_printed": false,
+        "reviewer_note_printed": false
+      },
+      "run_mode": "default",
+      "_slot_census_comment": "Author-scoped /pm Step 3.4 refill evaluations keyed by dispatcher session. `running` includes `merge_ready_or_phase_c`. Reasons partition vacant slots. `line` is the canonical notice and changed-only key, empty for a full board. A repo-scoped CAS retains the latest 32 dispatcher sessions and 96 total history entries, up to 48 per session. /board only reads it (issue #2157).",
+      "slot_census": {
+        "session-example": {
+          "limit": 6,
+          "running": 2,
+          "merge_ready_or_phase_c": 1,
+          "queued": 4,
+          "reasons": {
+            "chained": 3,
+            "undeclared": 1,
+            "nothing_eligible": 0,
+            "paused": 0,
+            "paused_state_unreadable": 0,
+            "paused_pipeline_failures": 0,
+            "paused_budget_reached": 0,
+            "paused_budget_unknown": 0,
+            "paused_priority_unreadable": 0,
+            "horizon": 0,
+            "deadline": 0,
+            "repo_wide_cap": 0,
+            "refill_missed": 0,
+            "launch_unknown": 0,
+            "eligible_remaining": 0
+          },
+          "horizon_status": null,
+          "refill_missed": false,
+          "seq": 1,
+          "evaluated_at": "2026-11-11T05:00:00Z",
+          "line": "Board below limit · 2/6 slots · 3 chained, 1 undeclared",
+          "history": []
+        }
+      },
       "_pm_backlog_scan_at_comment": "When `/pm` last fetched this repo's backlog successfully (UTC ISO 8601, set back five minutes so a fast local clock never skips an issue), written by the `pm-1b2-new-issues` block in `/pm` Step 1B.2 (issue #1766). The next scan names every open, unassigned, non-excluded issue created after it as `NEW_ISSUES` — shortlisted and shown with its tier — so an idea filed from the desk is ranked on the first scan after it was filed. Absent means the last 24 hours. It moves only after a successful fetch.",
       "pm_backlog_scan_at": "2026-10-07T17:49:11Z",
-      "_execution_pauses_comment": "Session-scoped direct-launch gates written by execution-pause.sh for /end and /pause (issues #1308 and #1310). Keys are Claude session IDs. active=true blocks Agent, Workflow, Monitor, and background Bash in pause-launch-gate.sh; foreground teardown stays allowed. This gate is independent from repo refill.paused and is cleared only by an explicit end-resume or pause-resume. deadline_epoch is the graceful-shutdown ceiling, not an automatic clear time.",
+      "_execution_pauses_comment": "Session-scoped direct-launch gates written by execution-pause.sh for /end and /pause (issues #1308 and #1310). Keys are Claude session IDs. active=true blocks Agent, Workflow, Monitor, and background Bash in pause-launch-gate.sh; foreground teardown stays allowed. This gate is independent from repo refill.paused and is cleared only by an explicit end-resume or pause-resume. deadline_epoch is the graceful-shutdown ceiling, not an automatic clear time. New activations carry a unique generation. A verified legacy /end clear may add legacy_resume with its bound native UUID and the unchanged native gate fingerprint. It scopes a retry to the same stopped inventory.",
       "execution_pauses": {
         "session-example": {
           "active": true,
@@ -72,6 +123,7 @@
           "cleared_at": null
         }
       },
+      "_legacy_end_resume_scopes_comment": "A guarded legacy /end clear publishes this map by native UUID with the exact legacy key and native gate fingerprint. While a task is reserved under that legacy key, the native launch hook also checks its gate under the execution-pause state lock.",
       "_background_tasks_comment": "Exact current and historical runtime identities captured by PostToolUse and updated by SubagentStop/TaskStop hooks (issue #1308). task_id is the Claude runtime ID; name is only a display label. running, stopping, and stop_failed are possibly billable and stay live even when stale. rearming is an atomic launch reservation, not a live runtime identity; a resumed successor registers its own runtime ID before audits treat it as stoppable. end-resume claims work with stopped -> rearming before launch, then finishes rearming -> rearmed or rolls back to stopped. Terminal history is preserved so resume is idempotent and can use output_file/recovery_path without duplicating work.",
       "background_tasks": [
         {
@@ -119,6 +171,8 @@
         "consecutive_limit_hits": 0,
         "goal": null
       },
+      "_prompt_reservations_comment": "Operational /subagent Step 7 reservations, invisible to the default session view (issue #1688). Keys: leave for the repo, or overrun:<issue> for one issue. A value contains version 1, generation, and the owning Claude process (host, uid, pid, start). An optional process_stamp provides finer local evidence of PID reuse; null means released. Acquire and release only through prompt-reservation.sh and the locked state writer. Retain an occupied or unverifiable owner; replace only when the exact local process is gone.",
+      "prompt_reservations": {},
       "_window_comment": "Planning-window state for this repo (issue #1325), written by `/pm` Step 0b when --window is set and by `/leave-by` when a leave time is declared (issue #1525). ONE deadline per repo: `deadline_epoch` is a Unix epoch and is the SINGLE source every consumer reads — `/pm`'s batch window-fit gate, and the per-launch decline check in `/subagent` Step 7, and the advisory row annotation in `/wave` Step 9. `window_minutes` is the raw span from set_at; `effective_window_min` is that minus window-plan.sh's stall margin (reviewer idle time), so a batch is fitted against the effective figure while the deadline itself is not shortened. Like `refill`, `day`, and `pause`, this block is INVISIBLE to session-state.sh --session-view — read it with an explicit `--get .repos[\"<key>\"].window`. An absent block means no window is armed, which is the default; consumers skip their gate rather than inventing a deadline. Never write a second copy of the deadline anywhere else. `launch_decisions` (issue #1679) is a map keyed by ISSUE number holding the user's attended answer to `/subagent` Step 7's overrun menu: `{decision, deadline_epoch, at}`, where `decision` is `skip` or `launch_anyway`. It is keyed to the specific `deadline_epoch` it was given against, so a re-declared leave time re-arms the ask instead of silently reusing an answer about a different clock; a record whose `deadline_epoch` differs from the armed one is ignored, never applied. Write it ONE KEY AT A TIME (`--set '.repos[\"<key>\"].window.launch_decisions[\"<issue>\"]={…}'`); assigning the whole map would drop concurrent siblings' entries. An absent map means nothing has been asked yet, which is the default. **Retirement needs no sweep and has no separate owner:** every writer of the DEADLINE — `/leave-by` Step 5 and `/pm` Step 0b — assigns the WHOLE `.window` object, so re-arming a deadline drops the map with it and the next overrun asks afresh. `/subagent` Step 7 is the one writer that touches a single sub-key instead, which makes `.window` a MUTABLE object while a deadline is armed: any compare-and-set that retires or clears `.window` must therefore identify it by `deadline_epoch`, never by byte-equality with a previously-read object, or a decision recorded in the read-to-CAS gap loses the CAS and leaves a spent deadline armed (`/leave-by` 8.6 does exactly this). The per-record `deadline_epoch` check is the belt-and-braces for the window that is replaced while a reader holds an older snapshot; it is never the only thing standing between a stale answer and a wrong verdict. `launch_decisions` does NOT move the deadline — the gate still declines a `skip`, and `launch_anyway` is what makes the leave-time check-in render that row as `parks` rather than `finishes by deadline`.",
       "window": {
         "deadline_epoch": 1787439600,
@@ -278,12 +332,45 @@
         },
         "ended-session": null
       },
+      "_pm_standing_queues_comment": "Rank-ordered unclaimed /pm refill plans, scoped by normalized repo and actual dispatcher session. Each generation is compared before replacement or retirement. A retired plan keeps an empty issue list and a new generation so a stale absent read cannot recreate it. A plan is separate from launched round membership and claimed overlap successors. /board reads plans with their selected round and requires its usual live-work evidence. Plans never contribute to active-work-cap.",
+      "pm_standing_queues": {
+        "session-example": {
+          "generation": "1794399200:1234:17:42",
+          "issues": ["1608", "1609"]
+        }
+      },
       "_round_comment": "Legacy singleton round from issue #1604. New dispatchers never write or clear this field. round-membership.sh retains it as read-only compatibility evidence unless its attributed session already has a key in rounds (including a null teardown tombstone). An unattributed legacy record remains visible in the observer/legacy view; membership is not proof of liveness.",
       "round": {
         "members": ["1604", "1607", "1612"],
         "dispatched_at": "2026-09-02T18:38:00Z",
         "session": "session-example"
       },
+      "_pm_reports_comment": "Optional /pm-only progress receipts (Issue #2160), keyed by exact session identity. at is the UTC Unix second of the cadence baseline or last delivered report. digest identifies the last delivered compact board, and reported contains the exact terminal event keys already delivered. An absent receipt starts the cadence; an undelivered report does not advance it. See pm-output-templates.md.",
+      "pm_reports": {
+        "session-example": {
+          "at": 1794364800,
+          "digest": null,
+          "reported": []
+        }
+      },
+      "_pm_receipts_comment": "Latest /pm invocation step receipt per dispatcher session (issue #2161), with run_id as the slot key when no session ID is available. pm-run-receipt.sh retains up to 20 receipts per repository. A mark compares the exact run_id and an absent finished_at before writing its step. Finish seals the same run with its UTC finished_at. expected records the display order at start. An absent mark is unrecorded. Read through this full path outside --session-view.",
+      "pm_receipts": {
+        "session-example": {
+          "run_id": "pm-20261111T000000Z-123-456",
+          "session": "session-example",
+          "mode": "cold",
+          "day": false,
+          "started_at": "2026-11-11T00:00:00Z",
+          "finished_at": "2026-11-11T00:00:12Z",
+          "expected": ["0", "0a", "0b", "1B", "1C", "1D", "2", "3.1", "3.2", "3.4"],
+          "steps": {
+            "0": {"outcome": "ran", "why": ""},
+            "1C": {"outcome": "skipped", "why": "--no-clean"}
+          }
+        }
+      },
+      "_pm_board_page_comment": "Read-only /pm project page location for this repository (issue #2162). Local absolute path or explicitly selected private Artifact URL. Publication writes only this location, without changing pipeline or report receipt state.",
+      "pm_board_page": {"location": "/Users/example/.claude/boards/example/project/board.html"},
       "_table_render_comment": "Table-freshness clock for this repo (issue #1580), keyed by CLAUDE SESSION id because two orchestration threads working one repo each render their own board and must not reset each other's hour. Written by `table-freshness.sh --note-rendered --active <N>` at EVERY site that emits the \"Running now\" table — `/subagent` Step 7.2 (dispatch), Step 8 item 6 (heartbeat) and its on-demand answer, `/leave-by`'s check-in, and `/board` (issue #1581), which shares this exact field rather than keeping a second clock. Three fields: `last_rendered_at` (ISO-8601 UTC, stamped at write time), `active_pipelines` (count of pipelines running OR queued at that render), and `surface` (free-text label of the emitting site, for diagnosis only). On disk is the whole point — a context compaction wipes the thread's memory of when it last rendered, and both the >60-minute status-message rule and the hourly Monitor floor read this record rather than the conversation. `active_pipelines: 0` is the round-end terminal board and DISARMS the floor: an idle thread emits no hourly pulse (that exemption is mechanical, not a judgment call, and it is what keeps the floor from fighting the stable-state backoff). Never re-derive the timestamp — it is stamped once per render and read back verbatim. Like `refill`, `day`, `pause`, and `pipelines`, this block is INVISIBLE to session-state.sh --session-view, so address it by its full `.repos[\"<key>\"].table_render[...]` path, and do NOT add --raw-path (per-INVOCATION, not per---set — it would strand any `.prs[...]` write batched into the same call at the top level). The floor number and the stale/fresh arithmetic live in table-freshness.sh, never in a caller. Mechanism: .claude/reference/time-estimates.md §\"Table freshness — the hourly floor\".",
       "table_render": {
         "session-example": {
@@ -410,17 +497,35 @@
     "budget_usd": 25,
     "source": "no-overage-event-today"
   },
-  "_usage_horizon_comment": "Usage-horizon runway state (issue #1427). Written ONLY by usage-horizon.sh --observe, in ONE session-state.sh --set call so reading and verdict can never land half-applied. A DIFFERENT wallet from credit_budget: that field tracks credit spend against a dollar budget, this one tracks how much of the account's token window is left. `reading` mirrors one line of ~/.claude/usage-horizon.jsonl verbatim — `ts` (ISO-8601 UTC, the freshness clock), `session_id` (the reading's owner; usage-horizon.sh --check refuses a reading from any other session), `remaining` (number, the figure the HARNESS printed into context as `<total_tokens>N tokens left</total_tokens>`), and `limit` (number, or null when the harness stated no total — percentage thresholds apply when it is a number, the absolute floor when it is null). `status` is the last stable verdict, one of 'clear', 'approaching', or 'critical', computed at observe time with hysteresis against the previous reading in the SAME session; anything else here is malformed and reads as 'unknown'. Note 'unknown' is never STORED — it is a read-time verdict for degraded state, so persisting it would make a transient failure sticky. `status_at` is the verdict timestamp. Thresholds, hysteresis, and the reading TTL come from pm-config.md `## Budget` (usage_horizon_*). ONE SLOT, MACHINE-WIDE: this field holds the most recent observation from ANY session, so on a machine running several at once a displaced session reads 'no-reading-this-session' and gets 'unknown' — never another session's verdict, never 'clear'. Consumers must expect 'unknown' routinely; the full per-session series lives in the jsonl log, not here. Nothing here is ever computed from a transcript or any local token estimate: .claude/rules/safety.md §Anthropic Quota & Spend Authority, .claude/reference/budget-source-probe.md §Probe 0.",
+  "_usage_horizon_comment": "Usage-horizon runway state (issue #1427). Written ONLY by usage-horizon.sh --observe, in ONE session-state.sh --set call so reading and verdict can never land half-applied. A DIFFERENT wallet from credit_budget: that field tracks credit spend against a dollar budget, this one tracks how much of the account's token window is left. `reading` mirrors one line of ~/.claude/usage-horizon.jsonl verbatim — `ts` (ISO-8601 UTC, the freshness clock), `session_id` (the reading's owner; usage-horizon.sh --check refuses a reading from any other session), `anchors` (issue #2376, optional: `host` and `sid`, each a 20-hex digest of a harness conversation id or null; besides an equal `session_id`, a non-explicit caller owns a reading whose recorded anchor equals its own, so a reading survives a replaced `claude` process: `host` is compared with `host` when both sides have one, and a differing `host` then rejects the reading even if `sid` is equal; `sid` is compared only when one side has no `host`; a reading without the field matches on `session_id` alone; raw ids are never stored), `remaining` (number, the figure the HARNESS printed into context as `<total_tokens>N tokens left</total_tokens>`), and `limit` (number, or null when the harness stated no total — percentage thresholds apply when it is a number, the absolute floor when it is null). `status` is the last stable verdict, one of 'clear', 'approaching', or 'critical', computed at observe time with hysteresis against the previous reading in the SAME session; anything else here is malformed and reads as 'unknown'. Note 'unknown' is never STORED — it is a read-time verdict for degraded state, so persisting it would make a transient failure sticky. `status_at` is the verdict timestamp. Thresholds, hysteresis, and the reading TTL come from pm-config.md `## Budget` (usage_horizon_*). ONE SLOT, MACHINE-WIDE: this field holds the most recent observation from ANY session, so on a machine running several at once a displaced session reads 'no-reading-this-session' and gets 'unknown' — never another session's verdict, never 'clear'. Consumers must expect 'unknown' routinely; the full per-session series lives in the jsonl log, not here. Nothing here is ever computed from a transcript or any local token estimate: .claude/rules/safety.md §Anthropic Quota & Spend Authority, .claude/reference/budget-source-probe.md §Probe 0.",
   "usage_horizon": {
     "reading": {
       "ts": "2026-08-27T21:05:00Z",
-      "session_id": "f3c1a9d2-0b47-4e2a-9c11-5d8e6a7b4f20",
+      "session_id": "anchor-3f9a1c0b7d2e4a6f8b01",
       "remaining": 12000000,
-      "limit": 15000000
+      "limit": 15000000,
+      "anchors": {
+        "host": "3f9a1c0b7d2e4a6f8b01",
+        "sid": "c41d7e90ab2f5d3c6e18"
+      }
     },
     "status": "clear",
     "status_at": "2026-08-27T21:05:00Z",
     "source": "observed"
+  },
+  "_presence_comment": "Operator presence (issue #2293): one GLOBAL record, because the operator is one person. state is 'here' or 'away'; until_epoch is the window end (number) or null for open-ended; declared_epoch is when it was declared; machine_on is false only for 'closing the laptop' (the window end is then the /leave-by deadline, which owns the wind-down); declared_by is 'operator-message' or 'operator-dialog' (only the operator's own chat message, or the operator's answer to the dialog the setting thread opened with a valid reservation token, sets it, the same source rule as /leave-by and unattended mode); dismissed_until suppresses the dialog for an hour after a dismissal; reservation is the one-asker slot owned by prompt-reservation.sh --kind presence. Written ONLY through presence.sh. An active .unattended window reads as away when it is the newer declaration. Issue #2294 adds: closing_repo (the repo whose /leave-by record a closing window follows; every evaluation corrects or clears the window when that record moved or was cancelled), expiry_claim ({generation = the window's declared_epoch, epoch, kind here|away, push null|sent|missed}; the ONE compare-and-set that gives a window's end one notice for all threads), return ({generation, dialog listing|pending|asked}; set by the operator's first message after a window ran out; listing while the winner lists the saved questions, claimed once for the presence dialog) and returned_epoch. A window that ran out and has not been answered by a message is 'lapsed': threads handle questions as in away mode. The pre-leave pass, the long-away check-in and planning rules are later increments (issues #2295, #2296). Contract: .claude/reference/presence-windows.md.",
+  "presence": {
+    "state": "here",
+    "until_epoch": 1788000000,
+    "declared_epoch": 1787992800,
+    "machine_on": true,
+    "declared_by": "operator-message",
+    "dismissed_until": null,
+    "reservation": null,
+    "closing_repo": null,
+    "expiry_claim": null,
+    "return": null,
+    "returned_epoch": null
   },
   "_active_agents_comment": "Live subagent records for this session, keyed by agent id (issue #1631). This map REPLACES the top-level array the field used to be, following the `resumes`/`pauses` precedent from issue #1576. The array was unsafe because it was not addressable per entry: every writer had to read the whole array, append or filter locally, and `--set` the whole value back. The read and the write span two lock windows, so two orchestration threads on one machine race and the loser\u2019s entries vanish \u2014 observed three times in one day on 2026-09-04, each time dropping live Phase B/C agents with no error anywhere. As a map, each thread writes ONLY its own key (`--set '.active_agents[\"<id>\"]={...}'`) and deletes ONLY its own key (`session-state.sh --remove-agent <id>`), both under the existing lock, so a sibling\u2019s entries are structurally untouchable. An existing ARRAY on disk is migrated to this map on first read \u2014 in memory for `--get`/`--session-view`, persisted by the next write or by `--migrate` \u2014 keyed by each entry\u2019s `id`, dropping `null`/non-object elements and giving an id-less entry a stable `_unkeyed_<index>` key so nothing is lost. No schema_version bump: unlike the flat\u2192scoped migration, this one is self-detecting by type and idempotent. A `null` (or otherwise non-object) VALUE under a key is invalid \u2014 session-state-audit.sh reports it and `--heal-types` drops that one key, never the whole field. Unlike `refill`/`day`/`pauses`, this field stays VISIBLE in session-state.sh --session-view, projected as a repo-scoped, filtered map (same attribution rule as before: explicit `.owner_repo` wins, then entries with no `.pr`, then PR numbers not tracked by another real repo). Entries record what was LAUNCHED, not what is still alive \u2014 the parent removes an entry on completion, so a crashed session leaves one behind and active-work-cap.sh ages it out by `last_seen_at`/`launched`.",
   "active_agents": {

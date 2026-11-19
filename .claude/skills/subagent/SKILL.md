@@ -12,6 +12,13 @@ Parse `$ARGUMENTS` as space-separated issue references. Strip `#` prefixes to ge
 
 ---
 
+## Parent-run vs handed-off steps (lean orchestrator)
+
+The parent decides and makes the launch calls; reading, checking and assessing are handed to a script or the cheapest eligible worker, and the parent acts on a compact result (`.claude/reference/lean-orchestrator.md`). Worker exit reports are read through `exit-report-extract.sh`, not transcripts. Step numbers:
+
+Parent-run: 5, 7, 8, 9, 10, 11
+Handed off: 0, 1, 2, 3, 4, 5.1, 6
+
 ## Step 0: Resolve shared tooling
 
 `/subagent` is symlinked into every repo, but its helper scripts and reference docs are not — most repos carry no `.claude/` directory. Resolve them; never invoke a bare `.claude/scripts/…` path. Full contract and the classified dependency inventory: `.claude/reference/portable-skill-resolution.md` (issue #1189).
@@ -28,16 +35,20 @@ resolve_script() {
   return 1
 }
 ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
+ISSUE_CLAIM_BATCH=$(resolve_script issue-claim-batch.sh || true)
 CR_PLAN=$(resolve_script cr-plan.sh || true)
 SESSION_STATE_SH=$(resolve_script session-state.sh || true)
 MODEL_ROUTE_SH=$(resolve_script model-route.sh || true)
 ISSUE_DEDUP=$(resolve_script issue-dedup.sh || true)
+ISSUE_AREA=$(resolve_script issue-area.py || true)
 ESTIMATE_RESOLVE_SH=$(resolve_script estimate-resolve.sh || true)
 SPLIT_THRESHOLDS_SH=$(resolve_script split-thresholds.sh || true)
 OVERRUN_CHECK_SH=$(resolve_script overrun-check.sh || true)
+PROMPT_RESERVE_SH=$(resolve_script prompt-reservation.sh || true)
 TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh || true)
 USAGE_HORIZON_SH=$(resolve_script usage-horizon.sh || true)
 ACTIVE_WORK_CAP_SH=$(resolve_script active-work-cap.sh || true)
+STOPPAGE_NOTE_SH=$(for c in "${HOME:+$HOME/.claude/skills-worktree/desk/bin/stoppage-note.sh}" "${HOME:+$HOME/.claude/desk/bin/stoppage-note.sh}" desk/bin/stoppage-note.sh; do [[ -n "$c" && -x "$c" ]] && { echo "$c"; break; }; done)
 ```
 
 `handoff-state.sh` (Step 8), `ac-checkboxes.sh`, `escalate-review.sh`, and `local-review.sh` are resolved by the phase agents themselves, inside the spawn prompts — the RESOLVE block inserted with SAFETY/MINDSET/SKILLS carries the same candidate order to them. Read reference docs (`chip-launching.md`, `subagent-phase-guardrails.md`, `issue-claim.md`, `merge-sequencing.md`) through the matching `.claude/reference/` order.
@@ -47,13 +58,16 @@ ACTIVE_WORK_CAP_SH=$(resolve_script active-work-cap.sh || true)
 - `subagent-phase-guardrails.md` unreadable → **required**. Print `ERROR: subagent-phase-guardrails.md not found (checked all three paths) — SAFETY/MINDSET/SKILLS/RESOLVE blocks unavailable` and **spawn nothing**. Those blocks are the safety restatement every spawn carries; a phase agent launched without them is not a degraded spawn, it is an unsafe one.
 - `chip-launching.md` unreadable → **required** for Step 5's route-to-thread branch only. Print `ERROR: chip-launching.md not found (checked all three paths) — too-big routing gate unavailable`, and queue the issue inline rather than routing it out: inline is the default the gate exists to protect (#1189), so failing toward it is correct.
 - `SESSION_STATE_SH` empty → **required**. Print `ERROR: session-state.sh not found (checked all three paths) — agent tracking and refill state unavailable` and do not spawn; an untracked agent is one nothing will ever reap.
-- `ISSUE_CLAIM` empty → **optional**. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — Step 6 claim gate skipped` and continue.
+- `ISSUE_CLAIM` empty → **required before any launch**. Print `ERROR: issue-claim.sh not found (checked all three paths) — cannot claim or verify ownership; start nothing. Reinstall the shared config (setup-skills-worktree.sh).` and launch nothing for that issue. Never proceed unclaimed.
+- `ISSUE_CLAIM_BATCH` empty → **optional**. Print `DEGRADED: issue-claim-batch.sh not found (checked all three paths) — claiming each issue one at a time (more API calls; the rest of the round is unclaimed until each issue's turn)` and use Step 6.0's per-issue claim.
 - `CR_PLAN` empty → **optional**. Print `DEGRADED: cr-plan.sh not found (checked all three paths) — CR plan detection skipped` and continue with Claude's own plan.
 - `ESTIMATE_RESOLVE_SH` empty → **optional**. Print `DEGRADED: estimate-resolve.sh not found (checked all three paths) — planning-bound lookup unavailable; overrun check skipped` and skip the overrun check in Step 8 (BOUND_MIN cannot be derived without it).
+- `PROMPT_RESERVE_SH` empty → an attended launch that would need a new Step 7 question stays queued; already-answered and unattended paths keep their normal gates. Say the reservation helper is unavailable and do not open an unreserved prompt.
 - `OVERRUN_CHECK_SH` empty → **optional**. Print `DEGRADED: overrun-check.sh not found (checked all three paths) — in-flight overrun alerts unavailable` and skip the overrun check in Step 8.
 - `SPLIT_THRESHOLDS_SH` empty → **optional**. Print `DEGRADED: split-thresholds.sh not found (checked all three paths) — using default thresholds 180/120` and continue with those documented defaults. The time trigger still fires (Step 4 criterion 3); it just cannot see a repo that retuned the knobs. Silently skipping the trigger instead would be worse — it would turn a missing config reader into a missing sizing check.
 - `USAGE_HORIZON_SH` empty → **optional**. Print `DEGRADED: usage-horizon.sh not found (checked all three paths) — pre-emptive usage-horizon park unavailable; the reactive park still applies` and continue. Step 8's gate then holds `unknown` on every cycle, which starts nothing new and parks nothing — the conservative direction, and the same posture a displaced session already reads.
 - `ACTIVE_WORK_CAP_SH` empty → **optional**. Print `DEGRADED: active-work-cap.sh not found (checked all three paths) — per-repo PIPELINE_CEILING unavailable, using the default ceiling of 4` and run Step 7 with `CEILING=4` and no cap term. A **non-zero exit** from `--ceiling` or `--cap` on a script that did resolve (they exit non-zero only on a usage error — a bad config value warns and prints the default instead) is not a default: Step 7 sets `LIMIT=0` and launches nothing new rather than sizing against a guessed number.
+- `STOPPAGE_NOTE_SH` empty → **optional**. Print `DEGRADED: stoppage-note.sh not found (checked all three paths) — out_of_work / blocked_by_error stoppage entries unavailable` and continue; the entry is a log, never a gate.
 - `TABLE_FRESHNESS_SH` empty → **optional**. Print `DEGRADED: table-freshness.sh not found (checked all three paths) — hourly table-freshness floor unavailable; re-render the "Running now" table on every heartbeat instead` and continue. Failing toward *more* table renders is correct: the floor exists to guarantee a table at least hourly, so its absence must never buy the thread permission to emit fewer.
 
 The Step 4 too-big criteria need no fallback — they are written inline in this file, so that contract already travels. Only their per-criterion rationale doc (`too-big-recalibration-2026-07.md`) is a fallback read.
@@ -69,7 +83,7 @@ Step 5.1's decomposition has two reads of its own, and they fail in opposite dir
 
 Before gathering issue data or dispatching anything, check whether this repo is parked on an account usage limit. A park is durable; the `Monitor` that was going to wake it is not, so a session that restarts inside a park must re-arm the wake or the board stays parked until a human notices — the PR #1616 failure this exists to end.
 
-Read `subagent-thread-limit-park.md` §6 through Step 0's candidate order (`$HOME/.claude/skills-worktree/.claude/reference/`, `$HOME/.claude/reference/`, `.claude/reference/` — most repos carry no `.claude/`, so a bare local path resolves only by luck), run the recovery block that section documents, and act on the verdict (no candidate resolves → one line, `ERROR: subagent-thread-limit-park.md not found (checked all three paths) — usage-limit park recovery unavailable`, then **stop**: not being able to check for a park is the `unreadable` verdict by another name, and dispatching on it is exactly the launch into a closed window this step exists to prevent): `rearm` re-arms the sleep-until-reset wake and **stops here**; `rearm_probe` re-arms `/pm` 2D.7's bounded probe with the recorded count and stops — do not dispatch into a closed window; `manual` and `unreadable` also stop, with the one-line reason; `expired` routes to `/go-on`; only `none` continues to Step 1. The same block runs in `monitor-mode.md`'s Post-Compaction Recovery.
+Read `subagent-thread-limit-park.md` §6 through Step 0's candidate order (`$HOME/.claude/skills-worktree/.claude/reference/`, `$HOME/.claude/reference/`, `.claude/reference/` — most repos carry no `.claude/`, so a bare local path resolves only by luck), run the recovery block that section documents, and act on the verdict (no candidate resolves → one line, `ERROR: subagent-thread-limit-park.md not found (checked all three paths) — usage-limit park recovery unavailable`, then **stop**: not being able to check for a park is the `unreadable` verdict by another name, and dispatching on it is exactly the launch into a closed window this step exists to prevent): `rearm` re-arms the sleep-until-reset wake and **stops here**; `rearm_probe` re-arms `/pm` 2D.7's bounded probe with the recorded count and stops — do not dispatch into a closed window; `manual` and `unreadable` also stop, with the one-line reason; `expired` routes to `/go-on`; `retire_preemptive` (a park the removed figure-driven path wrote, #2416) is retired per §6 against the snapshot it classified (never a fresh read) and routes to `/go-on` only on exit 0; exit 7 re-classifies from a fresh snapshot, any other exit stops; only `none` continues to Step 1. The same block runs in `monitor-mode.md`'s Post-Compaction Recovery.
 
 ## Step 1: Gather Issue Data
 
@@ -231,24 +245,24 @@ If **none** hold, the issue is **inline-eligible** — proceed to Step 5 and run
 Apply Step 4's verdict per issue. **Being too big is not a failure.** Every issue reaches exactly one of three outcomes, and none of them drops work:
 
 - **Inline-eligible** issues → proceed to Step 6 and run them.
-- **Criterion 3** (should be split into multiple PRs) → **decompose it here** (Step 5.1). Do **not** emit a thread prompt and do **not** print a `/prompt #N` line — the pieces run inline in this thread.
-- **Criterion 1 or 2** → do NOT execute here. Emit a thread prompt so the work isn't lost:
+- **Criterion 3** (should be split into multiple PRs) → **decompose it here** (Step 5.1). Do **not** route it to a separate thread — the pieces run inline in this thread.
+- **Criterion 1 or 2** → do NOT execute here. Route it to its own coding thread so the work isn't lost:
 
   ```
   Issue #N is too big for inline subagent execution — {named criterion: implementation can't be carried across sequential subagent turns / needs interactive judgment mid-build}: {why, in one line}.
-  Routing to a separate thread — run `/prompt #N` to generate the thread prompt.
+  Next step: start a separate coding thread for #N and work it from the issue body and its implementation plan. Printing this message does not create that thread, and the issue is not done until that thread merges it.
   ```
 
   The named criterion is mandatory (Step 4) — "too big" without one is not a valid verdict.
 
-  (`/prompt #N` with an explicit issue number always produces a full thread-prompt block — see `/prompt` Path A. Routing to a thread is the whole point of the rejection; it never means the issue is dropped.)
+  (Routing to a thread is the whole point of the rejection; it never means the issue is dropped.)
 
 **Why criterion 3 is the exception.** Criteria 1 and 2 describe work a subagent cannot *carry* — non-resumable across turns, or blocked on a decision only the user can make mid-build. Splitting those does not help: every piece inherits the same defect. Criterion 3 describes the opposite — work that is subagent-fit *in pieces* and fails only as one unit. Routing it out whole converts several small pipelines into one large thread, which is exactly the fan-out inline-first exists to end (#1193; rationale in `too-big-recalibration-2026-07.md`).
 
 **Batch outcomes:**
 - **All inline-eligible** → proceed with all of them (Step 6).
-- **All routed out** (criteria 1/2) → report each issue's reason and its `/prompt` routing. This is a clean outcome, not an error — stop here.
-- **Mixed** → run the inline-eligible issues now, name the decomposed ones and their chains, and list the routed-out ones: "Running inline: #{a}, #{b}. Decomposed: #{c} → #{c1}, #{c2}, #{c3} (chain queued). Too big for a subagent (routed to a thread): #{d} ({criterion 1 or 2 reason}) — run `/prompt #d` for that one."
+- **All routed out** (criteria 1/2) → report each issue's reason and that it is routed to its own thread. This is a clean outcome, not an error — stop here.
+- **Mixed** → run the inline-eligible issues now, name the decomposed ones and their chains, and list the routed-out ones: "Running inline: #{a}, #{b}. Decomposed: #{c} → #{c1}, #{c2}, #{c3} (chain queued). Too big for a subagent (routed to a thread): #{d} ({criterion 1 or 2 reason}) — start that one in its own coding thread."
 
 ### 5.1: Decompose a criterion-3 issue into an increment chain
 
@@ -372,7 +386,7 @@ For each qualifying issue, verify no PR is already open **and** that no other th
 
 ```bash
 gh pr list --search "head:issue-{NUMBER}" --json number,title,state
-"$ISSUE_CLAIM" {NUMBER} --check   # $ISSUE_CLAIM from Step 0
+"$ISSUE_CLAIM" {NUMBER} --check   # $ISSUE_CLAIM from Step 0; when ISSUE_CLAIM_BATCH resolved, the round claim below subsumes this check
 ```
 
 Either signal skips the issue, and the skip line names **which** one fired:
@@ -381,11 +395,25 @@ Either signal skips the issue, and the skip line names **which** one fired:
 - claim check exits `1` (`claimed`) or `4` (`unknown`) → "Issue #N is already being worked — claimed by `{claimant}` at {time} — skipping." `unknown` is treated exactly as `claimed`; it never reads as permission.
 - `stale` (exit 0) → not a skip. Surface the stale warning and continue.
 
-When both checks pass, **take the claim before spawning Phase A** so it is held for the whole pipeline, not just this step — and **gate the spawn on it succeeding**. A passing `--check` is not a held claim: another thread can win the race between the two calls, and the write itself can fail. Spawning on an unheld claim reopens the exact window this guards:
+**Claim the whole round at once (issue #2286).** After the open-PR check has dropped issues that already have a PR, claim **every remaining issue admitted to this round — running and queued alike — in one call, before the first Phase A starts**, so a second orchestrator cannot plan over the queue while it waits its turn. Claim only what this round intends to run, never the wider backlog:
+
+```bash
+CLAIM_RESULTS=""
+if [[ -n "$ISSUE_CLAIM_BATCH" ]]; then
+  # {NUMBERS}: the admitted issue numbers, space-separated. Exit 1/4 only says
+  # some issue was refused or undetermined; the per-issue verdicts decide.
+  CLAIM_RESULTS=$("$ISSUE_CLAIM_BATCH" --claim {NUMBERS} --json) || true
+fi
+```
+
+Then, for each issue, read its own object — `printf '%s\n' "$CLAIM_RESULTS" | jq -c --argjson n {NUMBER} 'select(.issue == $n)'`. Verdict `mine` → continue below with `BATCH_CLAIM_JSON` set to that object (the snippet below consumes and clears it, so one issue's object never leaks into the next; leave it empty on the per-issue fallback). Any other verdict, or no object for the issue (an empty `CLAIM_RESULTS` is never permission) → drop the issue from the round, naming the holder (`claimant`, `provider`, `device`) when it is `claimed`; `unknown` reads exactly as `claimed`. The one exception is a `claimed` issue the user explicitly told you, in chat, to start anyway: do not drop it, take it with the single-issue `"$ISSUE_CLAIM" {NUMBER} --claim --allow-claimed --json` and say you are overriding. An issue dropped from the round **after** it was claimed — a later gate declines it for good, or the user removes it — is released in the same step: `"$ISSUE_CLAIM_BATCH" --release {NUMBER}` (on the per-issue fallback: `"$ISSUE_CLAIM" {NUMBER} --release`). A launch that is merely deferred (it stays queued) keeps its claim. Claims on `/pause` and `/end` are kept; the work resumes. When `ISSUE_CLAIM_BATCH` is empty, use the per-issue pair below for each issue instead.
+
+Per issue — **take the claim before spawning Phase A** so it is held for the whole pipeline, not just this step — and **gate the spawn on it succeeding**. A passing `--check` is not a held claim: another thread can win the race between the two calls, and the write itself can fail. Spawning on an unheld claim reopens the exact window this guards:
 
 ```bash
 CLAIM_HOLDER=""
-if CLAIM_JSON=$("$ISSUE_CLAIM" {NUMBER} --claim --json); then
+CLAIM_JSON=${BATCH_CLAIM_JSON:-}; BATCH_CLAIM_JSON=""   # one-shot: consumed here, so one issue's object never reaches the next
+if CLAIM_JSON=${CLAIM_JSON:-$("$ISSUE_CLAIM" {NUMBER} --claim --json)} && printf '%s' "$CLAIM_JSON" | jq -e --argjson n {NUMBER} '.issue == $n and .verdict == "mine"' >/dev/null 2>&1; then
   # The exact token this claim was taken with — every later --renew must pass
   # it (Step 8.1). Recorded with the pipeline in Step 7.1; never re-derived.
   CLAIM_HOLDER=$(printf '%s' "$CLAIM_JSON" | jq -r '.holder // empty' 2>/dev/null)
@@ -410,11 +438,9 @@ Skip the issue on any non-zero exit (`1` = lost the race, `4` = write failed/und
 
 Two subagents landing in the same file produce exactly the merge-time conflict that overlap-aware merge sequencing exists to clean up afterwards. It is far cheaper not to create it. **Issues in this batch that overlap on a file run one after another, not concurrently.**
 
-Reuse `/wave`'s existing footprint model verbatim — do not invent a second one:
+Reuse [`/wave` Steps 3–5](../wave/SKILL.md#step-3-extract-each-candidates-file-footprint) for footprint extraction and comparisons. Use the same area helper, path and shared-surface rules, and at-most-one allowance for footprints that remain undeclared. Collect hints for the batch as Step 3 specifies.
 
-1. **Footprint per issue** — `/wave` Step 3: the CR/human plan's file list, else a `## Related Files` section, else backticked paths in the body, else subject inference ("the `/pm` skill" → that SKILL.md). No signal at all → `undeclared`.
-2. **Map to collision surfaces** — `/wave` Step 4, including the coarse shared ones: `CLAUDE.md` + `.claude/rules/*` + `.budget-soft-cap` are all one **`rule-corpus`** surface (two branches adding words to *different* rule files still collide on the ratchet cap), and each shared settings file is one surface. A shared *directory* is **not** a surface.
-3. **Group and order.** Issues sharing a surface form a chain. Within a chain, the issue with the larger expected footprint in the shared surface starts first — same "biggest first" rule as merge time; ties break to the lower issue number. `undeclared` footprints are conservative: at most one runs concurrently with the rest, exactly as `/wave` Step 5.4 does.
+Group issues that overlap into chains. Use the existing biggest-first order on the shared surface, breaking ties by lower issue number. In an area-only chain there is no declared size, so use lower issue number first. Keep the established dependency order and terminal-state release below.
 
 **Decomposition children are a chain by provenance, not footprint.** The children Step 5.1 just filed form one chain because they are ordered slices of one theme — their `- Depends on #<previous increment>` links say so directly, so they need no footprint analysis to be grouped and they stay chained even when their files do not overlap. **Their order is the increment order** (`{i}/{n}`), never the "biggest first" rule below, which exists to settle *contention* and has nothing to say about a sequence the split already fixed. Otherwise they behave exactly like any other chain: head launches, successors queue, and a footprint overlap with a *different* issue chains them further as usual.
 
@@ -461,6 +487,8 @@ Custom `subagent_type` agents (phase-a-fixer, phase-b-reviewer, phase-c-merger, 
 
 For each qualifying issue, spawn a Phase A subagent using the Agent tool.
 
+**Claude usage reading (desktop app).** At session start and before each autonomous launch or refill, call `mcp__ccd_session_mgmt__get_usage` when it exists and pipe its JSON to `"$(resolve_script claude-usage-observe.sh)" -`; a refusal or a missing tool is skipped silently and gates nothing (`.claude/reference/ai-quotas.md` §The app usage tool reading).
+
 **Parallel execution rules — the concurrent-pipeline ceiling:**
 
 Resolve the limit once, before the first launch — both modes read only the repo's `.claude/pm-config.md` `## Active work` section and make no network call:
@@ -468,22 +496,25 @@ Resolve the limit once, before the first launch — both modes read only the rep
 ```bash
 CEILING=4; LIMIT=4                               # script absent: the default (Step 0 DEGRADED)
 if [[ -n "$ACTIVE_WORK_CAP_SH" ]]; then
-  if CEILING=$("$ACTIVE_WORK_CAP_SH" --ceiling) && CAP=$("$ACTIVE_WORK_CAP_SH" --cap); then
-    LIMIT=$(( CEILING < CAP ? CEILING : CAP ))  # min() — the cap is the backstop
+  if CEILING=$("$ACTIVE_WORK_CAP_SH" --width) && CAP=$("$ACTIVE_WORK_CAP_SH" --cap); then
+    LIMIT=$(( CEILING < CAP ? CEILING : CAP ))  # min(mode width, cap) — --width already clamps; kept as the backstop
   else
     CEILING=0; LIMIT=0                          # read failed: launch nothing new
   fi
 fi
 ```
 
-- Treat each issue's A→B→C run as one **pipeline**. Keep at most `LIMIT` running at once — the ceiling from `subagent-orchestration.md`, which a repo widens with its own `PIPELINE_CEILING` knob and never past its `ACTIVE_WORK_CAP` (`active-work-cap.md` §Subordination). Use the resolved number; do not invent a new one. The count is **your own pipelines** — the ones this skill launches, all authored by you. Per `subagent-orchestration.md` (the canonical author-scoped ceiling), a collaborator's open PRs never enter it, so they can never block you from launching a queued pipeline.
+- Treat each issue's A→B→C run as one **pipeline**. Keep at most `LIMIT` running at once. `LIMIT` is the run mode's width from `"$ACTIVE_WORK_CAP_SH" --width` (default and speed read 15 unless configured, cheap `CHEAP_MODE_WIDTH` which defaults to the repo's `PIPELINE_CEILING` and may be set lower), already clamped to the repo-wide cap, so a mode never raises that cap (`active-work-cap.md` §Per-mode width). Use the resolved number; do not invent a new one. The count is **your own pipelines** — the ones this skill launches, all authored by you. Per `subagent-orchestration.md` (the canonical author-scoped ceiling), a collaborator's open PRs never enter it, so they can never block you from launching a queued pipeline.
+- **Default mode judges the width.** `LIMIT` is a maximum, not a target. Read the mode silently with `run-mode.sh get`. In default mode, launch fewer than `LIMIT` when the ready, unqueued issues, the overlap-chain heads, the open PRs still waiting on a bot verdict, or GitHub request headroom say so. Launch that judged number, then write the reason to the repo's `width_judgment` object in `session-state.json` (`mode`, `width`, `limit`, `ready`, `chain_heads`, `awaiting_review`, `reason`), via `session-state.sh --set` as in Step 6.2. A failed write launches nothing.
+- **Cheap mode launches nothing new** while any running pipeline is waiting on a retry or a review round it can still finish first. Running pipelines are untouched. Launch the next queued pipeline only once none is waiting.
+- **One-time notes, keyed in `width_judgment`.** (a) When `LIMIT` is below the mode width because the repo cap binds, print once: `Mode <mode> would run <width> wide; ACTIVE_WORK_CAP holds it at <LIMIT>.` Set `cap_note_printed` true. (b) The first time the running width exceeds the free reviewer's hourly capacity (5 reviews an hour, `active-work-cap.md` §Per-mode width), print once: `Running <N> wide: expect roughly two in three PRs in a busy hour to merge without a bot review.` Set `reviewer_note_printed` true. Never reprint either on a later tick. No paid review is triggered to cover the gap.
 - If more issues qualify than the ceiling, launch the first `LIMIT` now and **queue** the rest. Start a queued pipeline only when a running one reaches a **genuinely terminal state — `merged` or `blocked`.** A pipeline parked at `merge_ready` is **not** terminal: Phase C (auto `/wrap`) is still ahead, so it keeps its slot until it actually merges (or blocks). Freeing the slot at `merge_ready` would let a new pipeline start while the parked one's Phase C is still pending, pushing total in-flight pipelines past the ceiling.
 - **A full ceiling means queue, never route out.** Subagent-fit work that arrives with every slot busy **waits inline** — it does not become a separate-thread chip or prompt. Only a named Step 4 disqualifier sends an issue to a thread; a busy pipeline is a scheduling state, not a fit verdict. (Shared gate: `.claude/reference/chip-launching.md`; rationale: `too-big-recalibration-2026-07.md`.)
 - When every slot is held by pipelines at `merge_ready` or in Phase C, don't launch more queued pipelines — wait for a terminal `merged`/`blocked` outcome to free a slot.
 - Each subagent gets its own worktree (use `isolation: "worktree"` on the Agent tool call).
 - **Respect Step 6.0b's chains.** Only the head of each overlap chain is launchable; a queued chain member waits for the one ahead of it to reach `merged`/`blocked`, even when a ceiling slot is free. Overlap serialization and the concurrency ceiling are separate limits — a free slot is permission to launch *some* issue, never permission to launch one whose file is still contested.
 - **A free slot is a trigger, not a resting state** (`CLAUDE.md` "KEEP THE PIPELINE FULL"). Below the ceiling with issues still queued, launch eligible chain heads on the current monitor tick — don't wait to be asked, and keep launching within the tick until slots are full or no eligible head remains (fill, don't ramp one-per-tick). Below the ceiling with the queue **empty**: under `/pm`, hand the free capacity to `/pm` Step 3.4's backlog refill; standalone, report the free slots and the idle reason (backlog ranking is `/pm`'s job, not this skill's) rather than sitting on them silently.
-- **Check the usage horizon before every one of those launches too** (#1619). The verdict binds here on the first dispatch as much as on a refill tick — and the first dispatch runs *before* Step 8 has ever ticked, so there is no verdict waiting to be inherited: **run the gate block at `subagent-thread-limit-park.md` §7.1 right here** to produce one, the same block Step 8 item 0 runs on every later tick. Then: `approaching` and `unknown` start nothing new (running pipelines and their A→B / B→C successors continue), and `critical` parks per `subagent-thread-limit-park.md` §7.4 instead of launching. Never read a missing or unreadable verdict as `clear`.
+- **Check the usage horizon before every one of those launches** (#1619, #2147). Run `subagent-thread-limit-park.md` §7.1 here, including on the first dispatch before Step 8 has ticked. `clear` allows the horizon gate to pass; `critical` parks per §7.4. For `approaching` or `unknown`, apply §7.3 and print its hold line once on the first dispatch. Only `counter-never-seen` (or `counter-never-seen-unverified` on §7.3's stricter basis) allows a live chat request to launch its current picks, with the §7.3 note. An attended `/subagent` invocation that names its issues is that request: on `counter-never-seen`, print the note once, ask nothing about the horizon, and launch. On `no-reading-this-session` with no counter visible anywhere in context, re-check once with the §7.3 attestation first (a compaction does not bar it: the helper cross-checks its own log, #2376). The exception does not carry into refill or override the checks below. A→B / B→C successors continue on `approaching` or `unknown`.
 - **Check the refill pause before every one of those launches — standalone runs included.** The stop the user said in a `/pm` thread is persisted, not remembered, so it binds here too:
 
   ```bash
@@ -519,45 +550,155 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
   <!-- test-anchor: subagent-step7-leave-elicitation-gate -->
 
   ```bash
-  ELICIT_LEAVE_TIME=false
-  ELICIT_SKIP_REASON=""
-  ELICIT_NOW=$(date -u +%s)
-  ELICIT_WINDOW_RC=0
-  ELICIT_DEADLINE=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window.deadline_epoch" 2>/dev/null) \
-    || ELICIT_WINDOW_RC=$?
-  ELICIT_ND_RC=0
-  ELICIT_NO_DEADLINE_UNTIL=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.no_deadline_until" 2>/dev/null) \
-    || ELICIT_ND_RC=$?
-  if [[ "${ATTENDED:-false}" != "true" ]]; then
-    # Not a failure — a SKIP. The decline gate below still runs, unchanged.
-    ELICIT_SKIP_REASON="unattended"
-  elif [[ "$ELICIT_WINDOW_RC" -ne 0 && "$ELICIT_WINDOW_RC" -ne 3 ]]; then
-    # Unreadable is not absent, here as everywhere: a lock timeout can hide an armed
-    # deadline, and asking for one the repo already has would overwrite a live plan
-    # with a guess. rc 3 (no state file yet) IS absent and does elicit.
-    ELICIT_SKIP_REASON="deadline state unreadable (rc=$ELICIT_WINDOW_RC)"
-  elif [[ "$ELICIT_DEADLINE" =~ ^[1-9][0-9]{0,10}$ ]] && (( ELICIT_DEADLINE > ELICIT_NOW )); then
-    # Armed AND unexpired. A deadline already in the past is spent, not armed, and asks again.
-    ELICIT_SKIP_REASON="deadline already armed"
-  elif [[ "$ELICIT_ND_RC" -ne 0 && "$ELICIT_ND_RC" -ne 3 ]]; then
-    ELICIT_SKIP_REASON="no-deadline marker unreadable (rc=$ELICIT_ND_RC)"
-  elif [[ "$ELICIT_NO_DEADLINE_UNTIL" =~ ^[1-9][0-9]{0,10}$ ]] && (( ELICIT_NO_DEADLINE_UNTIL > ELICIT_NOW )); then
-    # "No deadline today", still inside the ET day it was written for.
-    ELICIT_SKIP_REASON="no deadline today"
-  else
-    ELICIT_LEAVE_TIME=true
+  read_leave_eligibility() {
+    ELICIT_LEAVE_TIME=false
+    ELICIT_STATE_UNKNOWN=false
+    ELICIT_SKIP_REASON=""
+    ELICIT_NOW=$(date -u +%s)
+    ELICIT_WINDOW_RC=0
+    ELICIT_DEADLINE=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window.deadline_epoch" 2>/dev/null) \
+      || ELICIT_WINDOW_RC=$?
+    ELICIT_ND_RC=0
+    ELICIT_NO_DEADLINE_UNTIL=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.no_deadline_until" 2>/dev/null) \
+      || ELICIT_ND_RC=$?
+    if [[ "${ATTENDED:-false}" != "true" ]]; then
+      # Not a failure — a SKIP. The decline gate below still runs, unchanged.
+      ELICIT_SKIP_REASON="unattended"
+    elif [[ "$ELICIT_WINDOW_RC" -ne 0 && "$ELICIT_WINDOW_RC" -ne 3 ]]; then
+      # Unreadable is not absent, here as everywhere: a lock timeout can hide an armed
+      # deadline, and asking for one the repo already has would overwrite a live plan
+      # with a guess. rc 3 (no state file yet) IS absent and does elicit.
+      ELICIT_STATE_UNKNOWN=true
+      ELICIT_SKIP_REASON="deadline state unreadable (rc=$ELICIT_WINDOW_RC)"
+    elif [[ "$ELICIT_DEADLINE" =~ ^[1-9][0-9]{0,10}$ ]] && (( ELICIT_DEADLINE > ELICIT_NOW )); then
+      # Armed AND unexpired. A deadline already in the past is spent, not armed, and asks again.
+      ELICIT_SKIP_REASON="deadline already armed"
+    elif [[ "$ELICIT_ND_RC" -ne 0 && "$ELICIT_ND_RC" -ne 3 ]]; then
+      ELICIT_STATE_UNKNOWN=true
+      ELICIT_SKIP_REASON="no-deadline marker unreadable (rc=$ELICIT_ND_RC)"
+    elif [[ "$ELICIT_NO_DEADLINE_UNTIL" =~ ^[1-9][0-9]{0,10}$ ]] && (( ELICIT_NO_DEADLINE_UNTIL > ELICIT_NOW )); then
+      # "No deadline today", still inside the ET day it was written for.
+      ELICIT_SKIP_REASON="no deadline today"
+    else
+      ELICIT_LEAVE_TIME=true
+    fi
+  }
+  read_leave_eligibility
+  ```
+
+  Define this release helper in the same Bash context as the reservation gate:
+
+  <!-- test-anchor: subagent-step7-leave-release -->
+
+  ```bash
+  # Keep one release receipt per repo, separate from the active menu token.
+  # Each line is a canonical repo key and a generation, separated by a colon.
+  leave_release_token() {
+    local receipt
+    while IFS= read -r receipt; do
+      if [[ "$receipt" == "$REPO_KEY:"* ]]; then
+        printf '%s\n' "${receipt#*:}"
+        return 0
+      fi
+    done <<<"${LEAVE_RELEASE_RECEIPTS:-}"
+    return 0
+  }
+
+  release_leave_prompt() {
+    local token="$1" pending receipt remaining="" rc=0
+    [[ "$token" =~ ^[0-9a-f]{32}$ ]] || return 1
+    pending="$(leave_release_token)"
+    if [[ -n "$pending" && "$pending" != "$token" ]]; then
+      return 1
+    fi
+    if [[ -z "$pending" ]]; then
+      LEAVE_RELEASE_RECEIPTS="${LEAVE_RELEASE_RECEIPTS:+$LEAVE_RELEASE_RECEIPTS$'\n'}$REPO_KEY:$token"
+    fi
+    [[ -n "${PROMPT_RESERVE_SH:-}" ]] || return 1
+    "$PROMPT_RESERVE_SH" release --repo "$REPO_KEY" --kind leave --generation "$token" || rc=$?
+    case "$rc" in
+      0|10)
+        while IFS= read -r receipt; do
+          if [[ -n "$receipt" && "$receipt" != "$REPO_KEY:$token" ]]; then
+            remaining="${remaining:+$remaining$'\n'}$receipt"
+          fi
+        done <<<"$LEAVE_RELEASE_RECEIPTS"
+        LEAVE_RELEASE_RECEIPTS="$remaining"
+        ;;
+      *) return 1 ;;
+    esac
+  }
+  ```
+
+  Reserve the repo's leave question only when the read says it still needs an answer. Run this in
+  the same Bash context as `read_leave_eligibility` and `release_leave_prompt`:
+
+  <!-- test-anchor: subagent-step7-leave-reservation -->
+
+  ```bash
+  LEAVE_PROMPT_GENERATION=""
+  LEAVE_PROMPT_PENDING="${ELICIT_STATE_UNKNOWN:-true}"
+  LEAVE_PENDING_RELEASE_TOKEN="$(leave_release_token)"
+  if [[ -n "$LEAVE_PENDING_RELEASE_TOKEN" ]]; then
+    if release_leave_prompt "$LEAVE_PENDING_RELEASE_TOKEN"; then
+      LEAVE_PENDING_RELEASE_TOKEN=""
+    else
+      echo 'Leave question release still pending' >&2
+    fi
+    read_leave_eligibility
+    LEAVE_PROMPT_PENDING="${ELICIT_STATE_UNKNOWN:-true}"
+  fi
+  if [[ "${ELICIT_LEAVE_TIME:-false}" == true && -n "$LEAVE_PENDING_RELEASE_TOKEN" ]]; then
+    ELICIT_LEAVE_TIME=false
+    LEAVE_PROMPT_PENDING=true
+  elif [[ "${ELICIT_LEAVE_TIME:-false}" == true ]]; then
+    if [[ -n "${PROMPT_RESERVE_SH:-}" ]]; then
+      LEAVE_PROMPT_GENERATION=$("$PROMPT_RESERVE_SH" claim --repo "$REPO_KEY" --kind leave) \
+        || LEAVE_PROMPT_GENERATION=""
+    fi
+    [[ "$LEAVE_PROMPT_GENERATION" =~ ^[0-9a-f]{32}$ ]] || LEAVE_PROMPT_GENERATION=""
+    # Read again even on a win: a sibling may have answered and released
+    # between the first read and our claim. A loser can adopt that answer too.
+    read_leave_eligibility
+    if [[ "$ELICIT_STATE_UNKNOWN" == true || ( "$ELICIT_LEAVE_TIME" == true && -z "$LEAVE_PROMPT_GENERATION" ) ]]; then
+      ELICIT_LEAVE_TIME=false
+      LEAVE_PROMPT_PENDING=true
+    fi
+    if [[ "$ELICIT_LEAVE_TIME" != true && -n "$LEAVE_PROMPT_GENERATION" ]]; then
+      release_leave_prompt "$LEAVE_PROMPT_GENERATION" ||
+        echo 'Leave question release still pending' >&2
+      LEAVE_PROMPT_GENERATION=""
+    fi
   fi
   ```
 
-  On `ELICIT_LEAVE_TIME`, invoke **`/leave-by --elicit`** (Step 0e) and let it own the menu, the
-  normalization, and every write; when it returns, **re-read `.window` and `.leave`** and continue
-  into the decline gate below with the fresh values. Never parse the answer here and never write
-  `.window` from this skill — one parser, one deadline home.
+  On `LEAVE_PROMPT_PENDING`, leave this attempt queued. Say that scheduling state could not
+  be read, or that the leave question is already pending or unavailable. Do not let a later
+  unrelated read that happens to succeed turn this unreadable decision into permission to launch.
+  A later attempt re-reads the published decision. On `ELICIT_LEAVE_TIME`, carry the exact
+  `LEAVE_PROMPT_GENERATION` into **`/leave-by --elicit --reservation <token>`** (Step 0e). It owns
+  the menu, normalization and writes. After it returns, including dismissal or failure, call
+  `release_leave_prompt "$LEAVE_PROMPT_GENERATION"` with the same repo context. If this is
+  a new shell call, load only the release helper above and carry the exact token and any
+  outstanding receipts into it. Clear `LEAVE_PROMPT_GENERATION`: it can no longer authorize a menu.
+  Carry `LEAVE_RELEASE_RECEIPTS` across tool calls when available. The helper also records
+  the exact abandoned generation before trying to release it. A fresh invocation can reclaim
+  that generation only when the current reservation and repo still match its receipt and owner.
+  Other repos continue independently. If both the receipt write and the release fail, keep
+  carrying the exact token for retry. A fresh invocation without that token or a matching
+  receipt leaves the reservation in place until the owner is proven gone.
+  Report a pending release once per attempt. A later attempt may still use an already
+  published scheduling answer. Never use a release receipt
+  to resume or reopen the old menu. Re-run the leave eligibility read before the deadline gate;
+  if it still says the
+  question needs an answer or its state is unreadable, leave this launch queued. Otherwise proceed
+  with the published state. Do not parse or write the answer here.
 
-  **No separate "already asked" flag exists, deliberately.** The repo-scoped state *is* the record:
-  an armed unexpired deadline or an unexpired `no_deadline_until` suppresses the question, and an
-  expired deadline or a new ET day brings it back. A session flag would need recovering after every
-  compaction and would still ask twice from two threads on the same repo.
+  The reservation is only for an in-flight question; an unexpired deadline or `no_deadline_until`
+  remains the record of the answer. A compacted session can continue with its exact token. It
+  must never infer permission to reopen a question from a lost token. A later contender can replace
+  a reservation only after the exact local owner process is proven gone. No timer displaces a live
+  user while a menu is open.
 
 - **Then check the armed deadline — one pipeline at a time (issue #1525).** A planning window set by
   `/pm --window` or a leave time set by `/leave-by` writes one `deadline_epoch`; a pipeline whose
@@ -722,70 +863,155 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
   <!-- test-anchor: subagent-step7-overrun-decision -->
 
   ```bash
-  OVERRUN_ASK=false
-  OVERRUN_DECISION=""
-  # ATTENDED gates the QUESTION, never the record. A decision the user already made is
-  # theirs on every later cycle, and most of those cycles are unattended — gating the read
-  # on attendance is how "Launch anyway" gets honoured once and then quietly forgotten,
-  # leaving the issue declined forever by the very monitor loop meant to act on it.
-  if [[ "$LAUNCH_DECLINED" == true && "$DECLINE_REASON" == "plan on "* \
-        && "$DEADLINE_EPOCH" =~ ^[1-9][0-9]{0,10}$ ]]; then
-    DECISION_RC=0
-    DECISION_JSON=$("$SESSION_STATE_SH" \
-      --get-json ".repos[\"$REPO_KEY\"].window.launch_decisions[\"$ISSUE_NUM\"]" 2>/dev/null) \
-      || DECISION_RC=$?
-    if [[ "$DECISION_RC" -ne 0 && "$DECISION_RC" -ne 3 ]]; then
-      # Unreadable is not "never asked". Asking again on an unreadable record would nag
-      # every monitor cycle — the exact behaviour the record exists to stop — so the
-      # decline that is already standing holds, and nothing is asked.
-      #
-      # Its OWN value, never a borrowed "skip": "we could not read the record" and "the
-      # user chose to skip" are different facts, and writing the second when only the
-      # first is true makes a failed read indistinguishable from an answer in every
-      # report that quotes this variable. It is not in the write allow-list either, so
-      # a fabricated answer can never reach state.
-      OVERRUN_DECISION="unreadable"
-    else
-      # The recorded answer counts ONLY against the deadline it was given for. A bare
-      # decision would keep applying after the user re-declared a different time, which
-      # is an answer about a clock that no longer exists.
-      OVERRUN_DECISION=$(printf '%s' "$DECISION_JSON" | jq -r \
-        --argjson d "$DEADLINE_EPOCH" \
-        'if type == "object" and .deadline_epoch == $d
-            and (.decision == "skip" or .decision == "launch_anyway" or .decision == "split")
-         then .decision else "" end' 2>/dev/null) || OVERRUN_DECISION=""
-      # No record yet: ask only if someone is there to answer. Unattended, the decline
-      # simply stands — today's behaviour, unchanged.
-      if [[ -z "$OVERRUN_DECISION" && "${ATTENDED:-false}" == "true" ]]; then OVERRUN_ASK=true; fi
+  read_overrun_decision() {
+    OVERRUN_ASK=false
+    OVERRUN_DECISION=""
+    # ATTENDED gates the QUESTION, never the record. A decision the user already made is
+    # theirs on every later cycle, and most of those cycles are unattended — gating the read
+    # on attendance is how "Launch anyway" gets honoured once and then quietly forgotten,
+    # leaving the issue declined forever by the very monitor loop meant to act on it.
+    if [[ "$LAUNCH_DECLINED" == true && "$DECLINE_REASON" == "plan on "* \
+          && "$DEADLINE_EPOCH" =~ ^[1-9][0-9]{0,10}$ ]]; then
+      DECISION_RC=0
+      DECISION_JSON=$("$SESSION_STATE_SH" \
+        --get-json ".repos[\"$REPO_KEY\"].window.launch_decisions[\"$ISSUE_NUM\"]" 2>/dev/null) \
+        || DECISION_RC=$?
+      if [[ "$DECISION_RC" -ne 0 && "$DECISION_RC" -ne 3 ]]; then
+        # Unreadable is not "never asked". Asking again on an unreadable record would nag
+        # every monitor cycle — the exact behaviour the record exists to stop — so the
+        # decline that is already standing holds, and nothing is asked.
+        #
+        # Its OWN value, never a borrowed "skip": "we could not read the record" and "the
+        # user chose to skip" are different facts, and writing the second when only the
+        # first is true makes a failed read indistinguishable from an answer in every
+        # report that quotes this variable. It is not in the write allow-list either, so
+        # a fabricated answer can never reach state.
+        OVERRUN_DECISION="unreadable"
+      else
+        # The recorded answer counts ONLY against the deadline it was given for. A bare
+        # decision would keep applying after the user re-declared a different time, which
+        # is an answer about a clock that no longer exists.
+        OVERRUN_DECISION=$(printf '%s' "$DECISION_JSON" | jq -r \
+          --argjson d "$DEADLINE_EPOCH" \
+          'if type == "object" and .deadline_epoch == $d
+              and (.decision == "skip" or .decision == "launch_anyway" or .decision == "split")
+           then .decision else "" end' 2>/dev/null) || OVERRUN_DECISION=""
+        # No record yet: ask only if someone is there to answer. Unattended, the decline
+        # simply stands — today's behaviour, unchanged.
+        if [[ -z "$OVERRUN_DECISION" && "${ATTENDED:-false}" == "true" ]]; then OVERRUN_ASK=true; fi
+      fi
     fi
-  fi
-  # A recorded (or re-asked and answered) `launch_anyway` is the ONLY thing that reopens
-  # the gate, and it reopens it for this issue alone. Written as an `if`, not a
-  # `[[ … ]] && { … }`: the short-circuit form returns 1 whenever the test is false, and
-  # this is the block's last statement — so under a `set -e` caller the common case
-  # (no recorded decision) would abort the launch path instead of falling through it.
-  if [[ "$OVERRUN_DECISION" == "launch_anyway" ]]; then
-    LAUNCH_DECLINED=false; DECLINE_REASON=""
+    # A recorded (or re-asked and answered) `launch_anyway` is the ONLY thing that reopens
+    # the gate, and it reopens it for this issue alone. Written as an `if`, not a
+    # `[[ … ]] && { … }`: the short-circuit form returns 1 whenever the test is false, and
+    # this is the block's last statement — so under a `set -e` caller the common case
+    # (no recorded decision) would abort the launch path instead of falling through it.
+    if [[ "$OVERRUN_DECISION" == "launch_anyway" ]]; then
+      LAUNCH_DECLINED=false; DECLINE_REASON=""
+    fi
+  }
+  read_overrun_decision
+  ```
+
+  If the read says to ask, reserve this issue's overrun question. Re-read the decision with the
+  same issue and deadline after the attempt:
+
+  <!-- test-anchor: subagent-step7-overrun-reservation -->
+
+  ```bash
+  OVERRUN_PROMPT_GENERATION=""
+  if [[ "$OVERRUN_ASK" == true ]]; then
+    if [[ -n "${PROMPT_RESERVE_SH:-}" ]]; then
+      OVERRUN_PROMPT_GENERATION=$("$PROMPT_RESERVE_SH" claim --repo "$REPO_KEY" --kind overrun --issue "$ISSUE_NUM") \
+        || OVERRUN_PROMPT_GENERATION=""
+    fi
+    [[ "$OVERRUN_PROMPT_GENERATION" =~ ^[0-9a-f]{32}$ ]] || OVERRUN_PROMPT_GENERATION=""
+    read_overrun_decision
+    if [[ -z "$OVERRUN_PROMPT_GENERATION" ]]; then
+      # A matching published launch_anyway has already reopened the gate.
+      # Otherwise leave the decline standing; never show a second menu.
+      OVERRUN_ASK=false
+    elif [[ "$OVERRUN_ASK" != true ]]; then
+      "$PROMPT_RESERVE_SH" release --repo "$REPO_KEY" --kind overrun --issue "$ISSUE_NUM" \
+        --generation "$OVERRUN_PROMPT_GENERATION" || echo 'Overrun question reservation could not be released' >&2
+      OVERRUN_PROMPT_GENERATION=""
+    fi
   fi
   ```
 
-  On `OVERRUN_ASK`, present **one** `AskUserQuestion` (`ask-menu.md`) naming the issue, its bound,
+  Check the exact owner, generation and still-current deadline immediately before opening the menu
+  and again before recording or acting on its answer:
+
+  <!-- test-anchor: subagent-step7-overrun-verify-reservation -->
+
+  ```bash
+  OVERRUN_RESERVATION_VERIFIED=false
+  if [[ "${OVERRUN_ASK:-false}" == true && -n "${PROMPT_RESERVE_SH:-}" &&
+        -n "${OVERRUN_PROMPT_GENERATION:-}" ]] &&
+     "$PROMPT_RESERVE_SH" verify --repo "$REPO_KEY" --kind overrun --issue "$ISSUE_NUM" \
+       --generation "$OVERRUN_PROMPT_GENERATION" &&
+     OVERRUN_CURRENT_DEADLINE=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].window.deadline_epoch") &&
+     [[ "$OVERRUN_CURRENT_DEADLINE" == "$DEADLINE_EPOCH" ]]; then
+    OVERRUN_RESERVATION_VERIFIED=true
+  fi
+  ```
+
+  Require `OVERRUN_RESERVATION_VERIFIED=true`; otherwise discard any local answer and leave the
+  decline standing. Hold the reservation through the answer's durable write (or dismissal).
+  Release it with the same arguments and action `release` before returning to the launch gate,
+  including before re-entering after a split or leave-time change. If release fails, say so and
+  retain the existing record; never clear the slot without its generation.
+
+  On verified `OVERRUN_ASK`, present **one** `AskUserQuestion` (`ask-menu.md`) naming the issue, its bound,
   and the pause-point clock, with exactly these options in this order:
 
   | Option label | Effect |
   |---|---|
   | `Skip for now (Recommended)` | The decline stands: the issue stays queued, exactly as today |
-  | `Split and start the first increment now` | **Only when the issue's bound exceeds `SPLIT_OVER_MIN`** — run Step 5.1's decomposition, then launch the head increment alone |
+  | `Split and start the first increment now` | **Only when the issue's bound exceeds `SPLIT_OVER_MIN` AND `SPLIT_HEAD_FITS=true`** (the head check below) — run Step 5.1's decomposition, then launch the head increment alone |
   | `Launch anyway — parks at the pause point` | Launch this pipeline; the check-in renders its row `parks` |
   | `Change my leave time` | Route to `/leave-by` Step 9's re-declaration path, then Steps 1–7, then re-run this gate against the new deadline |
 
-  **The split option is conditional, and its condition is the same one Step 4 uses** (#1680):
-  offer it only when `$BOUND_MIN > $SPLIT_OVER_MIN` (this gate's own bound against the threshold
-  Step 4's block resolved), strictly. Below the line there is
-  nothing to split into — the issue is already one pipeline's worth of work and offering to cut
-  it up would be offering a worse shape. Its recommendation rank is deliberately second rather
-  than first: it files issues, which `Skip for now` does not, so it is the option a user chooses
-  rather than the one they get by clicking through. Everything else about the menu is unchanged.
+  **The split option is conditional on two things, both required** (#1680, #2381). First, the
+  Step 4 size test: `$BOUND_MIN > $SPLIT_OVER_MIN` (this gate's own bound against the threshold
+  Step 4's block resolved), strictly. Below the line there is nothing to split into — the issue is
+  already one pipeline's worth of work and offering to cut it up would be offering a worse shape.
+  Second, the head-fit test: the split's head is a child at up to `$INCREMENT_BOUND_MIN`, and it
+  must be startable in the time left before the pause point after the filing itself has taken its
+  allowance. This is the same strict `<` the gate applies, so an exact fit is declined here too:
+
+  <!-- test-anchor: subagent-step7-split-head-fit -->
+
+  ```bash
+  # #2381: the menu must not promise a start the gate will then decline. Filing the chain
+  # spends SPLIT_FILING_ALLOWANCE_SEC before the head's own gate re-runs, so the head must fit
+  # the remainder by strictly more than that allowance. The test uses the configured
+  # INCREMENT_BOUND_MIN deliberately: the menu is offered before the chain is filed, so a
+  # child's smaller estimate does not exist yet, and the bound is the promise #2381 asks for.
+  # The allowance is the menu's promise, not a guarantee about filing time. If filing runs
+  # long, the head's own gate below re-runs against the real remaining time and declines
+  # with its existing line; children already filed stay as Step 5.1's mid-chain rule names them.
+  SPLIT_FILING_ALLOWANCE_SEC=300
+  # Re-read the clock here: the reservation and verification above run after the launch gate
+  # captured REMAINING_SEC, and the runway may have shrunk since.
+  REMAINING_SEC=$(( PAUSE_POINT_EPOCH - $(date -u +%s) ))
+  SPLIT_HEAD_FITS=false
+  if (( 10#$INCREMENT_BOUND_MIN * 60 + SPLIT_FILING_ALLOWANCE_SEC < REMAINING_SEC )); then
+    SPLIT_HEAD_FITS=true
+  fi
+  SPLIT_OFFER=false
+  if (( BOUND_MIN > SPLIT_OVER_MIN )) && [[ "$SPLIT_HEAD_FITS" == true ]]; then
+    SPLIT_OFFER=true
+  fi
+  ```
+
+  When `SPLIT_OFFER=false`, **omit** the split row from the menu. The question text must then
+  name why, in the same clause as the bound and the pause-point clock: for an oversize issue,
+  `a head increment of ${INCREMENT_BOUND_MIN} min does not fit the $((REMAINING_SEC / 60)) min left before the pause point (${SPLIT_FILING_ALLOWANCE_SEC}s allowance for filing)`;
+  for an issue at or under `SPLIT_OVER_MIN`, `it is already one pipeline's worth of work, so there is nothing to split`.
+  The menu then has three options. Its recommendation rank is deliberately second rather
+  than first when offered: it files issues, which `Skip for now` does not, so it is the option a user
+  chooses rather than the one they get by clicking through. Everything else about the menu is unchanged.
 
   **Choosing it does four things, in this order:**
 
@@ -915,7 +1141,9 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
 call, follow `task-model-routing.md` through the Step 0 reference candidate order.
 Resolve `model-route.sh` through the same shared-script order. Build the current
 phase's request from scoped session/handoff state and refreshed runtime/launch
-checks, execute the reference’s `task-model-route-dispatch` block before every
+checks. Set its `mode` to the output of `run-mode.sh get` (`run-modes.md` read
+path, installed locations first; a missing helper reads as `default`) and its
+`tier` per `task-model-routing.md` §Run mode and issue tier (the one resolution rule; an unresolved tier is sent unset and routes as Standard). Then execute the reference’s `task-model-route-dispatch` block before every
 Agent call to persist `{request, decision}` with the owning locked helper and
 set `ROUTED_MODEL` only for `start`, `retry`, or `escalate`. Pass the stable task identity and current routing request/record file pointers in every child prompt; successors load them from scoped state without resetting attempts. Invalid input, blocked/diagnose/owner-decision, or a failed write
 launches nothing. Preserve attempts and targeted feedback on successors; never
@@ -956,6 +1184,7 @@ Body:
    - `Closes #{NUMBER}` in the body
    - A **Test plan** section with acceptance criteria checkboxes from the issue
    - A `**Local review coverage:** <level>` labeled line (e.g. `**Local review coverage:** none — both CLIs unavailable, self-review only`). This is mandatory for `none` and `cr-only`/`codeant-only`; omit only when coverage is `both`.
+   - The output of `pr-claim-line.sh {NUMBER}` (resolve it with the same three-path order as the other helpers in this skill) on its own line, so the PR-side claim check can match the PR to the issue claim it was built under.
 8. Write the handoff through the literal locked operations below so the
    write is serialized under the shared state-lock.sh advisory lock (issue #682) **and** lands
    on the scoped path Phase B and Phase C read (issue #1302). Never write inline with
@@ -1253,15 +1482,16 @@ Execution order is Step 6.0b's: each chain's head, then its queued members in ch
 ```markdown
 **Running now**
 
-| Issue | Scope | Status | Est | Start (ET) | Projected end (ET) | Remaining |
-|-------|-------|--------|-----|-----------|--------------------|-----------|
-| #42 | Rebuild the escalation retry window | Phase A | Est: 45–90 min · plan on 90 | 12:18 PM | 1:48 PM | 1.5 h |
-| #55 | Prune the stale worktree sweep | queued | unestimated | — | — | — |
+| Issue | Scope | Status | Model | Est | Start (ET) | Projected end (ET) | Remaining |
+|-------|-------|--------|-------|-----|-----------|--------------------|-----------|
+| #42 | Rebuild the escalation retry window | Phase A | Opus | Est: 45–90 min · plan on 90 | 12:18 PM | 1:48 PM | 1.5 h |
+| #55 | Prune the stale worktree sweep | queued | — | unestimated | — | — | — |
 ```
 
 Per row:
 
 - **Scope** — truncate to 40 chars so each row stays one line: `printf '%s' "$ISSUE_SCOPE" | cut -c1-40`.
+- **Model** — read per row, never from a shared variable: each launched row reads its own saved routing record for phase A, through the lookup `/board` uses (`time-estimates.md` §"Model cell"), so rows launched with different models each show their own family name (`Opus`, `Sonnet`, `Haiku`, `Fable`). The table is printed after dispatch, and a scalar such as `ROUTED_MODEL` would show the last launched model on every row. A queued row is `—`. Step 8 re-reads the same cell on every refresh.
 - **Est** — `estimate-resolve.sh <N>` (Step 0 candidate order); `unestimated` when it exits 2.
 - **Clock columns** — from `overrun-check.sh --readout-cells`, using the `started_at` just recorded in 7.1. At launch this is start + bound and the full planning bound remaining.
 - **Queued rows** — `—` in all three clock columns. Nothing has started, so there is nothing honest to print.
@@ -1350,11 +1580,13 @@ thread believes the hourly guarantee is live while the tick reads an absent
 record and exits silently every minute. Reporting it is what turns a silent
 non-guarantee into a known degraded mode with a stated fallback.
 
-Then arm the floor the same way the silence ceiling is armed (`subagent-orchestration.md` step 7): **only when `CLOCK_RECORDED` is true**, run `"$TABLE_FRESHNESS_SH" --arm-command --repo "$REPO_KEY" --session "$TF_SESSION"` and hand its output to the `Monitor` tool with `persistent: true`.
+Then arm the floor the same way the silence ceiling is armed (`subagent-orchestration.md` step 7): **only when `CLOCK_RECORDED` is true**, run `"$TABLE_FRESHNESS_SH" --arm-command --repo "$REPO_KEY" --session "$TF_SESSION"` and hand its output to the `Monitor` tool with `persistent: true`. Then keep the pair the watch was armed with: `FLOOR_REPO_KEY="$REPO_KEY"` and `FLOOR_SESSION="$TF_SESSION"`. Expiry recovery (Step 8) reads only these, because the Step 8 gate re-derives `REPO_KEY` from the current directory on every wake-up.
+
+**The record cannot show that the watch is armed.** A script cannot observe Monitor liveness, so this step is the only evidence of arming. If the `Monitor` call fails or is not made when `CLOCK_RECORDED` is true, print one line `DEGRADED: floor watch not armed — re-render the "Running now" table on every heartbeat instead` and treat the floor as absent for the round.
 
 **`CLOCK_RECORDED` is the whole condition — not just a non-empty `REPO_KEY`.** Every way the record fails to be written ends the same: the tick polls a record that does not exist and exits silently every minute, so the floor *looks* armed and guarantees nothing. An unresolved repo key is only one of those ways; an unset count and a `--note-rendered` that exited non-zero are the others, and gating on the repo key alone would arm the watch for both. When it is false the `DEGRADED:` line above already said which one happened, and the stated fallback — re-render the table on every heartbeat — is what replaces the guarantee.
 
-It is a **second, separate** watch beside `bgwork-ceiling.sh`'s, not a replacement — the ceiling bounds message-freshness, this one bounds table-freshness, and dropping either drops a guarantee. Arm it once per session: the watch is silent while the thread re-renders on its own cadence, so a later round needs no re-arm.
+It is a **second, separate** watch beside `bgwork-ceiling.sh`'s, not a replacement — the ceiling bounds message-freshness, this one bounds table-freshness, and dropping either drops a guarantee. Arm it at a round's dispatch unless this session's watch is still live, and never run two: the watch is keyed by repo and session, not by round, so a second one only duplicates the tick. The desktop Monitor expires after 30 minutes, so Step 8 re-arms it on every expiry notice while a round is active; the watch is silent while the thread re-renders on its own cadence.
 
 **A `--note-rendered` that fails is not fatal.** It exits non-zero and says why on stderr; the round proceeds. The cost is a floor that cannot fire, so if it fails repeatedly, re-render the table on every heartbeat rather than trusting the clock.
 
@@ -1362,12 +1594,14 @@ It is a **second, separate** watch beside `bgwork-ceiling.sh`'s, not a replaceme
 
 Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is now orchestration.
 
-### Monitor loop (repeat every ~60 seconds):
+### Monitor loop (repeat every `--poll-interval` seconds):
 
-0. **Read the usage horizon** (#1619). Hand the counter the **harness** printed into this turn's context — `<total_tokens>N tokens left</total_tokens>`, refreshed after every tool result — to `usage-horizon.sh --observe`, then branch on `--check`. Never a figure derived from the transcript, from this thread's own accounting, or remembered from an earlier turn: an absent counter is an absent reading, which is `unknown`. Resolve `subagent-thread-limit-park.md` through Step 0.1's candidate order and run its **§7.1 gate block** rather than re-deriving the branch here.
+Cadence: `"$ACTIVE_WORK_CAP_SH" --poll-interval <running pipelines>` prints 120 above 8 running pipelines and 60 at or below 8 (#2430; the shared GitHub request allowance holds). Record the value every tick, repo-scoped, with `"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].poll_interval_s=<value>"` (`REPO_KEY="$("$SESSION_STATE_SH" --repo-key)"`, as `run-mode.sh` does) so another repo's monitor never overwrites it and each running Phase B re-reads it per cycle (its `POLL_INTERVAL_S` is only the launch value); a failed write keeps the previous value and is reported, not guessed. A rate-limited or failed GitHub response is **no data** for that cycle: keep the last watermark, never read it as clean or as zero findings.
+
+0. **Read the usage horizon** (#1619, #2147). Run `subagent-thread-limit-park.md` §7.1, resolved through Step 0.1's candidate order. Pass only a counter this turn's harness actually printed to `usage-horizon.sh --observe` before `--check`; otherwise check with the §7.3 attestation only if no counter is visible anywhere in your context. Never estimate or reuse a remembered figure.
    - `clear` → the cycle proceeds unchanged.
    - `approaching` → **step 4 refills nothing** this cycle: no queued chain head, no backlog pick, no replacement for a slot that just freed. Running pipelines are untouched and steps 2–3's A→B / B→C transitions still run — a successor finishes work already in flight, it does not start new work. Report `paused (horizon approaching)` on the idle line.
-   - `unknown` → identical to `approaching` in what it stops, and it writes nothing and parks nothing. Report `paused (horizon unknown)`.
+   - `unknown` → step 4 refills nothing; successors continue and no park is written. Report the §7.3 reason on the idle line. A new explicit chat launch request is evaluated by Step 7; the tick itself never uses the exception.
    - `critical` → run §7.4 **before this cycle ends**, then end the loop: claim the park (`PARK_CAUSE=preemptive`), wind down through `/pause` with the landing window, record each surviving pipeline's phase, and arm the wake. A park already claimed by day mode or a sibling thread is **adopted**, not duplicated (§8) — record the pipelines, arm no second `Monitor`.
    - `USAGE_HORIZON_SH` unresolved (Step 0) → the gate holds `unknown`; it never reads as `clear`.
 1. **Check for completed subagents.** Poll active agent statuses. If any returned results, process immediately (step 2). **A subagent that died carries a classification, not just an absence:** run `subagent-thread-limit-park.md` §1 on the runtime's structured failure payload first, resolving that document through Step 0.1's candidate order rather than a bare `.claude/reference/` path — most repos carry no `.claude/`, and an unresolvable reference here is the same stop Step 0.1 defines, not a silent fall-through to the crash path. `LIMIT_SIGNAL=true` is an account wall, not a crash — run that document's §2–§4 (claim the park, stop the remaining subagents through `/pause` Steps 2–7 with `--window 0`, record each pipeline's phase, arm the wake) and end the loop; the siblings still running are about to hit the same wall, and the ask-before-respawn crash path reaches a human who cannot help until the window reopens. **Classify every returned status before processing any of them.** If ANY carries `LIMIT_SIGNAL=true`, park on that tick: persist the other completed results as pending transitions and launch no successor this cycle. Processing a healthy sibling's completion first would launch its next phase into the same closed window the park is being opened for. `LIMIT_SIGNAL=false` on every status is the ordinary crash path, unchanged.
@@ -1390,7 +1624,7 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    - **Renew the issue's claim (Step 8.1) immediately before launching any successor** — A→B, each replacement B, and B→C after `merge_ready`. Exit 5 → launch nothing for that issue: mark it blocked and report lost ownership; other pipelines continue.
    - Execute the appropriate Completion Protocol (see below).
 3. **Check for pending transitions from prior cycles.** Read `session-state.json` for PRs where a phase completed but the next phase was not launched.
-4. **Refill free capacity.** Below the ceiling — slot freed *or* never filled — launch per Step 7's refill rule on this tick: read the refill pause first (Step 7), then chains and re-validation. **Step 0's horizon verdict gates this step**: on `approaching` or `unknown`, launch nothing and report the horizon reason as the idle reason. Report the picks; if a slot stays empty, name why (`/pm` Step 3.4's reasons).
+4. **Refill free capacity.** Below the ceiling — slot freed *or* never filled — launch per Step 7's refill rule on this tick: read the refill pause first (Step 7), then chains and re-validation. **Step 0's horizon verdict gates this step**: on `approaching` or `unknown`, launch nothing and report the horizon reason as the idle reason. Report the picks; if a slot stays empty, name why (`/pm` Step 3.4's reasons). Then log the evaluation, unless this tick only drained a round whose every pipeline merged (a finished round is not a stoppage): (Pass the reason as data, never inside shell source (it can carry text from a Test plan or a reviewer comment): write it through a single-quoted heredoc whose delimiter does not occur in the text, e.g. `[[ -n "$STOPPAGE_NOTE_SH" ]] && "$STOPPAGE_NOTE_SH" refill --picked <N launched> --reason-file - <<'STP_REASON_k7' || true` then the one-line reason, then `STP_REASON_k7`.) (writes `out_of_work` only for `nothing eligible`, closes an open entry when N > 0; silent, best-effort).
 5. **Compute this pipeline's table cells and check per-pipeline overrun (when `OVERRUN_CHECK_SH` and `ESTIMATE_RESOLVE_SH` are resolved).** For each active PR, derive BOUND_MIN from the issue's estimate. Always compute the cells (no window needed). Then check for a breach only when a window is active. Skip silently if either helper is unavailable — the row still renders, with `—` in the clock columns.
    ```bash
    # Derive planning bound from the issue's estimate (requires ESTIMATE_RESOLVE_SH)
@@ -1464,9 +1698,9 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
      [[ "$OVERRUN_RC" -eq 1 ]] && echo "$ALERT"
    fi
    ```
-6. **Send heartbeat.** If >5 minutes since last user message, send a status update: a timestamp line (`TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`), then the **"Running now" table** — the same shape Step 7.2 printed at launch, re-rendered — then pending transitions and blockers.
+6. **Send heartbeat.** When this inline round belongs to `/pm`, use its Step 3.3a report gate in the existing turn and deliver at most one report after processing the tick's outcomes. For standalone rounds, apply the existing output policy to the following heartbeat guidance. If >5 minutes since last user message, send a status update: a timestamp line (`TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`), then the **"Running now" table** — the same shape Step 7.2 printed at launch, re-rendered — then pending transitions and blockers.
 
-   Build the table from the `CELLS_THIS_PR` computed in step 5, one row per pipeline, accumulated across iterations. **`Start` is read back from state and stays constant across ticks**; only Status, Projected end, and Remaining are recomputed. Queued issues stay in the table as `queued` rows with `—` clocks, and flip to a started row on the tick after they launch. Never emit the round as a bulleted list.
+   Build the table from the `CELLS_THIS_PR` computed in step 5, one row per pipeline, accumulated across iterations. **`Start` is read back from state and stays constant across ticks**; only Status, Projected end, and Remaining are recomputed. **`Model` is re-read from the routing record on every refresh** for the row's current phase, the same lookup `/board` uses, even when the phase has not changed, so a retry or escalation that changes the model shows on the next render. Queued issues stay in the table as `queued` rows with `—` clocks, and flip to a started row on the tick after they launch. Never emit the round as a bulleted list.
 
    ```bash
    if [[ -n "$CELLS_THIS_PR" ]]; then
@@ -1481,7 +1715,7 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
 
    **When the user asks "how far along?" or an equivalent progress question:** answer with this same table, recomputed for freshness — one shape whether one pipeline is running or five. Column set and cell semantics: `time-estimates.md` §"Running now Table".
 
-   **Table-freshness gate — a stale board is never answered with a one-liner.** Silence-by-default lets most ticks emit nothing, and a genuine liveness ping may be a single line. Neither is allowed to let the last full board age past an hour while work is running. So before emitting ANY liveness/heartbeat/status output on this tick, ask the clock:
+   **Table-freshness gate — a stale board is never answered with a one-liner.** Silence-by-default lets most ticks emit nothing, and a genuine liveness ping may be a single line. Neither is allowed to let the last full board age past an hour while work is running. So before emitting ANY liveness/heartbeat/status output on this tick — and on every wake-up this loop gets (a completion notice, a CI event, a monitor expiry notice, a floor tick), even when nothing else will be said — ask the clock:
 
    ```bash
    # ACTIVE_COUNT = pipelines running OR queued right now (same count as 7.3).
@@ -1548,6 +1782,8 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
 
    **A `TABLE FLOOR:` line from the armed watch is an instruction to render**, not a status to acknowledge: re-render the full table in your next message and record it.
 
+   **A floor-watch expiry notice re-arms the watch.** The desktop Monitor expires after 30 minutes (Issue #2201), so a floor watch dies on its own. When its expiry notice arrives, re-arm only if **this thread still has a round open**. Recount `ACTIVE_COUNT` from this thread's own current board (the running and queued pipelines it launched), and require that count above zero and `--status --repo "$FLOOR_REPO_KEY" --session "$FLOOR_SESSION"` to show `active_pipelines` above zero. Neither the round slot nor the stored count is enough on its own: 7.0 may have skipped recording the slot, and a failed round-end write or teardown can leave a positive count or a set slot after the round has ended. When both hold, re-run `"$TABLE_FRESHNESS_SH" --arm-command --repo "$FLOOR_REPO_KEY" --session "$FLOOR_SESSION"`, hand its output to `Monitor` with `persistent: true`, then run the table-freshness gate above on this same wake-up. If the pair was lost in a compaction, re-derive it once as the gate does and confirm with `--status` that `last_rendered_at` is this round's render before re-arming (the residual case above applies). A zero current count means the round has ended, so there is nothing to re-arm. The round slot never decides this either way: its presence does not prove a round is open, and its absence does not prove one has ended, because Step 7.0 can dispatch without recording it.
+
    One residual case re-deriving cannot fix: if `CLAUDE_SESSION_ID` was set when 7.3 armed the watch but is unset now, the watch polls the real id while these calls resolve `default`, and the floor fires against a board you are faithfully re-rendering. The tell is a `TABLE FLOOR` line that keeps arriving right after you rendered. Confirm with `"$TABLE_FRESHNESS_SH" --status --repo "$REPO_KEY" --session "$TF_SESSION"`: an `age_s` that keeps growing across renders means you are writing a different record than the watch reads. Re-arm with the session the renders actually use rather than editing state by hand.
 
    **When the round ends, record the terminal board.** This is a real call, not a
@@ -1563,7 +1799,9 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    if [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" ]]; then
      "$TABLE_FRESHNESS_SH" --note-rendered --active 0 \
        --repo "$REPO_KEY" --session "$TF_SESSION" --surface subagent-round-end \
-       || echo 'DEGRADED: terminal board not recorded — floor may fire at an idle thread'
+       || "$TABLE_FRESHNESS_SH" --note-rendered --active 0 \
+            --repo "$REPO_KEY" --session "$TF_SESSION" --surface subagent-round-end \
+       || echo 'DEGRADED: terminal board not recorded after one retry — the floor may fire at an idle thread'
    fi
 
    ```
@@ -1726,12 +1964,13 @@ If missing, reconstruct state from GitHub API.
 
 ## Phase B Instructions
 
+0. Parent sets `POLL_INTERVAL_S={POLL_INTERVAL_S}` at launch from `"$ACTIVE_WORK_CAP_SH" --poll-interval <running pipelines>` (120 above 8 running pipelines, else 60). Use it for every poll cycle below; a rate-limited or failed response is no data.
 1. Read the handoff file (resolve path: `handoff-state.sh --owner-repo {owner}/{repo} --path {PR_NUMBER}`). **Phase-order check:** rank `A=1, B=2, C=3`; you expect `phase_completed: "A"` (or `"B"` when you are a replacement Phase B). Anything else — missing, empty, unrecognized — print a warning naming both the value found and the value expected, then continue on GitHub-derived state rather than the handoff's `reviewer`/`head_sha`.
 2. Check for unresolved findings BEFORE requesting any review:
    - Fetch all 3 endpoints (reviews, inline comments, issue comments) with per_page=100.
    - If unresolved findings from coderabbitai[bot] or greptile-apps[bot] exist, fix them first.
 3. Check ALL CI check-runs. Fix any failures before continuing.
-4. Poll for CR review every 60s on all 3 endpoints. Filter by coderabbitai[bot].
+4. Poll for CR review every `POLL_INTERVAL_S` seconds on all 3 endpoints. Filter by coderabbitai[bot].
 5. Resolve `escalate-review.sh` per RESOLVE and run it on `{PR_NUMBER}` every CR-owned poll cycle and branch on its single `STATUS=` verdict:
    - `gate_met`: CodeRabbit or CodeAnt already has a valid APPROVED review on current HEAD, or the gate is met via the no-review override (issue #1899) — do not escalate; continue to the merge gate check.
    - `polling_cr`: continue polling CR.
@@ -1739,7 +1978,7 @@ If missing, reconstruct state from GitHub API.
    - `tier_gate`: the PR's review tier excludes BugBot — do NOT switch or post `@cursor review`; trigger nothing, keep polling, and let the merge gate apply the tier's gate.
    - `self_review`: perform/report self-review fallback; merge remains blocked.
 6. Check commit status for CR completion signal and rate-limit fast-path.
-7. If CR rate-limited or silent past the gate threshold, do NOT hand-roll fallback timing — use the escalation gate verdict above. Polling cadence stays 60 s; a clean CR check-run completion short-circuits the wait. Rate-limit signals override the timeout and are handled by `escalate-review.sh`.
+7. If CR rate-limited or silent past the gate threshold, do NOT hand-roll fallback timing — use the escalation gate verdict above. Polling cadence is the Phase B poll cycle (`POLL_INTERVAL_S`, re-read from `.repos["<key>"].poll_interval_s` each cycle); a clean CR check-run completion short-circuits the wait. Rate-limit signals override the timeout and are handled by `escalate-review.sh`.
 8. Process findings: fix all valid ones in ONE commit, push once, reply to every thread through `reply-thread.sh` with the mandatory verdict flags (`--verdict fixed|deferred|declined --defect real|not`, plus `--fix as-given|adapted|wrong|none` with `--defect real` — issues #1842, #1843; rule and mapping: `review-stack-audit.md` §The marker), resolve threads via GraphQL.
 9. Merge gate:
    - CR-only: 1 explicit CR APPROVED review on the current HEAD SHA (commit_id must match HEAD; acks / check-run completion alone do NOT count).
@@ -1789,7 +2028,7 @@ When a Phase B subagent returns:
    - `merge_ready` -> launch Phase C within 60s (auto `/wrap`, no approval pause).
    - `clean` -> launch replacement Phase B within 60s (no explicit CR approval on current HEAD yet, or latest approval is on a stale SHA).
    - `fixes_pushed` -> launch replacement Phase B within 60s.
-   - `blocked_self_review` -> report blocker to user; do NOT auto-loop Phase B without a reviewer availability change.
+   - `blocked_self_review` -> report blocker to user; do NOT auto-loop Phase B without a reviewer availability change. Log it: Pass the reason as data, never inside shell source (it can carry text from a Test plan or a reviewer comment): write it through a single-quoted heredoc whose delimiter does not occur in the text, e.g. `[[ -n "$STOPPAGE_NOTE_SH" ]] && "$STOPPAGE_NOTE_SH" blocked --phase B --pr {PR_NUMBER} --reason-file - <<'STP_REASON_k7' || true` then the one-line reason, then `STP_REASON_k7`..
    - Any `PAID_REVIEW: skipped (...)` note -> relay it with the report. In an attended session this is where you may ask the owner for one paid review (`.claude/reference/paid-review-approval.md`); never from `/pm day` or `--window` ticks.
    - `exhaustion` -> launch replacement Phase B within 60s.
 3. **Verify review state via GitHub API** for `merge_ready`.
@@ -1878,12 +2117,14 @@ Issue #{ISSUE_NUMBER} is claimed with holder `{CLAIM_HOLDER}`. Hand `/wrap` this
 
 ### Phase C Completion
 
+When the round belongs to `/pm`, retain each verified terminal outcome for its Step 3.3a report gate. Supply the event on this completion turn unless the same turn will run the inline-tick or D5 gate. Standalone phase output follows the existing policy.
+
 When a Phase C subagent returns:
 
 1. **Parse exit report.** Same limit-vs-crash classification on a missing one (Phase A step 1).
 2. **Branch on OUTCOME:**
    - `merged` -> verify GitHub shows the PR merged, then delete the handoff file via `handoff-state.sh --owner-repo {owner}/{repo} --delete {PR_NUMBER}` (serialized under the shared lock — never `rm -f` the file directly).
-   - `blocked` -> report blocker details to user. Do NOT merge.
+   - `blocked` -> report blocker details to user. Do NOT merge. Log it: Pass the reason as data, never inside shell source (it can carry text from a Test plan or a reviewer comment): write it through a single-quoted heredoc whose delimiter does not occur in the text, e.g. `[[ -n "$STOPPAGE_NOTE_SH" ]] && "$STOPPAGE_NOTE_SH" blocked --phase C --pr {PR_NUMBER} --reason-file - <<'STP_REASON_k7' || true` then the one-line reason, then `STP_REASON_k7`..
 After GitHub confirms `merged`, run the parent-checkout [finished-only cadence](../../reference/workspace-sweep-cadence.md), including Phase B/C worktrees; never call age cleanup here:
 
 <!-- test-anchor: workspace-sweep-subagent-merged -->
@@ -1966,4 +2207,4 @@ When all subagent PRs are either merged or blocked:
 ```
 /subagent #42 #55
 ```
-(Issues run inline as subagents by default, regardless of tier. Only two of the three too-big criteria route out to a separate thread via `/prompt`, each naming which one fired: the implementation can't be carried across sequential subagent turns, or it needs interactive judgment mid-build. The third — should be split into multiple PRs — is **decomposed into an inline increment chain** instead, never routed out.)
+(Issues run inline as subagents by default, regardless of tier. Only two of the three too-big criteria route out to a separate coding thread, each naming which one fired: the implementation can't be carried across sequential subagent turns, or it needs interactive judgment mid-build. The third — should be split into multiple PRs — is **decomposed into an inline increment chain** instead, never routed out.)

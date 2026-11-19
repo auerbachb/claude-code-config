@@ -410,7 +410,7 @@ dtick() {
   local sh="$1" clock="$2" pol="$3"
   shift 3
   RC=0
-  env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
+  env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_SCHEMA=hq_test_offline HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
     HUMAN_QUEUE_CLOCK="$clock" HUMAN_QUEUE_POLICY="${pol:-$TMP/no-policy.json}" \
     "$sh" "$BIN/desk-tick.sh" --session desk-1 --generation g1 "$@" >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
   OUT=$(cat "$TMP/out")
@@ -490,7 +490,7 @@ desk-tick g1 new D-4"
   printf '7\n' > "$STUB_DIR/sweep-rc"
   printf '2026-10-08 17:29\n2026-10-08 17:30\n' > "$STUB_DIR/clocks"
   RC=0
-  env -u HUMAN_QUEUE_CLOCK STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
+  env -u HUMAN_QUEUE_CLOCK STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_SCHEMA=hq_test_offline HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
     HUMAN_QUEUE_POLICY="$TMP/no-policy.json" PATH="$STUB_DIR/bin:$PATH" \
     "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g1 --once >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
   OUT=$(cat "$TMP/out")
@@ -512,7 +512,7 @@ desk-tick g1 new D-4:2"
       expected_error='desk-tick independent error interrupt exit 1: interrupt get printed something other than a JSON object with boolean held'
     fi
     RC=0
-    env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
+    env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_SCHEMA=hq_test_offline HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
       HUMAN_QUEUE_CLOCK="2026-10-08 08:00" HUMAN_QUEUE_POLICY="$TMP/no-policy.json" HUMAN_QUEUE_TICK_SECONDS=1 \
       perl -e 'alarm 20; exec @ARGV' "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation independent \
         >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
@@ -527,7 +527,7 @@ desk-tick g1 new D-4:2"
   treset
   printf 'due 2026-10-08\n' > "$STUB_DIR/checkin-out"
   RC=0
-  env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
+  env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_SCHEMA=hq_test_offline HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
     HUMAN_QUEUE_CLOCK="2026-10-08 08:00" HUMAN_QUEUE_POLICY="$TMP/no-policy.json" HUMAN_QUEUE_TICK_SECONDS=1 \
     perl -e 'alarm 4; exec @ARGV' "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g2 >"$TMP/out" 2>/dev/null </dev/null || RC=$?
   OUT=$(cat "$TMP/out")
@@ -647,6 +647,6 @@ check_contains "SKILL.md handles the morning event" "$SKILL_MD" '| `desk-tick <G
 check_contains "SKILL.md: the check-in verbs" "$SKILL_MD" '**A check-in verb**'
 check_contains "plan.md: a new plan checks in first" "$(cat "$SKILL_DIR/plan.md")" '`checkin.md` first'
 check_contains "reviews.md: the running count" "$(cat "$SKILL_DIR/reviews.md")" '**The running count** (#1770'
-check_contains "the README documents it" "$(cat "$HQ_T_DESK_DIR/README.md")" "## Morning check-in and reading budget (issue #1770)"
+check_contains "the check-in guide documents it" "$(cat "$HQ_T_DESK_DIR/docs/morning-check-in.md")" "## Morning check-in and reading budget (issue #1770)"
 
 hq_t_finish "checkin-offline.test.sh"

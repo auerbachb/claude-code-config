@@ -98,6 +98,68 @@ out=$(run "[$T_BOT,$T_HUMAN,$T_LONG,$T_RESOLVED,$T_NULL,$T_TWO]")
 check_eq "mixed set: count and ids derive from one selection" "3 T1,T3,T6" \
   "$(jq -r '"\(.count) \([.threads[].id] | join(","))"' <<<"$out")"
 
+# The cleanup inventory above can include retired-app threads. The resolver
+# only targets one after its exact ID is supplied (issue #2192).
+resolve_fixture() (
+  export THREAD_FIXTURE="$(jq -cn --argjson nodes "[$T_TWO,$T_GRAPHITE]" \
+    '{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false,endCursor:null},
+       nodes:($nodes | map(.id as $id | .comments.nodes[0].id = ("C"+$id)))}}}}}')"
+  gh() {
+    case "$1 $2" in
+      'repo view') printf '%s\n' '{"owner":{"login":"fixture"},"name":"repo"}' ;;
+      'api graphql')
+        case "$*" in *mutation*) return 4 ;; esac
+        printf '%s\n' "$THREAD_FIXTURE" ;;
+      *) return 4 ;;
+    esac
+  }
+  export -f gh
+  "$BASH" "$REPO_ROOT/.claude/scripts/resolve-review-threads.sh" 1 --dry-run "$@"
+)
+out=$(resolve_fixture)
+check_eq "default resolver keeps active reviewer threads" 1 "$(grep -c 'T6  (cursor)' <<<"$out")"
+check_eq "default resolver excludes retired Graphite threads" 0 "$(grep -c 'T8  (graphite-app)' <<<"$out")"
+out=$(resolve_fixture --thread-ids T8)
+check_eq "explicit handled ID includes the retired Graphite thread" 1 "$(grep -c 'T8  (graphite-app)' <<<"$out")"
+
+# A failed native resolve may minimize only a verified bot's opening comment.
+fallback_fixture() (
+  export THREAD_FIXTURE
+  THREAD_FIXTURE=$(jq -cn --argjson nodes "[$T_BOT,$T_TWO,$T_NULL]" '
+    {data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false},
+      nodes:($nodes | map(.id as $id | .comments.nodes[0] |= (
+        .id = ("C"+$id) | .url = ("https://example.invalid/"+$id)
+        | if .author.login == "alice" then .author.__typename = "User"
+          elif .author.login == "cursor" then .author.__typename = "Bot" else . end
+      )))}}}}}')
+  gh() {
+    case "$1 $2" in
+      'repo view') printf '%s\n' '{"owner":{"login":"fixture"},"name":"repo"}' ;;
+      'api graphql')
+        case "$*" in
+          *resolveReviewThread*) printf 'native resolution failed\n' >&2; return 1 ;;
+          *minimizeComment*)
+            printf '%s\n' "$*" >> "$FALLBACK_LOG"
+            printf '%s\n' '{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true}}}}'
+            ;;
+          *) printf '%s\n' "$THREAD_FIXTURE" ;;
+        esac ;;
+      *) return 4 ;;
+    esac
+  }
+  export -f gh
+  "$BASH" "$REPO_ROOT/.claude/scripts/resolve-review-threads.sh" 1 \
+    --thread-ids T1,T5,T6 --max-attempts 1
+)
+FALLBACK_LOG=$(mktemp)
+export FALLBACK_LOG
+trap 'rm -f "$FALLBACK_LOG"' EXIT
+status=0
+out=$(fallback_fixture 2>&1) || status=$?
+check_eq "unresolved threads remain a failure even after the fallback" 1 "$status"
+check_eq "bot opener gets one fallback mutation" 1 "$(grep -c 'subjectId=CT6' "$FALLBACK_LOG")"
+check_eq "human and unknown openers get no fallback mutation" 0 "$(grep -cE 'subjectId=CT[15]' "$FALLBACK_LOG")"
+
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1

@@ -7,6 +7,7 @@
 #   - a case that should pass proves the lint does NOT fire on correct usage
 #
 # Auto-discovered by run-hook-tests.sh — no workflow edit needed.
+# covers: .claude/agents/phase-a-fixer.md .claude/agents/phase-c-merger.md .claude/agents/researcher.md
 
 set -euo pipefail
 

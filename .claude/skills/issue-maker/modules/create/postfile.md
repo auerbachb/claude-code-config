@@ -131,7 +131,7 @@ The inline-run offer (Step 9c) names the batch's inferred tier so the user knows
 
 Default to **Standard** when signals are sparse. Values are bare family names / picker labels — never version numbers or API tokens.
 
-**A session's offer covers several issues, so it takes the most demanding tier among them** — the same batch-tier rule `/prompt` Step 4 uses ("a batch of 3 issues where one is Heavy makes the batch tier Heavy"). Infer each issue's tier as it is filed and keep the running maximum.
+**A session's offer covers several issues, so it takes the most demanding tier among them** — the batch-tier rule ("a batch of 3 issues where one is Heavy makes the batch tier Heavy"). Infer each issue's tier as it is filed and keep the running maximum.
 
 **Model step-up warning (best-effort).** An inline run inherits the thread's model — there is no picker to set. When the thread's self-reported model sits below the inferred tier, the offer states the gap before asking:
 

@@ -45,6 +45,16 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/merge-gate-test-fixtures.sh"
 
+# Defined here, as in the other suites that use it: the "(a) outage trace: the
+# missing[] reason names the context" assertion below called it undefined, so
+# bash printed `command not found` and the check never ran (found fixing issue #1846).
+check_contains() { # needle haystack label
+  case "$2" in
+    *"$1"*) ok "$3" ;;
+    *) bad "$3 (missing '$1' in: $2)" ;;
+  esac
+}
+
 OUT=""
 RC=0
 run_gate() { # $1 = check-runs JSON; extra args forwarded to merge-gate.sh
@@ -101,6 +111,14 @@ check_eq "absent" "$(unsat_state 'Info.plist in sync with project.yml')" \
 check_eq "branch_protection" "$(req_field source)" "(a) outage trace: source is the protection endpoint"
 check_contains "typecheck (absent)" "$(echo "$OUT" | jq -r '.missing | join(" | ")')" \
   "(a) outage trace: the missing[] reason names the context and its state"
+
+# A retired app is still enforced when branch protection explicitly requires it.
+FAKE_REQUIRED_STATUS_CHECKS='{"strict":true,"contexts":["Graphite / AI Reviews"],"checks":[]}' \
+FAKE_BRANCH_PROTECTED=true \
+run_gate "$(bundle "$(cr 1 build success 100)" "$(cr 2 'Graphite / AI Reviews' null 100 graphite-app in_progress)")"
+check_eq "in_progress" "$(unsat_state 'Graphite / AI Reviews')" "required retired-app context remains pending"
+check_eq "yes" "$(has_required_entry)" "required retired-app context still blocks the merge"
+check_eq 0 "$(echo "$OUT" | jq -r '.ci_status.in_progress')" "ordinary CI view ignores the retired app"
 
 # --------------------------------------------------------------------------
 # (b) Negative control — required contexts PRESENT and successful.
@@ -229,18 +247,42 @@ check_eq "absent" "$(unsat_state typecheck)" "(j) protection endpoint refused: s
 #     (Vercel, CircleCI). Blocking one of those as "absent" would be a false
 #     block, so statuses are matched too.
 # --------------------------------------------------------------------------
-FAKE_REQUIRED_STATUS_CHECKS="$(protection ci/legacy)" \
+FAKE_REQUIRED_STATUS_CHECKS='{"contexts":["ci/legacy"]}' \
 FAKE_BRANCH_PROTECTED=true \
 FAKE_COMMIT_STATUSES='[{"context":"ci/legacy","state":"success","created_at":"2026-07-21T10:00:00Z"}]' \
 run_gate "$(bundle "$(cr 1 'Some Check' success 100)")"
 check_eq "no" "$(has_required_entry)" "(k) commit status satisfies a required context"
 
-FAKE_REQUIRED_STATUS_CHECKS="$(protection ci/legacy)" \
+FAKE_REQUIRED_STATUS_CHECKS='{"contexts":["ci/legacy"]}' \
 FAKE_BRANCH_PROTECTED=true \
 FAKE_COMMIT_STATUSES='[{"context":"ci/legacy","state":"pending","created_at":"2026-07-21T10:00:00Z"}]' \
 run_gate "$(bundle "$(cr 1 'Some Check' success 100)")"
 check_eq "yes" "$(has_required_entry)" "(k) a pending commit status does not satisfy it"
 check_eq "pending" "$(unsat_state ci/legacy)" "(k) pending commit status: state reported"
+
+# GitHub requires both signals when a required check and status share a name.
+for commit_status in failure pending success; do
+  FAKE_REQUIRED_STATUS_CHECKS="$(protection build)" FAKE_BRANCH_PROTECTED=true \
+  FAKE_COMMIT_STATUSES="$(jq -cn --arg state "$commit_status" '[{context:"build",state:$state}]')" \
+  run_gate "$(bundle "$(cr 1 build success 100)")"
+  if [[ "$commit_status" == success ]]; then
+    check_eq no "$(has_required_entry)" "same-name check and commit status both pass"
+  else
+    check_eq "$commit_status" "$(unsat_state build)" "passing check cannot mask a $commit_status same-name status"
+  fi
+done
+
+for status_evidence in unavailable malformed; do
+  status_error=false
+  status_payload='{"context":"build","state":"success"}'
+  [[ "$status_evidence" == unavailable ]] && status_error=true
+  FAKE_REQUIRED_STATUS_CHECKS="$(protection build)" FAKE_BRANCH_PROTECTED=true \
+  FAKE_COMMIT_STATUS_ERROR="$status_error" FAKE_COMMIT_STATUSES="$status_payload" \
+  run_gate "$(bundle "$(cr 1 build success 100)")"
+  check_eq false "$(jq -r .met <<<"$OUT")" "$status_evidence commit status evidence blocks the gate"
+  check_contains 'required commit status evidence is unavailable or invalid' "$(req_field error)" \
+    "$status_evidence commit status evidence has a visible diagnostic"
+done
 
 # --------------------------------------------------------------------------
 # (m) App-scoped identity. Protection pins a context to an `app_id`, and GitHub
@@ -256,6 +298,14 @@ run_gate "$(bundle "$(cr 1 'rule-lint' success 100 impostor completed 99)")"
 check_eq "yes" "$(has_required_entry)" "(m) same-named check from the wrong app does NOT satisfy the context"
 check_eq "wrong_app" "$(unsat_state rule-lint)" "(m) reported as wrong_app, distinct from absent"
 check_eq "0" "$(echo "$OUT" | jq -r '.ci_status.failing')" "(m) CI reports zero failures — the pre-#1361 signal is blind to a wrong publisher"
+
+# A legacy status has no app identity; success cannot redeem a missing pinned app.
+FAKE_REQUIRED_STATUS_CHECKS="$(protection rule-lint)" \
+FAKE_BRANCH_PROTECTED=true \
+FAKE_COMMIT_STATUSES='[{"context":"rule-lint","state":"success"}]' \
+run_gate "$(bundle "$(cr 1 'rule-lint' success 100 impostor completed 99)")"
+check_eq "yes" "$(has_required_entry)" "(m) successful legacy status cannot satisfy an app pin"
+check_eq "wrong_app" "$(unsat_state rule-lint)" "(m) app pin requires the app's own evidence"
 
 # The same check from the REQUIRED app satisfies it.
 FAKE_REQUIRED_STATUS_CHECKS="$(protection rule-lint)" \
@@ -305,6 +355,61 @@ check_eq "false" "$(echo "$OUT" | jq -r '.met')" \
   "(l) control: same PR, required context absent -> NOT met (the #1361 flip)"
 check_eq "true" "$(echo "$OUT" | jq -r '.primary_review_met')" \
   "(l) control: review coverage is unaffected — this is a CI-completeness blocker"
+FAKE_REQUIRED_STATUS_CHECKS="$(protection build)" FAKE_BRANCH_PROTECTED=true \
+run_gate "$(bundle "$(cr 4 build cancelled 100 github-actions)" "$(cr 5 other success 100)")"
+check_eq '4' "$(jq -r '.required_contexts.cancelled_retry.id' <<<"$OUT")" "sole cancelled required Actions job is a retry candidate"
+check_eq false "$(jq -r .met <<<"$OUT")" "a retry candidate still blocks the gate"
+
+FAKE_REQUIRED_STATUS_CHECKS="$(protection build)" FAKE_BRANCH_PROTECTED=true \
+FAKE_COMMIT_STATUSES='[{"context":"build","state":"pending"}]' \
+run_gate "$(bundle "$(cr 4 build cancelled 100 github-actions)")"
+check_eq null "$(req_field cancelled_retry)" "pending same-name status prevents retry admission"
+
+for draft in true null '"false"'; do
+  FAKE_REQUIRED_STATUS_CHECKS="$(protection build)" FAKE_BRANCH_PROTECTED=true \
+  FAKE_MERGE_STATE=BLOCKED FAKE_DRAFT="$draft" \
+  run_gate "$(bundle "$(cr 4 build cancelled 100 github-actions)")"
+  check_eq null "$(req_field cancelled_retry)" "retry requires explicit non-draft evidence (isDraft=$draft)"
+  check_eq cancelled "$(unsat_state build)" "draft uncertainty preserves the required cancellation blocker"
+done
+
+FAKE_REQUIRED_STATUS_CHECKS="$(protection build)" FAKE_BRANCH_PROTECTED=true \
+run_gate "$(bundle "$(cr 4 build cancelled 100 another-app)" "$(cr 5 other success 100)")"
+check_eq null "$(jq -r '.required_contexts.cancelled_retry' <<<"$OUT")" "another publisher never becomes an Actions retry candidate"
+check_eq cancelled "$(unsat_state build)" "another publisher's required cancellation still blocks"
+
+FAKE_REQUIRED_STATUS_CHECKS="$(protection build)" FAKE_BRANCH_PROTECTED=true \
+run_gate "$(bundle "$(cr 4 build cancelled 100 github-actions)" "$(cr 5 other failure 100)")"
+check_eq null "$(jq -r '.required_contexts.cancelled_retry' <<<"$OUT")" "ordinary CI failure preserves existing triage"
+
+FAKE_REQUIRED_STATUS_CHECKS="$(protection build)" FAKE_BRANCH_PROTECTED=true \
+run_gate "$(bundle "$(cr 4 build cancelled 100 github-actions)" "$(cr 5 build cancelled 100 github-actions)")"
+check_eq null "$(jq -r '.required_contexts.cancelled_retry' <<<"$OUT")" "multiple cancelled matrix legs are ambiguous"
+
+# Inject only the required-state evaluator failure. The old inline evaluator
+# matched by this shim converts this failure into an empty unsatisfied list.
+export REAL_REQUIRED_TEST_JQ="$(command -v jq)"
+cat > "$BIN/jq" <<'SH'
+#!/usr/bin/env bash
+for argument in "$@"; do
+  case "$argument" in
+    *required-context-state.jq|*"def satisfies:"*)
+      if [[ "${FAKE_REQUIRED_STATE_RESULT:-}" == fail ]]; then exit 3; fi
+      if [[ "${FAKE_REQUIRED_STATE_RESULT:-}" == empty ]]; then printf '[]\n'; exit 0; fi ;;
+  esac
+done
+exec "$REAL_REQUIRED_TEST_JQ" "$@"
+SH
+chmod +x "$BIN/jq"
+for result in fail empty; do
+  FAKE_REQUIRED_STATE_RESULT="$result" FAKE_REQUIRED_STATUS_CHECKS="$(protection build)" \
+  FAKE_BRANCH_PROTECTED=true run_gate "$(bundle "$(cr 4 build cancelled 100 github-actions)")"
+  check_eq false "$(jq -r .met <<<"$OUT")" "required evaluator $result result fails closed"
+  check_eq 1 "$RC" "required evaluator $result result exits with gate blocked"
+  check_contains "cannot evaluate branch-protection" "$(jq -r '.missing | join(" | ")' <<<"$OUT")" "required evaluator $result result is visible"
+  check_contains "required check state" "$(jq -r '.required_contexts.error' <<<"$OUT")" "required evaluator $result sets structured error"
+  check_eq null "$(jq -r '.required_contexts.cancelled_retry' <<<"$OUT")" "required evaluator $result emits no retry candidate"
+done
 unset FAKE_REVIEWS
 
 echo "----------------------------------------"

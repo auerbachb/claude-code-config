@@ -97,8 +97,9 @@ case "$ARGS" in
     exit 0 ;;
   *"git/commits/"*)
     jq -cn --arg d "$FAKE_COMMIT_TS" '{committer:{date:$d}}'; exit 0 ;;
+  *actions/runs*) echo '{"total_count":0,"workflow_runs":[]}'; exit 0 ;;
   *check-runs*)
-    printf '%s' "${FAKE_CHECK_RUNS:-}"; exit 0 ;;
+    printf '%s' "${FAKE_CHECK_RUNS:-}" | jq '. + {total_count:(.check_runs|length)}'; exit 0 ;;
   *pulls/*/reviews*)
     printf '%s' "${FAKE_REVIEWS:-[]}"; exit 0 ;;
   *pulls/*/comments*)
@@ -139,7 +140,7 @@ export FAKE_COMMIT_TS="$COMMIT_TS"
 # would mask the command substitution's exit status (SC2155).
 export FAKE_REVIEWS FAKE_PR_COMMENTS FAKE_ISSUE_COMMENTS FAKE_CHECK_RUNS FAKE_PR_STATE
 FAKE_REVIEWS='[]'; FAKE_PR_COMMENTS='[]'; FAKE_ISSUE_COMMENTS='[]'; FAKE_PR_STATE='OPEN'
-GREEN_CHECKS="$(jq -cn '{check_runs:[{id:1,name:"ci",status:"completed",conclusion:"success",
+GREEN_CHECKS="$(jq -cn '{total_count:1,check_runs:[{id:1,name:"ci",status:"completed",conclusion:"success",
                   completed_at:"2026-08-21T21:20:00Z",check_suite:{id:1},app:{slug:"gha",id:1}}]}')"
 FAKE_CHECK_RUNS="$GREEN_CHECKS"
 
@@ -224,7 +225,7 @@ check_contains 'C:\Users\bot' \
 echo "=== (f) a newline in a check-run name yields ONE missing[] entry ==="
 FAKE_ISSUE_COMMENTS='[]'
 FAKE_REVIEWS='[]'
-FAKE_CHECK_RUNS="$(jq -cn '{check_runs:[{id:1,name:"lint\nsecond line",status:"in_progress",
+FAKE_CHECK_RUNS="$(jq -cn '{total_count:1,check_runs:[{id:1,name:"lint\nsecond line",status:"in_progress",
                     conclusion:null,completed_at:null,check_suite:{id:1},app:{slug:"gha",id:1}}]}')"
 OUT_CI="$(run_gate)"
 if printf '%s' "$OUT_CI" | jq -e . >/dev/null 2>&1; then

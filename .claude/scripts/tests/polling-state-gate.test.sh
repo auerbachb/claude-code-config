@@ -13,6 +13,7 @@
 # stubbed on PATH for --ensure-session; --verify-state never shells out to it.
 # Requires git + jq. Run from anywhere in the repo:
 #   bash .claude/scripts/tests/polling-state-gate.test.sh
+# covers:
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

@@ -113,7 +113,7 @@ EOF
 chmod +x "$TMP/gh" "$TMP/cli"
 STUB_DIR="$TMP/stub"
 mkdir -p "$STUB_DIR"
-export STUB_DIR HUMAN_QUEUE_GH="$TMP/gh" ISSUE_FILE_GH="$TMP/gh" HUMAN_QUEUE_CLI="$TMP/cli"
+export STUB_DIR HUMAN_QUEUE_GH="$TMP/gh" ISSUE_FILE_GH="$TMP/gh" HUMAN_QUEUE_CLI="$TMP/cli" HUMAN_QUEUE_SCHEMA=hq_test_offline
 # desk-cli.sh runs the CLI directly when a URL is in the environment; the stub
 # never reads it.
 export HUMAN_QUEUE_DATABASE_URL="postgres://stub@db.invalid/hq"

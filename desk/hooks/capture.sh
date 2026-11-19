@@ -5,7 +5,7 @@
 #
 # Registered as .claude/hooks/human-queue-capture.sh, a symlink to this file
 # (global-settings.json, matcher AskUserQuestion). The behavior lives in
-# capture.py next to this file; desk/README.md ("Capture hook") is the
+# capture.py next to this file; desk/docs/capture-hook.md is the
 # contract. In short:
 #   - no live desk (no control session registered, or its last tick is older
 #     than the bound): the menu renders as usual and nothing is queued;

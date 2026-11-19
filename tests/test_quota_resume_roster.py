@@ -3,6 +3,8 @@ import io
 import importlib.util
 import json
 import os
+import shlex
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -190,13 +192,61 @@ class QuotaResumeRosterTests(unittest.TestCase):
         with patch.object(Path, "home", return_value=self.home), \
                 patch.object(roster, "metadata", return_value=registry), \
                 patch.object(roster, "read_park_records", return_value=([], "read")), \
-                patch.dict(os.environ, CLAUDE_CONFIG_DIR=str(self.source)), \
+                patch.dict(os.environ, CLAUDE_CONFIG_DIR=str(self.source), AI_QUOTAS_CONFIG=""), \
                 patch.object(roster.sys, "argv", ["roster", "list", "--target", "claude-work"]), \
                 contextlib.redirect_stdout(output):
             self.assertEqual(roster.main(), 0)
-        options = json.loads(output.getvalue())["entries"][0]["options"]
+            portable = json.loads(output.getvalue())
+            output.seek(0)
+            output.truncate(0)
+            (self.projects / "project-key" / (self.sid + ".jsonl")).unlink()
+            self.assertEqual(roster.main(), 0)
+            handoff_only = json.loads(output.getvalue())
+        options = portable["entries"][0]["options"]
         self.assertEqual([option["target_account"] for option in options], ["work@example.com"])
         self.assertIn("claude-work --resume", options[0]["command"])
+        prerequisite = portable["launcher_prerequisite"]
+        self.assertEqual(prerequisite["shell"], "zsh")
+        self.assertEqual(shlex.split(prerequisite["setup_command"]),
+                         ["AI_QUOTAS_CONFIG=" + str(self.home / ".claude" / "ai-quotas.json"),
+                          str(MODULE.parents[1] / "ai-quotas-setup.sh"), "launchers"])
+        self.assertIn("source line it prints", prerequisite["instruction"])
+        self.assertNotIn("launcher_prerequisite", handoff_only)
+        self.assertNotIn("command", handoff_only["entries"][0]["options"][0])
+
+    def test_manual_setup_and_resume_keep_the_same_relative_registry(self):
+        self.put_transcript(self.sid)
+        self.record(self.sid, self.wt)
+        registry = [{"label": label, "launcher": name, "profile_dir": str(path)}
+                    for label, (name, path) in self.accounts.items()]
+        relative = "config from Alice's $home.json"
+        absolute = str(Path.cwd() / relative)
+        scripts = self.home / "Alice's $ scripts"
+        lib = scripts / "lib"
+        lib.mkdir(parents=True)
+        setup_script = scripts / "ai-quotas-setup.sh"
+        setup_script.write_text('#!/bin/sh\nprintf "%s\\n" "$AI_QUOTAS_CONFIG" "$@"\n')
+        setup_script.chmod(0o700)
+        output = io.StringIO()
+        with patch.object(Path, "home", return_value=self.home), \
+                patch.object(roster, "__file__", str(lib / MODULE.name)), \
+                patch.object(roster, "metadata", return_value=registry), \
+                patch.object(roster, "read_park_records", return_value=([], "read")), \
+                patch.dict(os.environ, CLAUDE_CONFIG_DIR=str(self.source), AI_QUOTAS_CONFIG=relative), \
+                patch.object(roster.sys, "argv", ["roster", "list", "--target", "claude-work"]), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(roster.main(), 0)
+        listing = json.loads(output.getvalue())
+        setup = listing["launcher_prerequisite"]["setup_command"]
+        self.assertEqual(shlex.split(setup)[0], "AI_QUOTAS_CONFIG=" + absolute)
+        command = listing["entries"][0]["options"][0]["command"]
+        fake = 'claude-work() { printf "%s\\n" "$AI_QUOTAS_CONFIG" "$PWD" "$1" "$2"; }\n'
+        env = dict(os.environ, AI_QUOTAS_CONFIG="different-registry.json")
+        shell = shutil.which("zsh") or "bash"
+        actual_setup = subprocess.check_output([shell, "-c", setup], env=env, cwd=self.wt, text=True).splitlines()
+        self.assertEqual(actual_setup, [absolute, "launchers"])
+        actual = subprocess.check_output([shell, "-c", fake + command], env=env, text=True).splitlines()
+        self.assertEqual(actual, [absolute, str(self.wt), "--resume", self.sid])
 
     def run_skill_block(self, name, anchor, env, trailer=""):
         skill = MODULE.parents[2] / "skills" / name / "SKILL.md"

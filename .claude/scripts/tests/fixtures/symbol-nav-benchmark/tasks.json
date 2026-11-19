@@ -1,0 +1,41 @@
+{
+  "commit": "2b4740ab5967070661da06d2c18ca2e28f193290",
+  "tasks": [
+    {
+      "id": "definition",
+      "question": "Where is the cents helper defined and how does it round?",
+      "symbol": "cents",
+      "pattern": "^def cents\\(",
+      "expected": {
+        ".claude/scripts/lib/review_ledger.py": [479]
+      },
+      "support": {
+        ".claude/scripts/lib/review_ledger.py": [65, 81]
+      }
+    },
+    {
+      "id": "callers",
+      "question": "Which production code calls review_ledger.cents, including embedded Python?",
+      "symbol": "cents",
+      "pattern": "\\bcents\\s*\\(",
+      "expected": {
+        ".claude/scripts/lib/review_ledger.py": [490, 507, 512, 517, 531, 559, 560, 565, 570, 1014],
+        ".claude/scripts/review-daily-cap.sh": [418, 790, 814, 821, 828]
+      }
+    },
+    {
+      "id": "change-surface",
+      "question": "Which production implementations would need a change to make normalize_repo_key ASCII-locale-independent?",
+      "symbol": "normalize_repo_key",
+      "pattern": "^\\s*normalize_repo_key\\(\\)",
+      "expected": {
+        ".claude/scripts/lib/repo-normalizer.sh": [31],
+        ".claude/scripts/handoff-migrate.sh": [53],
+        ".claude/scripts/polling-state-gate.sh": [174],
+        ".claude/scripts/release-decide.sh": [98],
+        ".claude/scripts/release-sweep.sh": [64],
+        ".claude/scripts/table-freshness.sh": [374]
+      }
+    }
+  ]
+}

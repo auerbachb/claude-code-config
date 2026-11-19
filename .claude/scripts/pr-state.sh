@@ -2,7 +2,7 @@
 # pr-state.sh — Gather all PR state into a single JSON file.
 # catalog: pr-state-polling — Gather full PR state (threads, CI, comments, merge state) into a JSON snapshot
 #
-# Shared helper used by /fixpr, /merge, /wrap, /go-on, /status, phase-b-reviewer,
+# Shared helper used by /fixpr, /merge, /wrap, /go-on, /pr-status, phase-b-reviewer,
 # and phase-c-merger. Collapses the 3-endpoint comment scan + GraphQL review threads
 # + check-runs + commit statuses into one JSON bundle. Call sites read the bundle
 # via jq instead of re-issuing overlapping gh api calls inline.
@@ -10,6 +10,7 @@
 # Usage:
 #   pr-state.sh                                  # Auto-detect PR from current branch
 #   pr-state.sh --pr 123                         # Use explicit PR number (skips branch detect)
+#   pr-state.sh --pr 123 --stdout                # JSON on stdout, no retained temp bundle
 #   pr-state.sh --since <iso-8601>               # Pre-classify bot comments posted since baseline
 #   pr-state.sh --pr 123 --since <iso>           # Combined
 #   pr-state.sh --infer-candidates               # List session-tracked PR candidates (no GitHub state)
@@ -73,6 +74,18 @@
 #   Cannot be combined with --pr, --since, or --infer-candidates.
 #   Exit code 0 on success; 2 on usage error.
 #
+# Platform notes:
+#   Windows Git Bash quirk (issue #1161): process substitution (`< <(...)`) reads
+#   through a FIFO/temp path that appears to append a trailing `\r` to each line
+#   of jq output, so a plain `read` populates variables with the CR still attached
+#   (e.g. `PR_STATE="OPEN\r"` instead of `"OPEN"`). String comparisons like
+#   `[[ "$PR_STATE" != "OPEN" ]]` then fail spuriously, and any variable spliced
+#   into a URL or API path carries a stray CR. Every variable populated by the
+#   post-`gh pr view` read block below is stripped with `"${var%$'\r'}"` — a
+#   no-op on macOS/Linux, safe cross-platform. A blanket `tr -d '\r'` at the
+#   pipeline source was rejected because it would strip legitimate CRs from
+#   comment bodies flowing through the REST endpoints downstream.
+#
 # Exit codes:
 #   0  OK
 #   2  usage error (unknown flag, --since missing value, incompatible flag combo)
@@ -100,6 +113,7 @@ run_gh() {
   printf '%s' "$output"
 }
 
+STDOUT_JSON=false
 PR_ARG=""
 SINCE=""
 INFER_CANDIDATES=0
@@ -108,6 +122,7 @@ WAIT_STATE_SHA=""
 WAIT_STATE_BUNDLE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --stdout) STDOUT_JSON=true; shift ;;
     --infer-candidates)
       INFER_CANDIDATES=1
       shift
@@ -294,35 +309,35 @@ if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
   fi
   jq -c --arg sha "$WAIT_STATE_SHA" '
     . as $root
-    # graphite-app[bot]: retired 2026-11-03 (#1889). It stays in $botlist (parity
-    # with lib/pr-state-classify.jq, so historical comments still classify) and its
-    # leftover check-run is not CI, but it is never a participant to wait for — it
-    # will not answer a new push. Review checks are recognised by publishing-app
-    # slug, not by name (#1953): a GitHub Actions job named "post-cursor-review"
-    # or "Graphite …" stays CI. The name is consulted only when the bundle carries
-    # no slug at all (an old or hand-built bundle), and never for Graphite.
-    | ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]","graphite-app[bot]"] as $botlist
-    | {"coderabbitai[bot]":"coderabbit","cursor[bot]":"bugbot","codeant-ai[bot]":"codeant",
-       "greptile-apps[bot]":"greptile"} as $needles
-    | def is_review_check:
+    # Match reviewer checks by publisher when present, and by name only for
+    # older bundles without a slug (issue #1953).
+    | ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]"] as $botlist
+    | def check_reviewer:
         (.app.slug // "" | ascii_downcase) as $slug
         | if $slug != "" then
-            any("coderabbit","codeant","cursor","greptile","graphite";
-                . as $x | $slug | contains($x))
+            {"coderabbit":"coderabbitai[bot]","coderabbitai":"coderabbitai[bot]",
+             "codeant":"codeant-ai[bot]","codeant-ai":"codeant-ai[bot]",
+             "cursor":"cursor[bot]","cursor-com":"cursor[bot]",
+             "greptile":"greptile-apps[bot]","greptile-apps":"greptile-apps[bot]"}[$slug] // ""
           else
-            (.name // "" | ascii_downcase) as $name
-            | any("coderabbit","codeant","cursor","bugbot","greptile";
-                  . as $x | $name | contains($x))
+            (.name // "" | ascii_downcase)
+            | if contains("coderabbit") then "coderabbitai[bot]"
+              elif contains("codeant") then "codeant-ai[bot]"
+              elif contains("cursor") or contains("bugbot") then "cursor[bot]"
+              elif contains("greptile") then "greptile-apps[bot]"
+              else "" end
           end;
     ([$root.comments.reviews[]?.user.login,
       $root.comments.inline[]?.user.login,
       $root.comments.conversation[]?.user.login]
-     | map(select(. as $l | $botlist | index($l) != null))
-     | map(select(. != "graphite-app[bot]")) | unique) as $participants
-    | ($root.check_runs.all // []) as $checks
+     | map(select(. as $l | $botlist | index($l) != null)) | unique) as $participants
+    | (($root.check_runs.all // [])
+       | map(select(
+           ((.app.slug // "") as $slug
+            | if $slug == "" then (.name // "") | IN("Graphite / AI Reviews", "Graphite / mergeability_check")
+              else $slug | IN("graphite-app", "graphite") end) | not))) as $checks
     | ($root.bot_statuses // {}) as $bstat
     | ($participants | map(. as $bot
-        | $needles[$bot] as $needle
         | {bot: $bot,
            done: (
              # Review object pinned to the watched SHA. EXCLUDED for BugBot:
@@ -335,7 +350,7 @@ if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
              # HEAD SHA, so SHA scoping is implicit). conclusion neutral still
              # counts as complete — BugBot uses neutral for "findings posted".
              or any($checks[]?;
-                    ((.name // "") | ascii_downcase | contains($needle))
+                    check_reviewer == $bot
                     and .status == "completed")
              # CR/Greptile also report via commit statuses on the watched SHA.
              or ( $bot == "coderabbitai[bot]" and (($bstat.CodeRabbit.state // "pending") != "pending") )
@@ -343,12 +358,17 @@ if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
            )})) as $bots
     | {head_moved: ($root.pr.head_sha != $sha),
        bots_pending: ($bots | map(select(.done | not) | .bot)),
-       ci_pending: [ $checks[] | select((is_review_check | not) and .status != "completed") | .name ],
-       ci_failing: [ $checks[] | select((is_review_check | not)
+       ci_pending: [ $checks[] | select(check_reviewer == "" and .status != "completed") | .name ],
+       ci_failing: [ $checks[] | select(check_reviewer == ""
                      and (.conclusion == "failure" or .conclusion == "timed_out"
                           or .conclusion == "action_required" or .conclusion == "startup_failure"
                           or .conclusion == "stale")) | .name ],
-       new_findings: ($root.new_since_baseline.finding_count // 0)}
+       new_findings: ($root.new_since_baseline // {} | . as $delta
+         | if has("reviews") and has("inline") and has("conversation") then
+             [ $delta.reviews[]?, $delta.inline[]?, $delta.conversation[]?
+               | select(.user as $login | $botlist | index($login) != null)
+               | select(.classification.class == "finding") ] | length
+           else .finding_count // 0 end)}
   ' "$WAIT_STATE_BUNDLE"
   exit 0
 fi
@@ -362,7 +382,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PR_STATE_CR_SPLIT_JQ="$SCRIPT_DIR/lib/pr-state-cr-split.jq"
 PR_STATE_CLASSIFY_JQ="$SCRIPT_DIR/lib/pr-state-classify.jq"
 PR_STATE_UNMARKED_JQ="$SCRIPT_DIR/lib/pr-state-unmarked-replies.jq"
-for required_filter in "$PR_STATE_CR_SPLIT_JQ" "$PR_STATE_CLASSIFY_JQ" "$PR_STATE_UNMARKED_JQ"; do
+for required_filter in "$PR_STATE_CR_SPLIT_JQ" "$PR_STATE_CLASSIFY_JQ" "$PR_STATE_UNMARKED_JQ" "$SCRIPT_DIR/lib/check-run-conclusions.jq"; do
   if [[ ! -f "$required_filter" || ! -r "$required_filter" ]]; then
     echo "ERROR: required pr-state jq filter not readable: $required_filter" >&2
     exit 5
@@ -426,6 +446,18 @@ fi
   (.mergeable // ""),
   (.reviewDecision // "")')
 
+# Strip trailing CR that Windows Git Bash process substitution injects on each
+# line of jq output. Without this, comparisons like `[[ "$PR_STATE" != "OPEN" ]]`
+# fire spuriously and API path fragments (HEAD_SHA, etc.) carry a stray \r.
+# No-op on macOS/Linux. See "Platform notes" in the file header.
+PR_NUMBER="${PR_NUMBER%$'\r'}"
+PR_STATE="${PR_STATE%$'\r'}"
+HEAD_SHA="${HEAD_SHA%$'\r'}"
+PR_URL="${PR_URL%$'\r'}"
+MERGE_STATE="${MERGE_STATE%$'\r'}"
+MERGEABLE="${MERGEABLE%$'\r'}"
+REVIEW_DECISION="${REVIEW_DECISION%$'\r'}"
+
 if [[ "$PR_STATE" != "OPEN" ]]; then
   echo "ERROR: PR #$PR_NUMBER is $PR_STATE — nothing to audit" >&2
   exit 4
@@ -438,6 +470,26 @@ fi
 OWNER="${OWNER_REPO%/*}"
 REPO="${OWNER_REPO#*/}"
 
+# Per-PR snapshot (issue #2444): reviews, both comment lists, statuses and the
+# check-run list are shared with merge-gate.sh and the other scripts of this poll
+# cycle for at most 60s; any doubt is a live read (lib/pr-snapshot.sh). Missing
+# library: plain live reads, exactly as before.
+if [[ -r "$SCRIPT_DIR/lib/pr-snapshot.sh" ]] && . "$SCRIPT_DIR/lib/pr-snapshot.sh" 2>/dev/null; then
+  pr_snap_init "$OWNER/$REPO" "$PR_NUMBER" "$HEAD_SHA" || true
+else
+  pr_snap_list() { gh api --paginate "$2"; }
+fi
+# run_gh for a snapshot-backed list read (same failure contract: exit 5).
+run_snap() {
+  local output status=0
+  output=$(pr_snap_list "$@" 2>&1) || status=$?
+  if [[ $status -ne 0 ]]; then
+    echo "ERROR: gh command failed (exit $status): $output" >&2
+    exit 5
+  fi
+  printf '%s' "$output"
+}
+
 RUN_STARTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # Use mktemp so concurrent invocations for the same PR in the same second
 # (realistic now that multiple skills share this helper) don't collide.
@@ -445,9 +497,13 @@ RUN_STARTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # temp file without the .json suffix, then rename. Both the base tempfile and
 # the renamed target are unique per-invocation, so the rename cannot clobber
 # another concurrent run's output.
-OUT_BASE=$(mktemp "/tmp/pr-state-${PR_NUMBER}-$(date -u +%s)-XXXXXX")
-OUT="${OUT_BASE}.json"
-mv "$OUT_BASE" "$OUT"
+if [[ "$STDOUT_JSON" == true ]]; then
+  OUT=/dev/stdout
+else
+  OUT_BASE=$(mktemp "/tmp/pr-state-${PR_NUMBER}-$(date -u +%s)-XXXXXX")
+  OUT="${OUT_BASE}.json"
+  mv "$OUT_BASE" "$OUT"
+fi
 
 # Endpoint bodies must never travel through argv (Issue #1565; downstream
 # poll-watermarks has the same requirement in Issues #1557/#1562). Keep each
@@ -512,15 +568,14 @@ if [[ ! -x "$CHECK_RUNS_DEDUP" ]]; then
   echo "ERROR: check-runs-dedup.sh not found or not executable at $CHECK_RUNS_DEDUP" >&2
   exit 5
 fi
-run_gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" \
-  --jq '.check_runs[]' | "$CHECK_RUNS_DEDUP" > "$WORKDIR/check-runs.json"
+"$SCRIPT_DIR/check-runs-snapshot.sh" --repo "$OWNER/$REPO" --head "$HEAD_SHA" --pr "$PR_NUMBER" > "$WORKDIR/check-runs.json" || exit 5
 
-jq -f "$PR_STATE_CR_SPLIT_JQ" "$WORKDIR/check-runs.json" > "$WORKDIR/cr-split.json"
+jq -L "$SCRIPT_DIR/lib" -f "$PR_STATE_CR_SPLIT_JQ" "$WORKDIR/check-runs.json" > "$WORKDIR/cr-split.json"
 
 # ----------------------------------------------------------------------
 # 4. Commit statuses — latest per context, plus CR/Greptile bot rollup
 # ----------------------------------------------------------------------
-run_gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses?per_page=100" | jq -s 'add // []' > "$WORKDIR/statuses.json"
+run_snap statuses "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses?per_page=100" | jq -s 'add // []' > "$WORKDIR/statuses.json"
 
 jq '
   [.[] | select(.context == "CodeRabbit" or .context == "Greptile")]
@@ -561,16 +616,16 @@ jq '
 # ----------------------------------------------------------------------
 PROJECT_USER='(if .user == null then null else {login: .user.login, type: .user.type, id: .user.id} end)'
 
-run_gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
+run_snap reviews "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
   | jq -s "add // [] | [.[] | {id, node_id, user: $PROJECT_USER, body, state, commit_id,
                                submitted_at, html_url, author_association}]" > "$WORKDIR/reviews.json"
-run_gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" \
+run_snap comments "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" \
   | jq -s "add // [] | [.[] | {id, node_id, pull_request_review_id, user: $PROJECT_USER, body,
                                path, line, original_line, start_line, original_start_line,
                                side, start_side, position, original_position, subject_type,
                                commit_id, original_commit_id, in_reply_to_id,
                                created_at, updated_at, url, html_url, author_association}]" > "$WORKDIR/inline.json"
-run_gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
+run_snap issue-comments "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
   | jq -s "add // [] | [.[] | {id, node_id, user: $PROJECT_USER, body,
                                created_at, updated_at, url, html_url, author_association}]" > "$WORKDIR/convo.json"
 
@@ -683,4 +738,4 @@ jq -n \
     }
   }' > "$OUT"
 
-echo "$OUT"
+if [[ "$STDOUT_JSON" != true ]]; then echo "$OUT"; fi

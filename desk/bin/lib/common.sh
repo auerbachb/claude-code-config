@@ -3,7 +3,7 @@
 # files. Sourced, never executed. Bash 3.2 compatible (macOS /bin/bash): no
 # associative arrays, no mapfile, no ${var,,}.
 #
-# Exit-code contract (desk/README.md is the canonical statement):
+# Exit-code contract (desk/docs/exit-codes.md is the canonical statement):
 #   0  ok
 #   1  unexpected failure (e.g. a migration's SQL error)
 #   4  validation, including usage errors

@@ -4,7 +4,7 @@
 #
 # WHAT IS UNDER TEST
 #   The REAL fenced bash in `.claude/skills/pause-resume/SKILL.md` (Step 5) and
-#   `.claude/skills/pm/SKILL.md` (2D.6's D5 successful-resume clear), pulled out
+#   `day-park-reactive.md` (2D.6's D5 successful-resume clear), pulled out
 #   at run time by `lib/skill-bash.sh` through the `<!-- test-anchor: … -->`
 #   markers and run against a real `session-state.sh` driven by a throwaway
 #   $HOME. Nothing here is a transcription: edit the document and this suite
@@ -39,7 +39,6 @@ set -uo pipefail
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
 PAUSE_RESUME="$REPO_ROOT/.claude/skills/pause-resume/SKILL.md"
-PM_SKILL="$REPO_ROOT/.claude/skills/pm/SKILL.md"
 DAY_MODE_DOC="$REPO_ROOT/.claude/reference/pm-day-mode.md"
 LIMIT_PARK_DOC="$REPO_ROOT/.claude/reference/subagent-thread-limit-park.md"
 SESSION_STATE_SH="$REPO_ROOT/.claude/scripts/session-state.sh"
@@ -100,7 +99,7 @@ field() { printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -1; }
 # document passes green forever.
 BLOCK_RETIRE="$(extract_skill_bash "$PAUSE_RESUME" pause-resume-retire-limit-park)" || exit 1
 BLOCK_DISARM="$(extract_skill_bash "$PAUSE_RESUME" pause-resume-limit-wake-disarm)" || exit 1
-BLOCK_D5="$(extract_skill_bash     "$PM_SKILL"     pm-day-d5-resume-clear)"         || exit 1
+BLOCK_D5="$(extract_skill_bash     "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md"     pm-day-d5-resume-clear)"         || exit 1
 
 day_get() { jq -r --arg k "$REPO_KEY" ".repos[\$k].day.$1" "$STATE_FILE"; }
 
@@ -651,8 +650,8 @@ else FAIL=$((FAIL + 1)); echo 'FAIL — durable generation shape'; fi
 mkdir -p "$TMP_HOME/entropy-fail"
 printf '%s\n' '#!/bin/sh' 'exit 1' > "$TMP_HOME/entropy-fail/od"
 chmod +x "$TMP_HOME/entropy-fail/od"
-BLOCK_REACTIVE=$(extract_skill_bash "$PM_SKILL" pm-day-2d6-park-claim) || exit 1
-BLOCK_PREEMPTIVE=$(extract_skill_bash "$PM_SKILL" pm-day-2d7-park-claim) || exit 1
+BLOCK_REACTIVE=$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" pm-day-2d6-park-claim) || exit 1
+BLOCK_PREEMPTIVE=$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" pm-day-2d7-park-claim) || exit 1
 BLOCK_SUBAGENT=$(extract_skill_bash "$LIMIT_PARK_DOC" subagent-limit-park-claim) || exit 1
 for PRODUCER in reactive preemptive subagent; do
   seed_empty_slot
@@ -718,8 +717,11 @@ check_eq 'D5 missing installed helper reports error 4' 'RESUME_CLEAR=error rc=4'
 check_eq 'D5 missing installed helper preserves state bytes' "$BEFORE" "$(cat "$STATE_FILE")"
 check_eq 'D5 never executes an untrusted retirement helper' false "$(if [[ -e "$SENTINEL" ]]; then echo true; else echo false; fi)"
 for CLAIM_ANCHOR in pm-day-2d6-park-claim pm-day-2d7-park-claim subagent-limit-park-claim; do
-  CLAIM_DOC="$PM_SKILL"
-  [[ "$CLAIM_ANCHOR" != subagent-limit-park-claim ]] || CLAIM_DOC="$LIMIT_PARK_DOC"
+  case "$CLAIM_ANCHOR" in
+    pm-day-2d6-park-claim) CLAIM_DOC="$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" ;;
+    pm-day-2d7-park-claim) CLAIM_DOC="$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" ;;
+    subagent-limit-park-claim) CLAIM_DOC="$LIMIT_PARK_DOC" ;;
+  esac
   CLAIM_BLOCK=$(extract_skill_bash "$CLAIM_DOC" "$CLAIM_ANCHOR") || exit 1
   RESOLVE_BLOCK=$(printf '%s\n' "$CLAIM_BLOCK" | awk '/^PARK_GENERATION_SH=""$/ {on=1} on {print} on && /^done$/ {exit}')
   [[ -n "$RESOLVE_BLOCK" ]] || exit 1
@@ -996,7 +998,7 @@ require_text "  it names the exit-7 superseded obligation" "$DAY_MODE_DOC" \
 require_text "  and the #1595 no-identity carve-out"       "$DAY_MODE_DOC" \
   '#1595'
 require_text "/pause-resume points at it"  "$PAUSE_RESUME" 'park-retirement contract'
-require_text "/pm D5 points at it"         "$PM_SKILL"     'park-retirement contract'
+require_text "/pm D5 points at it"         "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md"     'park-retirement contract'
 require_text "the limit-park reference records the guard" "$LIMIT_PARK_DOC" \
   'compare-and-set on the identity'
 refute_text  "pm-day-mode.md no longer describes #1663 as unlanded" "$DAY_MODE_DOC" \

@@ -1,6 +1,6 @@
 # /desk — the Reviews view: `reviews`, `open`, `diff`, `reviewed`, `flag`
 
-Loaded when the operator's whole message is one of the Reviews verbs below (`SKILL.md`, "Replies the operator types"). Reviews are landed work, one `R-<n>` per merged PR and per captured issue, pulled from GitHub by `sync-reviews` (#1756). The operator works through them at the depth they choose: one line each, twenty lines on `open`, the diff on `diff`. Every Bash block starts with `SKILL.md`'s prelude. Issue #1782; design: `desk/DESIGN.md` 2.5 (summaries lazy and layered, the diff never stored) and 2.7, mockup 6.3.
+Loaded when the operator's whole message is one of the Reviews verbs below (`SKILL.md`, "Replies the operator types"). `sync-reviews` (#1756) pulls one `R-<n>` per merged PR authored by the authenticated GitHub user and per captured issue they filed. The operator works through them at the depth they choose: one line each, twenty lines on `open`, the diff on `diff`. Every Bash block starts with `SKILL.md`'s prelude. Issue #1782; design: `desk/DESIGN.md` 2.5 (summaries lazy and layered, the diff never stored) and 2.7, mockup 6.3.
 
 | The operator types | What happens |
 |--------------------|--------------|
@@ -35,7 +35,7 @@ Loaded when the operator's whole message is one of the Reviews verbs below (`SKI
 "$HQ" sync-reviews >/dev/null; echo "exit=$?"
 ```
 
-It adds a Review for each PR merged and each captured issue filed since the last sync (`desk/README.md`, "Sync"); its own output is not shown, because the view shows every item.
+It imports Reviews from the authenticated GitHub user's merged PRs and captured issues within the sync window (`desk/docs/reviews.md#sync`). The view shows the imported items.
 
 - `exit=0` → step 2.
 - `exit=4` naming `--since` → Reviews have never been synced, and where they begin is the operator's call: say `Reviews have never been synced. Reply "reviews since 2026-10-01" (any date) to choose where they begin.` and stop. On `reviews since <date>`, accept only a `YYYY-MM-DD` date (anything else → one line asking for one), run `"$HQ" sync-reviews --since <date> >/dev/null; echo "exit=$?"`, then step 2.
@@ -193,6 +193,8 @@ Then the same hint line as `open`, and remember R-2 as the item on screen.
   ```
 
   It prints the ids it marked, one per line. Reply in one line: `Marked 3 reviewed: R-12, R-13, R-14.`, or with none, `Nothing synced today is waiting.` Flagged items keep their flag (their follow-up is still open), and an item synced on an earlier day stays in the view.
+
+Keep the IDs returned by the latest successful review action in this conversation for `quiz` (#1772). For several individually reviewed IDs, include each successful ID. An empty batch clears the previous batch.
 
 ## `flag R-<n> "what to follow up"`
 

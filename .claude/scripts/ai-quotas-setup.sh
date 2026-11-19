@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ai-quotas-setup.sh — Register AI subscription accounts and their isolated
 # per-account login profiles (issue #1666).
-# catalog: token-measurement — Register AI subscription accounts in `~/.claude/ai-quotas.json` — `claude` and `codex` each get an isolated per-account login profile, `cursor` gets a registry entry alone because the Cursor IDE holds that login — name them with short nicknames, install or remove the macOS LaunchAgent that takes one unattended usage reading a day, generate the `launchers.zsh` shell functions that start a provider CLI against one account's profile, share the primary install's skills, rules, hooks, plugins, and MCP servers into a profile, and report which accounts are currently logged in — labels and paths only, never a credential value
+# catalog: token-measurement — Register AI subscription accounts in `~/.claude/ai-quotas.json` — `claude` and `codex` each get an isolated per-account login profile, `cursor` gets a registry entry alone because the Cursor IDE holds that login, and `antigravity` (one account per machine, no profile; reports whether `agy` is signed in and as which account) likewise — name them with short nicknames, set a manual plan tier and monthly price override, install or remove the macOS LaunchAgent that takes one unattended usage reading a day, generate the `launchers.zsh` shell functions that start a provider CLI against one account's profile, share the primary install's skills, rules, hooks, plugins, and MCP servers into a profile, and export the account list to a file and import it in a new environment with a guided login pass, and report which accounts are currently logged in — labels and paths only, never a credential value
 #
 # PURPOSE
 #   The owner runs several premium AI coding subscriptions side by side and
@@ -29,18 +29,23 @@
 #   ai-quotas-setup.sh repair-layout <claude|codex>
 #   ai-quotas-setup.sh add <provider> <label> [--nick <name>] [--no-login]
 #   ai-quotas-setup.sh nick <label> <name> [<provider>]
+#   ai-quotas-setup.sh plan <label> <tier> [<usd_per_month>] [<provider>]
+#   ai-quotas-setup.sh report <label> <window> <used_pct> [<reset>] [<provider>]
 #   ai-quotas-setup.sh remove <label> [<provider>]
 #   ai-quotas-setup.sh relogin <label> [<provider>]
 #   ai-quotas-setup.sh schedule <install|remove|status> [--hour <0-23>]
 #   ai-quotas-setup.sh launchers [--json]
 #   ai-quotas-setup.sh ledger-hooks
 #   ai-quotas-setup.sh share-config <label> [<provider>]
+#   ai-quotas-setup.sh export [--out FILE]
+#   ai-quotas-setup.sh import FILE [--no-login]
 #   ai-quotas-setup.sh --help | -h
 #
 # ACTIONS
 #   list      Default when no action is given. Prints one row per registered
 #             account with its status: `ok` (a credential is present),
-#             `needs-login` (none visible — run `relogin`). On a readable
+#             `needs-login` (none visible — run `relogin`), `unverified` (Antigravity
+#             only: agy is installed but its sign-in could not be checked). On a readable
 #             config it exits 0 whatever the statuses say — listing is a
 #             report, never a gate. The one non-zero list is exit 5, when the
 #             config itself is unreadable, unparseable, or written by a
@@ -56,7 +61,16 @@
 #             account's short display name. `/quotas` shows it in place of
 #             the label, which is what keeps a five-account table of full
 #             subscription emails inside 100 columns.
-#   remove    Drop an account from the config. The profile directory is LEFT
+#   plan      Set a manual plan override on a registered account (Issue #2469):
+#             `plan <label> <tier> [<usd_per_month>] [<provider>]`. /quotas
+#             shows the tier and monthly price in its TIER and $/MO columns,
+#             marked `*` when set here; the override beats what the provider
+#             reports and what the price list says. `<usd_per_month>` is
+#             optional (without it the price list is tried for that tier name).
+#             An empty tier clears the override. Stored as
+#             `plan_override: {tier, usd_per_month?}` on the account entry.
+#             Display only — it never gates work.
+#   remove   Drop an account from the config. The profile directory is LEFT
 #             ON DISK and its path is printed: removing a registry row must
 #             never destroy a working login. Delete it yourself if you mean to.
 #   relogin   Re-run the provider's login against an already-registered
@@ -97,10 +111,13 @@
 #             Make a profile behave like the primary install. For a claude
 #             profile: symlink skills, agents, rules, hooks, plugins,
 #             projects, CLAUDE.md, and account-config.md to the ~/.claude
-#             equivalents, copy settings.json, and merge the primary
+#             equivalents, copy settings.json (without any HUMAN_QUEUE_SCHEMA
+#             entry, which is stripped and reported), and merge the primary
 #             ~/.claude.json mcpServers block into the profile's .claude.json
 #             (every other field of the profile's file — its login and
-#             onboarding state — is kept). For a codex profile: symlink rules
+#             onboarding state — is kept), then print one desk line: the
+#             queue the account is bound to, or the bind command when it has
+#             none. For a codex profile: symlink rules
 #             and copy config.toml from ~/.codex. Anything already in the
 #             wanted state is left alone, so a re-run is a no-op; anything in
 #             the way is moved aside as <name>.pre-share, never deleted. A
@@ -110,6 +127,30 @@
 #             (.credentials.json, auth.json, the Keychain); the mcpServers
 #             block share-config copies can carry an API key in an env
 #             entry — copied byte for byte, never printed.
+#
+#   export    Write the account list to a versioned JSON file (Issue #2468;
+#             schema `ai-quotas-accounts/1`, default ./ai-quotas-accounts.json,
+#             `--out -` prints it) so another computer or environment (desktop app
+#             to terminal, a cloud session) can recreate it. Per account: provider,
+#             label, nickname, provider account/org/user IDs where the registry
+#             holds them, plan override (tier, monthly price), source order, and
+#             the login method. Mode 600. NO credential of any kind, no keychain
+#             item name, and no profile path: import recomputes those for the new
+#             environment. The file holds emails and IDs — keep it private.
+#   import    Recreate every account from an export, idempotently: entries already
+#             here are kept (a field the file states that differs is reported as a
+#             conflict and the entry is left untouched, exit 3), a second Cursor or
+#             Antigravity account is refused with the one-per-machine message
+#             (exit 3), the rest are added with profile directories in THIS
+#             environment's profile root. Then a guided login pass, account by
+#             account: already signed in is skipped; otherwise the exact step for
+#             that provider is printed and the person is waited on (Enter to start
+#             a claude/codex login or to confirm a Cursor/agy sign-in, s to skip) —
+#             a login is never started or typed for them. Ends with a ready /
+#             needs-you summary. `--no-login` imports entries only; re-running
+#             `import` resumes the pass for accounts still not signed in. With no
+#             terminal (a cloud session) it creates the entries and lists the
+#             logins that must happen elsewhere.
 #
 # PROVIDERS
 #   claude    Per-account CLAUDE_CONFIG_DIR, logged in by running `claude`
@@ -131,6 +172,15 @@
 #             and both confirm afterwards that a token is there — presence
 #             only, through sqlite3, never reading the value. One IDE holds
 #             one account, so this machine can register one cursor account.
+#   antigravity  Google Antigravity (Issue #2407). `agy` holds one signed-in
+#             account, so one is registered per machine and there is no profile
+#             to create or log in to. `add` and `list` check that the `agy` CLI is
+#             installed (they never run it) and say whether it is signed in and as
+#             which account (Issue #2467: the keychain item is read in memory by
+#             lib/quotas-antigravity.py signin; only the state and the account email
+#             are shown, never a credential; signed out names the sign-in step and
+#             `add` still registers the slot); `/quotas` reads usage from Google's backend with the sign-in agy holds (Issue #2465), then (attended runs only, Issue #2466) interactive `agy` in a visible terminal, then the `/usage` panel text saved by
+#             quotas-antigravity-capture.sh. Display only: it never gates work.
 #
 # LAYOUT
 #   Config    ~/.claude/ai-quotas.json                 (mode 600)
@@ -187,6 +237,10 @@
 #                           `claude` against the profile's CLAUDE_CONFIG_DIR).
 #                           Set it to `/login` on a CLI version where that
 #                           shortcut is preferred.
+#   AI_QUOTAS_IMPORT_INTERACTIVE
+#                           1 or 0 forces `import`'s login pass to treat the
+#                           session as interactive or not (default: both stdin
+#                           and stdout are terminals).
 #   AI_QUOTAS_PLATFORM      Platform name (default: `uname -s`). `Darwin`
 #                           selects the Keychain probe.
 #   AI_QUOTAS_SQLITE3_BIN   Path to sqlite3 (reads the Cursor IDE store).
@@ -213,6 +267,9 @@
 #       cron line that ran the reader without them would record `needs-login`
 #       every day and call it history.
 #   3   Usage error: bad action, provider, or label; already-registered pair;
+#       `import` of an unreadable or invalid file, or one that had a conflict
+#       or a refused second Cursor/Antigravity account (everything else in the
+#       file is still imported); `export` with nothing registered;
 #       an ambiguous label that matches more than one provider; two accounts
 #       that would share a launcher name; `share-config` on a cursor account
 #       or on a profile_dir that is the primary install itself.
@@ -323,6 +380,13 @@ NO_LOGIN=0
 ARG_PROVIDER=""
 ARG_LABEL=""
 ARG_NICK=""
+ARG_PLAN_TIER=""
+ARG_PLAN_USD=""
+ARG_OUT=""
+ARG_FILE=""
+REPORT_WINDOW=""
+REPORT_PCT=""
+REPORT_RESET=""
 NICK_GIVEN=0
 ARG_HOUR=""
 SCHEDULE_OP=""
@@ -345,6 +409,12 @@ while [[ $# -gt 0 ]]; do
       ARG_HOUR="$2"; shift 2 ;;
     --hour=*) ARG_HOUR="${1#--hour=}"
       [[ -n "$ARG_HOUR" ]] || die_usage "--hour requires an hour (0-23)"
+      shift ;;
+    --out)
+      [[ $# -ge 2 && -n "${2:-}" ]] || die_usage "--out requires a file path (or - for stdout)"
+      ARG_OUT="$2"; shift 2 ;;
+    --out=*) ARG_OUT="${1#--out=}"
+      [[ -n "$ARG_OUT" ]] || die_usage "--out requires a file path (or - for stdout)"
       shift ;;
     --) shift; while [[ $# -gt 0 ]]; do POSITIONAL+=("$1"); shift; done ;;
     -*) die_usage "unknown flag: $1" ;;
@@ -406,8 +476,56 @@ case "$ACTION" in
       ARG_PROVIDER="${POSITIONAL[3]}"
     fi
     ;;
+  plan)
+    # `plan <label> <tier> [<usd_per_month>] [<provider>]`: a third argument that names a
+    # provider is the provider, not a price.
+    [[ ${#POSITIONAL[@]} -ge 3 && ${#POSITIONAL[@]} -le 5 ]] \
+      || die_usage "plan requires <label> <tier> [<usd_per_month>] [<provider>] (pass '' as the tier to clear)"
+    ARG_LABEL="${POSITIONAL[1]}"
+    ARG_PLAN_TIER="${POSITIONAL[2]}"
+    if [[ ${#POSITIONAL[@]} -eq 4 ]]; then
+      case "${POSITIONAL[3]}" in
+        claude|codex|cursor|antigravity) ARG_PROVIDER="${POSITIONAL[3]}" ;;
+        *) ARG_PLAN_USD="${POSITIONAL[3]}" ;;
+      esac
+    elif [[ ${#POSITIONAL[@]} -eq 5 ]]; then
+      ARG_PLAN_USD="${POSITIONAL[3]}"
+      ARG_PROVIDER="${POSITIONAL[4]}"
+    fi
+    [[ -z "$ARG_PLAN_USD" || "$ARG_PLAN_USD" =~ ^[0-9]{1,5}(\.[0-9]{1,2})?$ ]] \
+      || die_usage "plan: <usd_per_month> must be a plain amount like 200 or 19.99 (got '${ARG_PLAN_USD}')"
+    [[ -z "$ARG_PLAN_TIER" || $(LC_ALL=C; [[ "$ARG_PLAN_TIER" != *[![:print:]]* ]] && echo ok) == ok && ${#ARG_PLAN_TIER} -le 32 && "$ARG_PLAN_TIER" != " "* && "$ARG_PLAN_TIER" != *" " ]] \
+      || die_usage "plan: invalid tier (max 32 printable ASCII characters, no leading/trailing spaces)"
+    [[ -n "$ARG_PLAN_TIER" || -z "$ARG_PLAN_USD" ]] || die_usage "plan: a price needs a tier"
+    ;;
   launchers)
     [[ ${#POSITIONAL[@]} -eq 1 ]] || die_usage "launchers takes no arguments"
+    ;;
+  export)
+    [[ ${#POSITIONAL[@]} -eq 1 ]] || die_usage "export takes no arguments (use --out FILE)"
+    ;;
+  import)
+    [[ ${#POSITIONAL[@]} -eq 2 ]] || die_usage "import requires <file> (an export written by 'export')"
+    ARG_FILE="${POSITIONAL[1]}"
+    ;;
+  report)
+    # `report <label> <window> <used_pct> [<reset>] [<provider>]`. A fourth
+    # argument that names a provider is the provider, not a reset, so a
+    # provider can follow a reset-less report.
+    [[ ${#POSITIONAL[@]} -ge 4 && ${#POSITIONAL[@]} -le 6 ]] \
+      || die_usage "report requires <label> <window> <used_pct> [<reset>] [<provider>]"
+    ARG_LABEL="${POSITIONAL[1]}"
+    REPORT_WINDOW="${POSITIONAL[2]}"
+    REPORT_PCT="${POSITIONAL[3]}"
+    if [[ ${#POSITIONAL[@]} -eq 5 ]]; then
+      case "${POSITIONAL[4]}" in
+        claude|codex|cursor|antigravity) ARG_PROVIDER="${POSITIONAL[4]}" ;;
+        *) REPORT_RESET="${POSITIONAL[4]}" ;;
+      esac
+    elif [[ ${#POSITIONAL[@]} -eq 6 ]]; then
+      REPORT_RESET="${POSITIONAL[4]}"
+      ARG_PROVIDER="${POSITIONAL[5]}"
+    fi
     ;;
   schedule)
     [[ ${#POSITIONAL[@]} -eq 2 ]] \
@@ -419,15 +537,18 @@ case "$ACTION" in
     esac
     ;;
   *)
-    die_usage "unknown action: $ACTION (expected list, doctor, repair-layout, add, nick, sources, remove, relogin, schedule, launchers, share-config, ledger-hooks)"
+    die_usage "unknown action: $ACTION (expected list, doctor, repair-layout, add, nick, plan, sources, remove, relogin, schedule, launchers, share-config, export, import, ledger-hooks)"
     ;;
 esac
 
 if [[ $JSON -eq 1 && "$ACTION" != "list" && "$ACTION" != "doctor" && "$ACTION" != "launchers" ]]; then
   die_usage "--json applies to list, doctor, or launchers"
 fi
-if [[ $NO_LOGIN -eq 1 && "$ACTION" != "add" ]]; then
-  die_usage "--no-login applies to add only"
+if [[ $NO_LOGIN -eq 1 && "$ACTION" != "add" && "$ACTION" != "import" ]]; then
+  die_usage "--no-login applies to add and import only"
+fi
+if [[ -n "$ARG_OUT" && "$ACTION" != "export" ]]; then
+  die_usage "--out applies to export only"
 fi
 if [[ $NICK_GIVEN -eq 1 && "$ACTION" != "add" && "$ACTION" != "nick" ]]; then
   die_usage "--nick applies to add only (use 'nick <label> <name>' on an existing account)"
@@ -441,7 +562,7 @@ fi
 # --- validation --------------------------------------------------------------
 
 valid_provider() { # <provider>
-  case "$1" in claude|codex|cursor) return 0 ;; *) return 1 ;; esac
+  case "$1" in claude|codex|cursor|antigravity) return 0 ;; *) return 1 ;; esac
 }
 
 # A label becomes a directory name, so it is restricted rather than escaped:
@@ -483,7 +604,7 @@ valid_nickname() { # <nickname>
 
 if [[ -n "$ARG_PROVIDER" ]]; then
   valid_provider "$ARG_PROVIDER" \
-    || die_usage "unknown provider: $ARG_PROVIDER (expected claude, codex, or cursor)"
+    || die_usage "unknown provider: $ARG_PROVIDER (expected claude, codex, cursor, or antigravity)"
 fi
 if [[ $NICK_GIVEN -eq 1 && -n "$ARG_NICK" ]]; then
   valid_nickname "$ARG_NICK" \
@@ -683,6 +804,16 @@ provider_bin() { # <provider> -> path on stdout, or empty + exit 1
         "/usr/local/bin/sqlite3"
       )
       ;;
+    antigravity)
+      # The Antigravity CLI is `agy`. Setup checks that it is installed and never runs
+      # it (a run would contact the backend); sign-in comes from antigravity_signin_probe.
+      override="${AI_QUOTAS_AGY_BIN:-}"
+      lookup="agy"
+      candidates=(
+        "/opt/homebrew/bin/agy"
+        "/usr/local/bin/agy"
+      )
+      ;;
     *) return 1 ;;
   esac
   if [[ -n "$override" ]]; then
@@ -770,6 +901,7 @@ manual_login_command() { # <provider> <profile_dir>
     # the IDE. Printed in the same slot every other provider prints one so the
     # "log in by hand with:" line stays true for all three.
     cursor) printf 'open the Cursor IDE and sign in' ;;
+    antigravity) printf 'run agy and sign in with your Google account' ;;
   esac
 }
 
@@ -795,7 +927,7 @@ run_login() { # <provider> <profile_dir>
   # Not said for cursor: nothing is launched and no window opens, because the
   # IDE already holds that login. Announcing one anyway would leave the user
   # waiting for a browser that is never coming.
-  if [[ "$provider" != "cursor" ]]; then
+  if [[ "$provider" != "cursor" && "$provider" != "antigravity" ]]; then
     echo "${SELF_NAME}: launching ${provider} login for this profile — complete it in the window/browser it opens."
   fi
   case "$provider" in
@@ -818,6 +950,22 @@ run_login() { # <provider> <profile_dir>
       CLAUDE_CONFIG_DIR="$dir" "$bin" ${claude_args[@]+"${claude_args[@]}"}
       ;;
     codex)  CODEX_HOME="$dir" "$bin" login ;;
+    antigravity)
+      # Nothing to run: the CLI holds its own sign-in and this tool never prints it
+      # (`/quotas` uses it in memory only, Issue #2465). Setup confirms the CLI is installed
+      # and says whether it is signed in and as whom (Issue #2467); signed out is reported
+      # with the sign-in step but does not refuse the registration (the slot is reserved).
+      antigravity_signin_probe
+      case "$ANTIGRAVITY_SIGNIN" in
+        signed_in)
+          echo "${SELF_NAME}: agy found at ${bin}; signed in${ANTIGRAVITY_ACCOUNT:+ as ${ANTIGRAVITY_ACCOUNT}}${ANTIGRAVITY_TOKEN_NOTE:+ (${ANTIGRAVITY_TOKEN_NOTE})}. /quotas reads usage from Google automatically." >&2 ;;
+        signed_out)
+          echo "${SELF_NAME}: agy found at ${bin}, but it is signed out${ANTIGRAVITY_REASON:+ (${ANTIGRAVITY_REASON})}. To sign in: $(manual_login_command antigravity "") — then /quotas reads usage from Google automatically (manual fallback: quotas-antigravity-capture.sh)." >&2 ;;
+        *)
+          echo "${SELF_NAME}: agy found at ${bin}; sign-in not checked${ANTIGRAVITY_REASON:+ (${ANTIGRAVITY_REASON})}. Sign in by running agy yourself; /quotas reads usage from Google automatically (manual fallback: quotas-antigravity-capture.sh)." >&2 ;;
+      esac
+      return 0
+      ;;
     cursor)
       # There is no login to run. The Cursor IDE owns this credential, and it
       # is the ONLY thing that can create one: cursor.com's sign-in page runs
@@ -840,6 +988,33 @@ run_login() { # <provider> <profile_dir>
       return 1
       ;;
   esac
+}
+
+# Issue #2467. Is agy signed in, and as which account? Asks lib/quotas-antigravity.py, which
+# reads the keychain item in memory and prints only {status, account, token, reason}. Results
+# land in globals (never stdout, so CRED_DETAIL survives a bare call, as for account_status).
+ANTIGRAVITY_SIGNIN=""      # signed_in | signed_out | unknown
+ANTIGRAVITY_ACCOUNT=""
+ANTIGRAVITY_TOKEN_NOTE=""
+ANTIGRAVITY_REASON=""
+antigravity_signin_probe() {
+  local out now
+  ANTIGRAVITY_SIGNIN="unknown"; ANTIGRAVITY_ACCOUNT=""; ANTIGRAVITY_TOKEN_NOTE=""; ANTIGRAVITY_REASON=""
+  if ! command -v python3 >/dev/null 2>&1 || [[ ! -r "$SELF_DIR/lib/quotas-antigravity.py" ]]; then
+    ANTIGRAVITY_REASON="python3 or lib/quotas-antigravity.py missing"
+    return 0
+  fi
+  now="${AI_QUOTAS_NOW:-}"
+  [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
+  out="$(python3 -I "$SELF_DIR/lib/quotas-antigravity.py" signin "$now" 2>/dev/null || true)"
+  ANTIGRAVITY_SIGNIN="$(printf '%s' "$out" | jq -r '.status // "unknown"' 2>/dev/null || echo unknown)"
+  case "$ANTIGRAVITY_SIGNIN" in signed_in|signed_out|unknown) ;; *) ANTIGRAVITY_SIGNIN="unknown" ;; esac
+  ANTIGRAVITY_ACCOUNT="$(printf '%s' "$out" | jq -r '.account // "" | gsub("[\u0000-\u001f\u007f]"; "")' 2>/dev/null || true)"
+  ANTIGRAVITY_REASON="$(printf '%s' "$out" | jq -r '.reason // "" | gsub("[\u0000-\u001f\u007f]"; "") | .[0:120]' 2>/dev/null || true)"
+  if [[ "$(printf '%s' "$out" | jq -r '.token // ""' 2>/dev/null || true)" == expired ]]; then
+    ANTIGRAVITY_TOKEN_NOTE="access token has lapsed; it renews the next time agy runs"
+  fi
+  return 0
 }
 
 # --- credential probe --------------------------------------------------------
@@ -892,6 +1067,29 @@ credential_present() { # <provider> <profile_dir> <keychain_service|"">
       CRED_DETAIL="no .credentials.json in profile"
       return 1
       ;;
+    antigravity)
+      # Issue #2467: the CLI must be installed AND signed in. Sign-in comes from
+      # antigravity_signin_probe (the keychain item read in memory; only the state and the
+      # account email come back, never a credential). No request is made.
+      if ! provider_bin antigravity >/dev/null; then
+        CRED_DETAIL="agy CLI not found"
+        return 1
+      fi
+      antigravity_signin_probe
+      case "$ANTIGRAVITY_SIGNIN" in
+        signed_in)
+          CRED_DETAIL="signed in${ANTIGRAVITY_ACCOUNT:+ as ${ANTIGRAVITY_ACCOUNT}}${ANTIGRAVITY_TOKEN_NOTE:+; ${ANTIGRAVITY_TOKEN_NOTE}}"
+          return 0 ;;
+        signed_out)
+          CRED_DETAIL="agy is installed but signed out${ANTIGRAVITY_REASON:+ (${ANTIGRAVITY_REASON})} — $(manual_login_command antigravity "")"
+          return 1 ;;
+        *)
+          # Not checkable here (not macOS, python3 missing, unknown keychain shape): the CLI is
+          # there, so say what could not be told rather than claim either state.
+          CRED_DETAIL="agy is installed; sign-in not checked${ANTIGRAVITY_REASON:+ (${ANTIGRAVITY_REASON})} — /quotas reads Google with its sign-in"
+          return 2 ;;
+      esac
+      ;;
     cursor)
       # "Logged in" for cursor means "the Cursor IDE on this machine is
       # signed in" (#1703): the credential lives in the IDE, not in a
@@ -938,11 +1136,14 @@ ACCOUNT_STATUS=""
 account_status() { # <provider> <profile_dir> <keychain_service|"">
   ACCOUNT_STATUS=""
   CRED_DETAIL=""
-  if credential_present "$@"; then
-    ACCOUNT_STATUS="ok"
-  else
-    ACCOUNT_STATUS="needs-login"
-  fi
+  local rc=0
+  credential_present "$@" || rc=$?
+  # 2 = present but unverifiable (agy sign-in not checkable): never reported as signed in.
+  case "$rc" in
+    0) ACCOUNT_STATUS="ok" ;;
+    2) ACCOUNT_STATUS="unverified" ;;
+    *) ACCOUNT_STATUS="needs-login" ;;
+  esac
 }
 
 # --- account lookup ----------------------------------------------------------
@@ -964,6 +1165,11 @@ match_indices() { # <config-json> <label> <provider|"">
 # means.
 cursor_label_held() { # <config-json> -> label on stdout, empty if none
   printf '%s' "$1" | jq -r '[.accounts[] | select(.provider == "cursor") | .label] | .[0] // ""'
+}
+
+# Antigravity is a singleton like cursor: `agy` holds one signed-in account.
+antigravity_label_held() { # <config-json> -> label on stdout, empty if none
+  printf '%s' "$1" | jq -r '[.accounts[] | select(.provider == "antigravity") | .label] | .[0] // ""'
 }
 
 resolve_single_index() { # <config-json> <label> <provider|""> -> index on stdout
@@ -1123,6 +1329,9 @@ action_add() {
   config="$(read_config)"
   local existing
   existing="$(match_indices "$config" "$label" "$provider")"
+  if [[ -n "$existing" && "$provider" == antigravity ]]; then
+    die 3 "'$label' is already registered for antigravity — save a new /usage panel with quotas-antigravity-capture.sh, or 'remove $label antigravity' first"
+  fi
   if [[ -n "$existing" ]]; then
     die 3 "'$label' is already registered for $provider — use 'relogin $label $provider' instead"
   fi
@@ -1145,6 +1354,12 @@ action_add() {
     die 3 "cursor is already registered as '$cursor_held' — one Cursor IDE holds one account, so a second label would report the same usage twice. Use 'relogin $cursor_held cursor', or 'remove $cursor_held cursor' first."
   fi
 
+  local agy_held
+  agy_held="$(antigravity_label_held "$config")"
+  if [[ "$provider" == "antigravity" && -n "$agy_held" ]]; then
+    die 3 "antigravity is already registered as '$agy_held' — agy holds one account, so a second label would report the same usage twice. Use 'remove $agy_held antigravity' first."
+  fi
+
   dir="$(profile_dir_for "$label" "$provider")"
   # Not for cursor (#1703): its credential lives in the Cursor IDE, so this
   # tool creates no directory for it. The registry still carries the field —
@@ -1152,6 +1367,8 @@ action_add() {
   # cursor, and an empty directory nobody opens is just litter in ~/.claude.
   if [[ "$provider" == "cursor" ]]; then
     echo "${SELF_NAME}: cursor reads the Cursor IDE login at $(cursor_state_db) — no profile directory is created."
+  elif [[ "$provider" == "antigravity" ]]; then
+    echo "${SELF_NAME}: antigravity reads usage from Google with the sign-in agy holds, falling back to the /usage panel text saved by quotas-antigravity-capture.sh — no profile directory is created."
   else
     ensure_profile_dir "$dir"
   fi
@@ -1161,6 +1378,8 @@ action_add() {
     # would point the user at something that was never created (CodeRabbit).
     if [[ "$provider" == "cursor" ]]; then
       echo "${SELF_NAME}: --no-login — slot reserved; sign in to the Cursor IDE, then run 'relogin $label cursor'."
+    elif [[ "$provider" == "antigravity" ]]; then
+      echo "${SELF_NAME}: --no-login — slot reserved; save a /usage panel with quotas-antigravity-capture.sh."
     else
       echo "${SELF_NAME}: --no-login — slot reserved at $dir; run 'relogin $label $provider' when ready."
     fi
@@ -1179,7 +1398,9 @@ action_add() {
       fi
       service="$(resolve_keychain_service "$dir" "" "$NEW_KEYCHAIN_SERVICE")"
     fi
-    if ! credential_present "$provider" "$dir" "$service"; then
+    # Antigravity has no login to finish here: run_login already said whether agy is signed in,
+    # and a signed-out agy still registers (the slot is reserved until the person signs in).
+    if [[ "$provider" != "antigravity" ]] && ! credential_present "$provider" "$dir" "$service"; then
       die 1 "the ${provider} login finished but left no credential this script can see (${CRED_DETAIL}); nothing was registered. Re-run, or use 'add ${provider} ${label} --no-login' to reserve the slot."
     fi
     if [[ "$provider" == "claude" ]]; then
@@ -1212,6 +1433,11 @@ action_add() {
   # `add cursor` runs under different labels both clear the pre-flight check,
   # and without this the second one appends a duplicate row the reference doc
   # promises cannot exist. Re-read under the lock is what makes that promise true.
+  agy_held="$(antigravity_label_held "$config")"
+  if [[ "$provider" == "antigravity" && -n "$agy_held" ]]; then
+    state_lock_release || true
+    die 3 "antigravity was registered as '$agy_held' by another process while this add ran — nothing was added."
+  fi
   cursor_held="$(cursor_label_held "$config")"
   if [[ "$provider" == "cursor" && -n "$cursor_held" ]]; then
     state_lock_release || true
@@ -1230,6 +1456,15 @@ action_add() {
   # could go looking for and never find (CodeAnt).
   local where="profile: ${dir}"
   [[ "$provider" != "cursor" ]] || where="reads the Cursor IDE login at $(cursor_state_db)"
+  if [[ "$provider" == "antigravity" ]]; then
+    where="reads usage from Google with the sign-in agy holds, falling back to the saved /usage panel"
+    case "${ANTIGRAVITY_SIGNIN:-}" in
+      signed_in) where+="; signed in${ANTIGRAVITY_ACCOUNT:+ as ${ANTIGRAVITY_ACCOUNT}}" ;;
+      signed_out) where+="; agy is signed out — run agy and sign in" ;;
+      "") where+="; sign-in not checked (--no-login)" ;;
+      *) where+="; sign-in not checked" ;;
+    esac
+  fi
   if [[ -n "$ARG_NICK" ]]; then
     echo "${SELF_NAME}: registered ${provider} account '${label}' as \"${ARG_NICK}\" (${where})."
   else
@@ -1251,7 +1486,7 @@ action_sources() {
   else
     index="$(resolve_single_index "$config" "$ARG_LABEL" "$ARG_PROVIDER")"
     provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
-    case "$provider" in claude) allowed=oauth-usage ;; codex) allowed=app-server,http ;; cursor) allowed=ide-token,browser ;; *) die_usage "unsupported provider" ;; esac
+    case "$provider" in claude) allowed=oauth-usage,browser ;; codex) allowed=app-server,http ;; cursor) allowed=ide-token,browser ;; antigravity) allowed=backend,terminal,observation ;; *) die_usage "unsupported provider" ;; esac
     if [[ "$ARG_NICK" == default ]]; then
       config="$(printf '%s' "$config" | jq --argjson i "$index" 'del(.accounts[$i].sources)')"
     else
@@ -1265,6 +1500,108 @@ action_sources() {
   write_config "$config"
   state_lock_release || true
   echo "${SELF_NAME}: usage source configuration updated."
+}
+
+# Read-only (#2280): reports the last-known folder's mode and any leftovers
+# from the hand-made stopgap (refresh.sh, LATEST.md). Never deletes anything —
+# the repository cannot remove files it did not install, so the owner does.
+doctor_last_known() {
+  local folder="${AI_QUOTAS_LAST_KNOWN_DIR:-}" mode
+  [[ "$JSON" -eq 0 ]] || return 0
+  if [[ -z "$folder" ]]; then folder="${_HOME:-}/.claude/ai-quotas/last-known"; fi
+  [[ -d "$folder" ]] || return 0
+  mode="$(file_mode "$folder" 2>/dev/null || true)"
+  if [[ -n "$mode" && "$mode" != 700 ]]; then
+    echo "last-known folder mode is ${mode} (expected 700): ${folder} — chmod 700 it"
+  fi
+  if [[ -e "$folder/refresh.sh" ]]; then
+    echo "stopgap leftover: ${folder}/refresh.sh — the reader now keeps this folder itself and refresh.sh does not honor the lock. Delete it, and remove any scheduler (crontab -l, launchctl) that runs it."
+  fi
+  if [[ -e "$folder/LATEST.md" ]]; then
+    echo "stopgap leftover: ${folder}/LATEST.md — /quotas now shows the same figures and nothing rewrites this page. Delete it."
+  fi
+  return 0
+}
+
+# Owner-typed reading (#2280). Stored as `owner-reported` in the last-known
+# folder; the next usable live `ok` read replaces it. Display only.
+action_report() {
+  local config index provider label nickname pool folder now now_et pct rc
+  [[ -n "$ARG_LABEL" && -n "$REPORT_WINDOW" && -n "$REPORT_PCT" ]] \
+    || die_usage "report requires a label, a window and a used percentage"
+  if [[ -n "$ARG_PROVIDER" ]]; then valid_provider "$ARG_PROVIDER" || die_usage "unknown provider: $ARG_PROVIDER"; fi
+  pct="${REPORT_PCT%\%}"
+  if [[ "$ARG_PROVIDER" == antigravity ]]; then
+    die 3 "report does not apply to antigravity — save its /usage panel with quotas-antigravity-capture.sh"
+  fi
+  [[ "$pct" =~ ^([0-9]{1,2}(\.[0-9])?|100(\.0)?)$ ]] \
+    || die 3 "used_pct must be a number from 0 to 100 with at most one decimal place"
+
+  # The config lock is taken before the account lookup and held through the
+  # helper call, as remove does. A concurrent remove therefore cannot delete the
+  # account (and its saved readings) between resolving it and recording the
+  # report, which would recreate a file that a later same-label account inherits.
+  # Every error after this point releases the lock first.
+  state_lock_acquire "$CONFIG_FILE" || die 7 "timed out waiting for the config write lock"
+  _report_fail() { state_lock_release || true; die "$@"; }
+  config="$(read_config)"
+  index="$(printf '%s' "$config" | jq -r --arg l "$ARG_LABEL" --arg p "$ARG_PROVIDER" \
+    '[.accounts | to_entries[] | select(.value.label == $l and ($p == "" or .value.provider == $p)) | .key]
+     | if length == 1 then .[0] else empty end')"
+  [[ -n "$index" ]] || _report_fail 4 "no single account registered as '${ARG_LABEL}' (name the provider if the label is shared)"
+  provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
+  [[ "$provider" != antigravity ]] \
+    || _report_fail 3 "report does not apply to antigravity — save its /usage panel with quotas-antigravity-capture.sh"
+  label="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].label')"
+  nickname="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].nickname // ""')"
+
+  # Windows are provider-specific. Cursor reports two pools, stored as both
+  # the window and the pool; Claude and Codex have one row per window.
+  pool=""
+  case "$provider" in
+    claude)
+      case "$REPORT_WINDOW" in
+        7-day|"7-day (opus)"|5-hour) ;;
+        *) _report_fail 3 "claude windows are 7-day, \"7-day (opus)\" or 5-hour" ;;
+      esac ;;
+    codex)
+      case "$REPORT_WINDOW" in
+        7-day) ;;
+        *-hour) [[ "${REPORT_WINDOW%-hour}" =~ ^[1-9][0-9]*$ ]] || _report_fail 3 "codex hour windows look like 5-hour" ;;
+        *) _report_fail 3 "codex windows are 7-day or <n>-hour" ;;
+      esac ;;
+    cursor)
+      case "$REPORT_WINDOW" in
+        cursor-models|other-models) pool="$REPORT_WINDOW" ;;
+        *) _report_fail 3 "cursor pools are cursor-models or other-models" ;;
+      esac ;;
+  esac
+
+  folder="${AI_QUOTAS_LAST_KNOWN_DIR:-}"
+  if [[ -z "$folder" ]]; then
+    [[ -n "${_HOME:-}" ]] || _report_fail 5 "HOME is unset and AI_QUOTAS_LAST_KNOWN_DIR is not set — cannot locate the last-known folder"
+    folder="${_HOME}/.claude/ai-quotas/last-known"
+  fi
+  [[ -r "$SELF_DIR/lib/quotas-last-known.py" ]] || _report_fail 5 "lib/quotas-last-known.py not found — install the complete scripts directory"
+  command -v python3 >/dev/null 2>&1 || _report_fail 5 "python3 is required to record a reading"
+
+  now="$(date +%s)"
+  now_et="$(TZ=America/New_York date '+%a %b %-d %Y %-I:%M %p ET')"
+  rc=0
+  python3 -I "$SELF_DIR/lib/quotas-last-known.py" owner-report --dir "$folder" --now "$now" \
+    --now-et "$now_et" --provider "$provider" --label "$label" --nickname "$nickname" \
+    --window "$REPORT_WINDOW" --pool "$pool" --used-pct "$pct" --resets-text "$REPORT_RESET" || rc=$?
+  state_lock_release || true
+  case "$rc" in
+    0) ;;
+    9)
+      echo "${SELF_NAME}: ${provider} account '${label}' ${REPORT_WINDOW}: a newer saved reading is kept; this older report was not recorded."
+      return 0 ;;
+    3) die 3 "reset must be YYYY-MM-DD, an ISO-8601 timestamp, or epoch seconds, and a real date" ;;
+    7) die 7 "the last-known folder is busy; retry in a moment" ;;
+    *) die 5 "could not record the reading in the last-known folder" ;;
+  esac
+  echo "${SELF_NAME}: ${provider} account '${label}' ${REPORT_WINDOW} recorded at ${pct}% as owner-reported; the next usable live read replaces it."
 }
 
 action_nick() {
@@ -1308,6 +1645,39 @@ action_nick() {
   fi
 }
 
+action_plan() {
+  local config index provider label
+  config="$(read_config)"
+  index="$(resolve_single_index "$config" "$ARG_LABEL" "$ARG_PROVIDER")"
+  provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
+
+  state_lock_acquire "$CONFIG_FILE" || die 7 "timed out waiting for the config write lock"
+  config="$(read_config)"
+  index="$(match_indices "$config" "$ARG_LABEL" "${ARG_PROVIDER:-$provider}" | head -n 1)"
+  if [[ -z "$index" ]]; then
+    state_lock_release || true
+    die 4 "no account registered with label '$ARG_LABEL' (removed by another process?)"
+  fi
+  label="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].label')"
+  provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
+  # An empty tier deletes the key, like `nick ''`; an omitted price stores no price key.
+  config="$(printf '%s' "$config" | jq --argjson i "$index" --arg tier "$ARG_PLAN_TIER" --arg usd "$ARG_PLAN_USD" '
+    .accounts[$i] = (if $tier == "" then (.accounts[$i] | del(.plan_override))
+                     else (.accounts[$i] + {plan_override: ({tier: $tier}
+                           + (if $usd == "" then {} else {usd_per_month: ($usd | tonumber)} end))}) end)')" \
+    || { state_lock_release || true; die 5 "could not update the account entry"; }
+  write_config "$config"
+  state_lock_release || true
+
+  if [[ -z "$ARG_PLAN_TIER" ]]; then
+    echo "${SELF_NAME}: ${provider} account '${label}' no longer has a plan override; /quotas will show what the provider reports."
+  elif [[ -n "$ARG_PLAN_USD" ]]; then
+    echo "${SELF_NAME}: ${provider} account '${label}' is now shown as plan \"${ARG_PLAN_TIER}\" at \$${ARG_PLAN_USD}/month (manual override)."
+  else
+    echo "${SELF_NAME}: ${provider} account '${label}' is now shown as plan \"${ARG_PLAN_TIER}\" (manual override; price from the price list when it has this tier)."
+  fi
+}
+
 action_remove() {
   local config index entry dir provider
   config="$(read_config)"
@@ -1328,10 +1698,29 @@ action_remove() {
   config="$(printf '%s' "$config" | jq --argjson i "$index" 'del(.accounts[$i])')" \
     || { state_lock_release || true; die 5 "could not remove the account entry"; }
   write_config "$config"
+  # Its saved last-known readings (#2280) go too, so a later account that reuses
+  # this label cannot inherit them. Cleared while the config lock is still held:
+  # a same-label re-add cannot save a fresh reading in between and have it deleted.
+  # Best effort: the registry change stands.
+  forget_last_known "$provider" "$ARG_LABEL"
   state_lock_release || true
 
   echo "${SELF_NAME}: removed ${provider} account '${ARG_LABEL}' from the registry."
   echo "${SELF_NAME}: its profile directory was left in place: ${dir}"
+}
+
+# Removes one account's last-known file through the helper (#2280). Warns and
+# continues on failure; a stale file is display-only and never a gate.
+forget_last_known() { # <provider> <label>
+  local folder="${AI_QUOTAS_LAST_KNOWN_DIR:-}"
+  if [[ -z "$folder" ]]; then
+    [[ -n "${_HOME:-}" ]] || return 0
+    folder="${_HOME}/.claude/ai-quotas/last-known"
+  fi
+  [[ -r "$SELF_DIR/lib/quotas-last-known.py" ]] && command -v python3 >/dev/null 2>&1 || return 0
+  python3 -I "$SELF_DIR/lib/quotas-last-known.py" forget --dir "$folder" --provider "$1" --label "$2" \
+    || echo "${SELF_NAME}: could not clear the saved readings for '$2' in ${folder} — remove that file by hand" >&2
+  return 0
 }
 
 
@@ -1499,6 +1888,8 @@ action_relogin() {
   dir="$(printf '%s' "$entry" | jq -r '.profile_dir')"
   provider="$(printf '%s' "$entry" | jq -r '.provider')"
   service="$(printf '%s' "$entry" | jq -r '.credential_ref.service // ""')"
+  [[ "$provider" != antigravity ]] \
+    || die 3 "relogin does not apply to antigravity — sign in by running agy yourself, then save its /usage panel with quotas-antigravity-capture.sh"
 
   # Two relogins racing on one profile land two sessions in it, and whichever
   # finishes last writes the registry row. Refuse the second rather than let
@@ -1521,7 +1912,7 @@ action_relogin() {
 
   # Not for cursor: nothing here writes to <profile_dir> any more, so creating
   # one would leave an empty directory the tool never reads again.
-  [[ "$provider" == "cursor" ]] || ensure_profile_dir "$dir"
+  [[ "$provider" == "cursor" || "$provider" == "antigravity" ]] || ensure_profile_dir "$dir"
   if [[ "$provider" == "claude" ]]; then
     before="$(keychain_claude_services)"
   fi
@@ -1598,35 +1989,41 @@ require_schedule_home() { # <operation>
   die 5 "HOME is unset, and every schedule path — the LaunchAgent, its log, the history file — derives from it; refusing to aim a per-user job at a system path. Set HOME and re-run 'schedule $1'."
 }
 
-# The path that goes INTO the plist. It has to outlive this checkout: a plist
-# pointing into a worktree keeps working until the worktree is removed and then
-# fails every night, logging to a file nobody reads. So the durable
-# ~/.claude/ locations are preferred over the sibling copy, and choosing the
-# sibling is said out loud rather than assumed to be fine.
+# Only readers that advertise the offline check understand its environment
+# switch. Keep older standalone readers and explicit legacy wrappers working.
+reader_is_schedulable() {
+  [[ -f "$1" && -x "$1" ]] || return 1
+  if grep -Fqx '# quota-reader-install-check-v1' "$1" 2>/dev/null; then
+    AI_QUOTAS_CHECK_INSTALL=1 "$1" >/dev/null || return 1
+  fi
+}
+
+# Prefer the durable installed layouts. Only use a checkout path with a warning
+# because removing its worktree also removes the scheduled reader.
 resolve_reader_bin() {
   local candidate
   if [[ -n "${AI_QUOTAS_READER_BIN:-}" ]]; then
-    # Used EXCLUSIVELY when set — no fall-through to the search. A seam that
-    # falls back finds the repo copy through the sibling candidate whenever
-    # the caller stands in a checkout, which is the only place the suite runs,
-    # so the "reader unresolvable" path could never be exercised.
-    if [[ -x "$AI_QUOTAS_READER_BIN" ]]; then
-      printf '%s' "$AI_QUOTAS_READER_BIN"
-      return 0
-    fi
-    die 5 "AI_QUOTAS_READER_BIN names '${AI_QUOTAS_READER_BIN}', which is not executable — refusing to schedule a job that cannot run"
+    # An explicit override is exclusive, including when its package is broken.
+    [[ -x "$AI_QUOTAS_READER_BIN" ]] ||
+      die 5 "AI_QUOTAS_READER_BIN names '${AI_QUOTAS_READER_BIN}', which is not executable — refusing to schedule a job that cannot run"
+    reader_is_schedulable "$AI_QUOTAS_READER_BIN" ||
+      die 5 "AI_QUOTAS_READER_BIN names a reader that failed its install check — no job was scheduled"
+    printf '%s' "$AI_QUOTAS_READER_BIN"
+    return 0
   fi
   for candidate in \
     "${_HOME}/.claude/skills-worktree/.claude/scripts/ai-quotas.sh" \
-    "${_HOME}/.claude/scripts/ai-quotas.sh"; do
-    if [[ -x "$candidate" ]]; then printf '%s' "$candidate"; return 0; fi
+    "${_HOME}/.claude/scripts/ai-quotas.sh" \
+    "$SELF_DIR/ai-quotas.sh"; do
+    if reader_is_schedulable "$candidate"; then
+      if [[ "$candidate" == "$SELF_DIR/ai-quotas.sh" ]]; then
+        echo "${SELF_NAME}: scheduling the reader at $candidate — the durable copies under ~/.claude/ are unavailable, and a job pointing into a checkout stops working the day that checkout is removed. Re-run 'schedule install' once the skills worktree is in place." >&2
+      fi
+      printf '%s' "$candidate"
+      return 0
+    fi
   done
-  if [[ -x "$SELF_DIR/ai-quotas.sh" ]]; then
-    echo "${SELF_NAME}: scheduling the reader at $SELF_DIR/ai-quotas.sh — the durable copies under ~/.claude/ are not there yet, and a job pointing into a checkout stops working the day that checkout is removed. Re-run 'schedule install' once the skills worktree is in place." >&2
-    printf '%s' "$SELF_DIR/ai-quotas.sh"
-    return 0
-  fi
-  die 5 "ai-quotas.sh not found (checked ~/.claude/skills-worktree/.claude/scripts, ~/.claude/scripts, and $SELF_DIR) — nothing to schedule"
+  die 5 "no runnable ai-quotas.sh found (checked ~/.claude/skills-worktree/.claude/scripts, ~/.claude/scripts, and $SELF_DIR) — nothing to schedule"
 }
 
 # `&` first: escaping it after `<` would re-escape the ampersand this function
@@ -1738,6 +2135,13 @@ action_schedule_install() {
     extra_env="${extra_env}
         <key>AI_QUOTAS_HISTORY</key>
         <string>$(xml_escape "$AI_QUOTAS_HISTORY")</string>"
+  fi
+  # The last-known folder (#2280) follows the same rule: an explicit override in
+  # this shell is what the nightly job must write to as well.
+  if [[ -n "${AI_QUOTAS_LAST_KNOWN_DIR:-}" ]]; then
+    extra_env="${extra_env}
+        <key>AI_QUOTAS_LAST_KNOWN_DIR</key>
+        <string>$(xml_escape "$AI_QUOTAS_LAST_KNOWN_DIR")</string>"
   fi
   tmp="$(mktemp "${plist_dir}/.ai-quotas-plist.XXXXXX")" || die 5 "could not create a temp file in $plist_dir"
   cat > "$tmp" <<PLIST
@@ -1916,7 +2320,7 @@ action_list() {
       echo "[]"
     else
       echo "No accounts registered yet."
-      echo "Add one with: ${SELF_NAME} add <claude|codex|cursor> <label>"
+      echo "Add one with: ${SELF_NAME} add <claude|codex|cursor|antigravity> <label>"
       layout_warning "$config"
     fi
     return 0
@@ -1938,8 +2342,8 @@ action_list() {
     status="$ACCOUNT_STATUS"
     detail="$CRED_DETAIL"
     local source_order
-    source_order="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i] | .sources // (if .provider=="claude" then ["oauth-usage"] elif .provider=="codex" then ["app-server","http"] else ["ide-token","browser"] end) | join(",")')"
-    [[ "$JSON" -eq 1 ]] || detail="${detail:+$detail; }sources: ${source_order}"
+    source_order="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i] | .sources // (if .provider=="claude" then ["oauth-usage","browser"] elif .provider=="codex" then ["app-server","http"] elif .provider=="antigravity" then ["backend","terminal","observation"] elif .provider=="cursor" then ["ide-token","browser"] else [] end) | join(",")')"
+    [[ "$JSON" -eq 1 ]] || [[ -z "$source_order" ]] || detail="${detail:+$detail; }sources: ${source_order}"
     if [[ $JSON -eq 1 ]]; then
       json_rows="$(printf '%s' "$json_rows" | jq \
         --arg provider "$provider" --arg label "$label" --arg profile_dir "$dir" \
@@ -1947,7 +2351,7 @@ action_list() {
         '. += [{provider: $provider, label: $label,
                 nickname: (if $nickname == "" then null else $nickname end),
                 profile_dir: $profile_dir,
-                status: $status, detail: $detail, sources: ($order|split(","))}]')"
+                status: $status, detail: $detail, sources: (if $order == "" then [] else ($order|split(",")) end)}]')"
     else
       rows+="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$provider" "$label" "${nickname:--}" "$status" "${detail:--}" "$dir")"$'\n'
     fi
@@ -2221,7 +2625,10 @@ action_launchers() {
   [[ -z "$moved" ]] || echo "${SELF_NAME}: moved the previous $(basename "$LAUNCHERS_FILE") aside to $(basename "$moved") (it was not generated by this tool)"
   local s
   for s in "${skipped[@]+"${skipped[@]}"}"; do
-    echo "${SELF_NAME}: skipped $s — the Cursor IDE holds that login; there is no CLI to launch"
+    case "$s" in
+      antigravity*) echo "${SELF_NAME}: skipped $s — agy holds that login and has no per-account launcher" ;;
+      *) echo "${SELF_NAME}: skipped $s — the Cursor IDE holds that login; there is no CLI to launch" ;;
+    esac
   done
   # The source line, with the home prefix written as $HOME so the same line
   # works in a dotfile that is checked in or copied between machines. The
@@ -2271,11 +2678,11 @@ share_link() { # <profile_dir> <name> <target>
   echo "  linked  $2 -> $target"
 }
 
-share_copy() { # <profile_dir> <name> <source>
-  local path="$1/$2" source="$3" dest
+share_copy() { # <profile_dir> <name> <source> [<shown source>]
+  local path="$1/$2" source="$3" shown="${4:-$3}" dest
   if [[ ! -f "$source" ]]; then
     SHARE_SKIPPED=$((SHARE_SKIPPED + 1))
-    echo "  skipped $2 — $source does not exist in the primary install"
+    echo "  skipped $2 — $shown does not exist in the primary install"
     return 0
   fi
   if [[ ! -L "$path" && -f "$path" ]] && cmp -s "$source" "$path"; then
@@ -2288,9 +2695,117 @@ share_copy() { # <profile_dir> <name> <source>
     share_note_moved "$2" "$dest"
   fi
   # `-p` carries the primary file's mode across: a 600 settings file stays 600.
-  cp -p "$source" "$path" || die 5 "could not copy $source to $path"
+  cp -p "$source" "$path" || die 5 "could not copy $shown to $path"
   SHARE_COPIED=$((SHARE_COPIED + 1))
-  echo "  copied  $2 from $source"
+  echo "  copied  $2 from $shown"
+}
+
+# Removes the staged settings.json copy made by share_settings_copy. Safe to call
+# more than once: SHARE_STAGE_DIR is cleared after the first removal.
+share_stage_cleanup() {
+  if [[ -n "${SHARE_STAGE_DIR:-}" ]]; then
+    rm -f "$SHARE_STAGE_DIR/settings.json"
+    rmdir "$SHARE_STAGE_DIR" 2>/dev/null || true
+    SHARE_STAGE_DIR=""
+  fi
+}
+
+# settings.json for a Claude profile (issue #2185). A desk binding is per
+# account and lives in the registry, never in a profile, so a copied settings
+# file must not carry the HUMAN_QUEUE_SCHEMA entry of the primary install. The
+# decision is made on the DECODED JSON, not the literal text, so an escaped key
+# cannot slip past: a valid object whose `.env` holds the key is staged with it
+# removed (the staged file is what gets compared and copied); any other valid
+# object takes the plain share_copy path, byte for byte. "Single object" is
+# checked with `jq -s`, so a file of several concatenated values is not decided
+# by its last value alone. A file that is not a single JSON object is copied as
+# before unless its text mentions the key or holds a \uXXXX escape (which could
+# spell it), in which case it refuses (exit 5) before anything in the profile is
+# touched. Nothing from the file is printed.
+share_settings_copy() { # <profile_dir> <primary settings.json>
+  local source="$2" stage had=false mode
+  if [[ ! -f "$source" ]]; then
+    share_copy "$1" settings.json "$source"
+    return 0
+  fi
+  if ! jq -e -s 'length == 1 and (.[0] | type == "object")' "$source" >/dev/null 2>&1; then
+    if grep -qE 'HUMAN_QUEUE_SCHEMA|\\u[0-9A-Fa-f]{4}' "$source"; then
+      die 5 "$source is not a JSON object and may hold HUMAN_QUEUE_SCHEMA (possibly escaped) — settings.json was left alone"
+    fi
+    share_copy "$1" settings.json "$source"
+    return 0
+  fi
+  if jq -e -s 'length == 1 and (.[0].env | type) == "object" and (.[0].env | has("HUMAN_QUEUE_SCHEMA"))' "$source" >/dev/null 2>&1; then
+    had=true
+  fi
+  if [[ "$had" != true ]]; then
+    share_copy "$1" settings.json "$source"
+    return 0
+  fi
+  mode="$(file_mode "$source")" || die 5 "could not read the mode of $source"
+  stage="$(mktemp -d "${TMPDIR:-/tmp}/ai-quotas-settings.XXXXXX")" \
+    || die 5 "could not create a staging directory for settings.json"
+  # Every exit from here on, including share_copy's `die` when cp fails, must
+  # remove the staged copy: the EXIT trap runs the cleanup on any die.
+  SHARE_STAGE_DIR="$stage"
+  trap share_stage_cleanup EXIT
+  if ! jq 'if (.env | type) == "object" then .env |= del(.HUMAN_QUEUE_SCHEMA) else . end' "$source" > "$stage/settings.json" \
+     || ! chmod "$mode" "$stage/settings.json"; then
+    share_stage_cleanup
+    die 5 "could not stage a copy of $source without HUMAN_QUEUE_SCHEMA"
+  fi
+  echo "  stripped HUMAN_QUEUE_SCHEMA from settings.json"
+  share_copy "$1" settings.json "$stage/settings.json" "$source"
+  share_stage_cleanup
+  trap - EXIT
+}
+
+# One nonfatal line on the desk queue of a Claude profile (issue #2185), printed
+# after the share-config summary. The desk is found through HUMAN_QUEUE_DESK_DIR
+# first, then ~/.claude/skills-worktree/desk. The lookup runs in a subshell that
+# sources desk/bin/lib/bindings.sh with the profile directory as the config
+# directory, so the registry rules stay in one place and bindings.tsv is never
+# parsed here. Never exits non-zero.
+share_desk_line() { # <profile_dir>
+  local dir="$1" desk="" cand res status f1="" f2="" cmd qdir
+  for cand in "${HUMAN_QUEUE_DESK_DIR:-}" "${HOME:+$HOME/.claude/skills-worktree/desk}"; do
+    if [[ -n "$cand" && -f "$cand/bin/lib/bindings.sh" ]]; then
+      desk="$cand"
+      break
+    fi
+  done
+  if [[ -z "$desk" ]]; then
+    echo "desk queue: unknown (the desk was not found: checked HUMAN_QUEUE_DESK_DIR and ~/.claude/skills-worktree/desk)"
+    return 0
+  fi
+  res="$(
+    export CLAUDE_CONFIG_DIR="$dir"
+    . "$desk/bin/lib/bindings.sh" 2>/dev/null \
+      || { printf 'unknown\tthe desk binding library cannot be loaded\n'; exit 0; }
+    if ! cfg="$(hqb_config_dir)"; then
+      printf 'unknown\tneither CLAUDE_CONFIG_DIR nor HOME is set\n'
+      exit 0
+    fi
+    rc=0
+    hqb_lookup "$cfg" || rc=$?
+    case "$rc" in
+      0) printf 'bound\t%s\t%s\n' "$HQB_NAME" "$HQB_SCHEMA" ;;
+      3) printf 'unbound\n' ;;
+      *) printf 'unknown\t%s\n' "$HQB_REASON" ;;
+    esac
+  )" || res=$'unknown\tthe desk registry lookup failed'
+  IFS=$'\t' read -r status f1 f2 <<<"$res"
+  case "$status" in
+    bound)
+      echo "desk queue: $f1 ($f2)" ;;
+    unbound)
+      printf -v qdir '%q' "$dir"
+      printf -v cmd '%q' "$desk/bin/desk-cli.sh"
+      echo "no desk queue — run $cmd bind --name <name> --schema <schema> --config-dir $qdir" ;;
+    *)
+      echo "desk queue: unknown (${f1:-the registry could not be read})" ;;
+  esac
+  return 0
 }
 
 share_discard_staging() { # <private staging directory>
@@ -2411,6 +2926,7 @@ action_share_config() {
     codex)
       require_share_home share-config AI_QUOTAS_PRIMARY_CODEX_HOME
       primary_dir="$PRIMARY_CODEX_HOME" ;;
+    antigravity) die 3 "share-config applies to claude and codex profiles — antigravity '$label' has no profile directory (agy holds that login)" ;;
     *) die 3 "share-config applies to claude and codex profiles — $provider '$label' has no profile directory (the Cursor IDE holds that login)" ;;
   esac
   [[ -d "$dir" ]] || die 5 "profile directory does not exist: $dir — run 'relogin $label $provider' first"
@@ -2455,7 +2971,7 @@ action_share_config() {
       for name in skills agents rules hooks plugins projects CLAUDE.md account-config.md; do
         share_link "$dir" "$name" "$primary_dir/$name"
       done
-      share_copy "$dir" settings.json "$primary_dir/settings.json"
+      share_settings_copy "$dir" "$primary_dir/settings.json"
       share_merge_mcp "$dir" "$PRIMARY_CLAUDE_JSON"
       ;;
     codex)
@@ -2464,6 +2980,379 @@ action_share_config() {
       ;;
   esac
   echo "${SELF_NAME}: done — linked $SHARE_LINKED, copied $SHARE_COPIED, merged $SHARE_MERGED, kept $SHARE_KEPT, moved aside $SHARE_MOVED, skipped $SHARE_SKIPPED. Nothing was deleted; *.pre-share holds whatever was in the way."
+  # Claude profiles only (issue #2185): which desk queue this profile's account
+  # is bound to. Codex accounts get no line; a desk problem never fails the share.
+  if [[ "$provider" == claude ]]; then
+    share_desk_line "$dir"
+  fi
+}
+
+# --- export / import: move the account list to a new environment (#2468) -----
+# The export is the registry minus everything environment- or secret-shaped:
+# provider, label (the subscription email), nickname, known provider IDs, the
+# manual plan override, the source order, and the login METHOD. Never a profile
+# path (import recomputes it), a keychain item name, a login timestamp, or
+# anything read from a profile directory. Each field is copied by name from the
+# registry, so a field added to the registry later is NOT exported until it is
+# added here on purpose.
+
+EXPORT_SCHEMA="ai-quotas-accounts/1"
+
+# Provider IDs are the one registry value copied from outside this tool, so they get the
+# strictest filter: a known key, one of three exact ID shapes (UUID, digits, or a
+# user-/org-/acct- prefixed token), and not credential-shaped. Anything else is dropped on
+# export and refused on import, so a secret pasted into ids can never ride along.
+# Used by BOTH export_json and IMPORT_VALIDATE_JQ so the two cannot drift.
+IDS_JQ_DEFS='
+  def id_key_ok: IN("account_id", "org_id", "organization_id", "user_id");
+  def credential_shaped:
+    test("(^|[-_.])(sk|pk|rk|ghp|gho|ghs|ghu|xox[a-z]?|bearer|token|secret|key|pass|password|pat|jwt)([-_.]|$)"; "i")
+    or test("^(eyJ|ya29|AIza|AKIA)");
+  def id_value_ok: type == "string" and length > 0 and length <= 64
+    and (test("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+         or test("^[0-9]{1,20}$")
+         or test("^(user|usr|org|organization|acct|acc|account)[-_][A-Za-z0-9-]{3,48}$"; "i"))
+    and (credential_shaped | not);
+'
+
+export_json() { # <config-json> <now-iso> -> the export document on stdout
+  printf '%s' "$1" | jq -S --arg schema "$EXPORT_SCHEMA" --arg now "$2" "$IDS_JQ_DEFS"'
+    {schema: $schema, exported_at: $now}
+    + (if ((.source_failure_threshold | type) == "number") then {source_failure_threshold: .source_failure_threshold} else {} end)
+    + {accounts: [ .accounts[]
+        | {provider, label}
+          + (if ((.nickname | type) == "string" and .nickname != "") then {nickname: .nickname} else {} end)
+          + ((.ids // {})
+             | if type == "object" then
+                 with_entries(select(.key | id_key_ok) | select(.value | id_value_ok))
+               else {} end
+             | if length > 0 then {ids: .} else {} end)
+          + (if ((.plan_override | type) == "object" and (.plan_override.tier | type) == "string")
+             then {plan_override: ({tier: .plan_override.tier}
+                    + (if ((.plan_override.usd_per_month | type) == "number") then {usd_per_month: .plan_override.usd_per_month} else {} end))}
+             else {} end)
+          + (if ((.sources | type) == "array") then {sources: .sources} else {} end)
+          + {login: {method: ({claude: "claude-cli", codex: "codex-cli", cursor: "cursor-ide", antigravity: "agy-cli"}[.provider] // "unknown")}}
+      ]}'
+}
+
+action_export() {
+  local config doc out tmp dir count dropped
+  config="$(read_config)"
+  count="$(printf '%s' "$config" | jq '.accounts | length')"
+  [[ "$count" -gt 0 ]] || die 3 "no accounts are registered — nothing to export"
+  doc="$(export_json "$config" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")" || die 5 "could not build the export"
+  dropped="$(jq -n --argjson c "$config" --argjson d "$doc" '
+    ([$c.accounts[] | (.ids // {}) | if type == "object" then length else 0 end] | add // 0)
+    - ([$d.accounts[] | (.ids // {}) | length] | add // 0)')" || dropped=0
+  if [[ "${dropped:-0}" -gt 0 ]]; then
+    echo "${SELF_NAME}: ${dropped} provider ID value(s) were left out of the export (not a recognised ID shape, or credential-shaped)." >&2
+  fi
+  out="${ARG_OUT:-./ai-quotas-accounts.json}"
+  if [[ "$out" == "-" ]]; then
+    printf '%s\n' "$doc"
+    return 0
+  fi
+  [[ ! -d "$out" ]] || die 3 "--out names a directory: $out"
+  dir="$(dirname "$out")"
+  [[ -d "$dir" ]] || die 5 "output directory does not exist: $dir"
+  # The rename below replaces the target: never let it be the live registry (by name,
+  # by symlink, or by hard link), which would swap the accounts for export JSON.
+  if [[ "$out" == "$CONFIG_FILE" || "$out" -ef "$CONFIG_FILE" || "$(cd "$dir" && pwd -P)/$(basename "$out")" == "$(cd "$(dirname "$CONFIG_FILE")" 2>/dev/null && pwd -P)/$(basename "$CONFIG_FILE")" ]]; then
+    die 3 "--out names the live account registry ($CONFIG_FILE); choose a different file"
+  fi
+  # 0600 before any content lands, like the registry: the file holds emails and
+  # account IDs. Written through a temp file so a failed write never leaves half a file.
+  tmp="$(mktemp "${dir}/.ai-quotas-export.XXXXXX")" || die 5 "could not create a temp file in $dir"
+  chmod 600 "$tmp" || { rm -f "$tmp"; die 5 "could not chmod the export"; }
+  printf '%s\n' "$doc" > "$tmp" || { rm -f "$tmp"; die 5 "could not write the export"; }
+  mv -f "$tmp" "$out" || { rm -f "$tmp"; die 5 "could not move the export into place: $out"; }
+  echo "${SELF_NAME}: exported ${count} account(s) to ${out} (mode 600). It holds emails and account IDs but no credential — keep it private. Import it with: ${SELF_NAME} import <file>"
+}
+
+# One line per problem; empty output means the file is importable. Every field is
+# checked against the same rule the matching action enforces, so an import can never
+# register what add/nick/plan/sources would refuse.
+IMPORT_VALIDATE_JQ="$IDS_JQ_DEFS"'
+  def bad_text: test("[\u0000-\u001f\u007f]");
+  if type != "object" then "the file is not a JSON object"
+  elif ((.schema | type) != "string" or (.schema | startswith("ai-quotas-accounts/") | not)) then "not an ai-quotas account export (no ai-quotas-accounts/<major> schema)"
+  elif (.schema != "ai-quotas-accounts/1") then "unsupported export schema \(.schema) (this tool reads ai-quotas-accounts/1)"
+  elif ((.accounts | type) != "array") then "the export has no accounts list"
+  elif (has("source_failure_threshold") and ((.source_failure_threshold | type) != "number" or .source_failure_threshold != (.source_failure_threshold | floor) or .source_failure_threshold < 1 or .source_failure_threshold > 999999)) then "invalid source_failure_threshold (a positive integer of at most six digits)"
+  else
+    (.accounts | to_entries[] | .key as $i | .value as $a
+     | ("account #\($i + 1)") as $w
+     | if ($a | type) != "object" then "\($w): not an object"
+       else
+         (if ($a.provider | IN("claude", "codex", "cursor", "antigravity")) then empty else "\($w): unknown provider" end),
+         (if (($a.label | type) == "string" and ($a.label | test("^[A-Za-z0-9][A-Za-z0-9._@+-]*$")) and ($a.label | length) <= 128) then empty else "\($w): invalid label" end),
+         (if ($a | has("nickname")) and (($a.nickname | type) != "string" or ($a.nickname | utf8bytelength) > 32 or ($a.nickname | bad_text) or ($a.nickname | startswith(" ")) or ($a.nickname | endswith(" "))) then "\($w): invalid nickname" else empty end),
+         (if ($a | has("plan_override")) and (($a.plan_override | type) != "object" or (($a.plan_override | keys - ["tier", "usd_per_month"] | length) > 0) or ((($a.plan_override.tier // null) | type) != "string") or ((($a.plan_override.tier // "") | test("^[ -~]{1,32}$")) | not) or (($a.plan_override.tier // "") | (startswith(" ") or endswith(" ")))
+            or (($a.plan_override | has("usd_per_month")) and (($a.plan_override.usd_per_month | type) != "number" or $a.plan_override.usd_per_month < 0 or $a.plan_override.usd_per_month > 99999.99 or ((($a.plan_override.usd_per_month * 100) | round) / 100) != $a.plan_override.usd_per_month))) then "\($w): invalid plan_override" else empty end),
+         (({claude: ["oauth-usage", "browser"], codex: ["app-server", "http"], cursor: ["ide-token", "browser"], antigravity: ["backend", "terminal", "observation"]}[$a.provider] // []) as $allowed
+          | if ($a | has("sources")) and (($a.sources | type) != "array" or ($a.sources | length) == 0 or (($a.sources | unique | length) != ($a.sources | length))
+              or (($a.sources | all(type == "string" and . as $v | $allowed | index($v))) | not))
+            then "\($w): invalid sources for \($a.provider) (allowed: \($allowed | join(", ")); no repeats)" else empty end),
+         (if ($a | has("ids")) and (($a.ids | type) != "object"
+              or (($a.ids | to_entries | all(.key | id_key_ok)) | not)
+              or (($a.ids | to_entries | all(.value | id_value_ok)) | not))
+            then "\($w): invalid ids (allowed keys: account_id, org_id, organization_id, user_id; values must be a UUID, digits, or a user-/org-/acct- prefixed ID, never a credential)" else empty end)
+       end)
+  end'
+
+# What the person has to do to sign this provider in. Printed, never run for them.
+import_login_step() { # <provider> <profile_dir>
+  case "$1" in
+    claude) echo "sign in with the Claude CLI (it opens a browser; finish the sign-in, then exit the session with /exit): $(manual_login_command claude "$2")" ;;
+    codex) echo "sign in with the Codex CLI (it opens a browser; finish the sign-in): $(manual_login_command codex "$2")" ;;
+    cursor) echo "open the Cursor IDE and sign in" ;;
+    antigravity) echo "run agy in a terminal and sign in with your Google account" ;;
+  esac
+}
+
+# Interactive means a person can answer: stdin and stdout are both terminals, unless
+# AI_QUOTAS_IMPORT_INTERACTIVE says 1 or 0. A cloud or CI session has neither, so it
+# creates entries and lists the logins that must happen elsewhere.
+import_is_interactive() {
+  case "${AI_QUOTAS_IMPORT_INTERACTIVE:-}" in
+    1) return 0 ;;
+    0) return 1 ;;
+  esac
+  [[ -t 0 && -t 1 ]]
+}
+
+# Cursor and agy are one login per machine, so "signed in" says nothing about WHICH account.
+# agy reports its email, which must equal the imported label; Cursor's IDE store is probed
+# for presence only, so its note says the account is unconfirmed. Sets IMPORT_IDENTITY_NOTE;
+# returns 1 on a proven mismatch (the caller counts the account as needing the person).
+IMPORT_IDENTITY_NOTE=""
+import_identity_check() { # <provider> <label>
+  local have want
+  IMPORT_IDENTITY_NOTE=""
+  case "$1" in
+    antigravity)
+      if [[ -n "${ANTIGRAVITY_ACCOUNT:-}" ]]; then
+        have="$(printf '%s' "$ANTIGRAVITY_ACCOUNT" | tr '[:upper:]' '[:lower:]')"
+        want="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
+        if [[ "$have" != "$want" ]]; then
+          IMPORT_IDENTITY_NOTE="agy is signed in as ${ANTIGRAVITY_ACCOUNT}, not '$2' - sign agy in with the right Google account"
+          return 1
+        fi
+      fi
+      ;;
+    cursor)
+      IMPORT_IDENTITY_NOTE=" (this tool cannot read which account the Cursor IDE holds; confirm it is '$2')"
+      ;;
+  esac
+  return 0
+}
+
+# The guided pass over IMPORT_PASS_PROVIDERS / IMPORT_PASS_LABELS: the accounts the file
+# registered or this machine already had. A login is the provider's own and starts only
+# after the person says go; nothing is typed or read for them.
+import_login_pass() {
+  local interactive=0 i n config idx dir service provider label step ans rc ready=0 needs=0 line
+  local -a needs_lines=()
+  import_is_interactive && interactive=1
+  n=${#IMPORT_PASS_LABELS[@]}
+  echo
+  echo "Login pass (${n} account(s)):"
+  for (( i = 0; i < n; i++ )); do
+    provider="${IMPORT_PASS_PROVIDERS[$i]}"; label="${IMPORT_PASS_LABELS[$i]}"
+    config="$(read_config)"
+    idx="$(match_indices "$config" "$label" "$provider" | head -n 1)"
+    if [[ -z "$idx" ]]; then
+      echo "  removed      ${provider} '${label}' - no longer registered (removed by another process); skipped"
+      continue
+    fi
+    dir="$(printf '%s' "$config" | jq -r --argjson i "$idx" '.accounts[$i].profile_dir')"
+    service="$(printf '%s' "$config" | jq -r --argjson i "$idx" '.accounts[$i].credential_ref.service // ""')"
+    account_status "$provider" "$dir" "$service"
+    if [[ "$ACCOUNT_STATUS" == ok ]]; then
+      if import_identity_check "$provider" "$label"; then
+        echo "  ready        ${provider} '${label}' - already signed in, skipped${IMPORT_IDENTITY_NOTE}"
+        ready=$((ready + 1))
+      else
+        echo "  needs you    ${provider} '${label}' - ${IMPORT_IDENTITY_NOTE}"
+        needs=$((needs + 1)); needs_lines+=("${provider} '${label}': ${IMPORT_IDENTITY_NOTE}")
+      fi
+      continue
+    fi
+    step="$(import_login_step "$provider" "$dir")"
+    if [[ "$ACCOUNT_STATUS" == unverified ]]; then
+      echo "  needs you    ${provider} '${label}' - ${CRED_DETAIL}"
+      needs=$((needs + 1)); needs_lines+=("${provider} '${label}': ${CRED_DETAIL}")
+      continue
+    fi
+    echo "  needs login  ${provider} '${label}' - ${step}"
+    if [[ $interactive -eq 0 ]]; then
+      needs=$((needs + 1)); needs_lines+=("${provider} '${label}': ${step}")
+      continue
+    fi
+    case "$provider" in
+      claude|codex)
+        printf '    Press Enter to start this login, or s to skip: '
+        ans="s"; IFS= read -r ans || ans="s"
+        if [[ -z "$ans" ]]; then
+          rc=0
+          # A fresh process: relogin exits on failure and keeps its own slot and trap.
+          "${BASH:-bash}" "$0" relogin "$label" "$provider" || rc=$?
+          [[ $rc -eq 0 ]] || echo "    the login did not complete (exit ${rc})."
+        fi
+        ;;
+      *)
+        printf '    Press Enter once you have signed in, or s to skip: '
+        ans="s"; IFS= read -r ans || ans="s"
+        ;;
+    esac
+    if [[ -z "$ans" ]]; then
+      # Re-read: relogin may have recorded a keychain item for this account.
+      config="$(read_config)"
+      idx="$(match_indices "$config" "$label" "$provider" | head -n 1)"
+      if [[ -z "$idx" ]]; then
+        echo "    ${provider} '${label}' was removed while its login ran; skipped"
+        continue
+      fi
+      dir="$(printf '%s' "$config" | jq -r --argjson i "$idx" '.accounts[$i].profile_dir // ""')"
+      service="$(printf '%s' "$config" | jq -r --argjson i "$idx" '.accounts[$i].credential_ref.service // ""')"
+      account_status "$provider" "$dir" "$service"
+      if [[ "$ACCOUNT_STATUS" == ok ]]; then
+        if import_identity_check "$provider" "$label"; then
+          echo "  ready        ${provider} '${label}' - signed in${IMPORT_IDENTITY_NOTE}"
+          ready=$((ready + 1))
+        else
+          echo "  needs you    ${provider} '${label}' - ${IMPORT_IDENTITY_NOTE}"
+          needs=$((needs + 1)); needs_lines+=("${provider} '${label}': ${IMPORT_IDENTITY_NOTE}")
+        fi
+        continue
+      fi
+      echo "    still not signed in: ${CRED_DETAIL}"
+    fi
+    needs=$((needs + 1)); needs_lines+=("${provider} '${label}': ${step}")
+  done
+  echo
+  echo "Summary: ${ready} ready, ${needs} need you."
+  if [[ $needs -gt 0 ]]; then
+    for line in "${needs_lines[@]}"; do echo "  - ${line}"; done
+    if [[ $interactive -eq 0 ]]; then
+      echo "This session cannot take a login. Do those sign-ins where you can, then re-run: ${SELF_NAME} import <file>"
+    else
+      echo "Re-run '${SELF_NAME} import <file>' to continue with these."
+    fi
+  fi
+}
+
+action_import() {
+  local file="$ARG_FILE" doc errs n i config entry provider label idx existing diffs now dir newentry
+  local added=0 kept=0 conflicts=0 refused=0 changed=0 held threshold fixhint
+  local -a lines=()
+  IMPORT_PASS_PROVIDERS=(); IMPORT_PASS_LABELS=()
+  [[ -f "$file" && -r "$file" ]] || die 3 "import file not readable: $file"
+  doc="$(cat "$file")" || die 3 "could not read: $file"
+  printf '%s' "$doc" | jq -e . >/dev/null 2>&1 || die 3 "not valid JSON: $file"
+  errs="$(printf '%s' "$doc" | jq -r "$IMPORT_VALIDATE_JQ")" || die 3 "could not validate: $file"
+  if [[ -n "$errs" ]]; then
+    echo "${SELF_NAME}: $file cannot be imported - nothing was changed:" >&2
+    printf '  %s\n' "$errs" >&2
+    exit 3
+  fi
+  n="$(printf '%s' "$doc" | jq '.accounts | length')"
+  [[ "$n" -gt 0 ]] || die 3 "the export lists no accounts"
+
+  # Profile directories for accounts this machine does not have yet, in THIS environment's
+  # profile root. Done before the lock, as add does; only claude and codex have one, and
+  # neither can be refused.
+  config="$(read_config)"
+  for (( i = 0; i < n; i++ )); do
+    provider="$(printf '%s' "$doc" | jq -r --argjson i "$i" '.accounts[$i].provider')"
+    label="$(printf '%s' "$doc" | jq -r --argjson i "$i" '.accounts[$i].label')"
+    case "$provider" in claude|codex) ;; *) continue ;; esac
+    [[ -z "$(match_indices "$config" "$label" "$provider")" ]] || continue
+    ensure_profile_dir "$(profile_dir_for "$label" "$provider")"
+  done
+
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  state_lock_acquire "$CONFIG_FILE" || die 7 "timed out waiting for the config write lock"
+  config="$(read_config)"
+  for (( i = 0; i < n; i++ )); do
+    entry="$(printf '%s' "$doc" | jq -c --argjson i "$i" '.accounts[$i]')"
+    provider="$(printf '%s' "$entry" | jq -r '.provider')"
+    label="$(printf '%s' "$entry" | jq -r '.label')"
+    idx="$(match_indices "$config" "$label" "$provider" | head -n 1)"
+    if [[ -n "$idx" ]]; then
+      existing="$(printf '%s' "$config" | jq -c --argjson i "$idx" '.accounts[$i]')"
+      # Only what the file SAYS can conflict: a field it omits is not a claim.
+      diffs="$(jq -nr --argjson e "$existing" --argjson f "$entry" '
+        [ (if ($f.nickname // null) != null and ($e.nickname // null) != $f.nickname then "nickname (here: \($e.nickname // "none"), file: \($f.nickname))" else empty end),
+          (if ($f.plan_override // null) != null and ($e.plan_override // null) != $f.plan_override then "plan override" else empty end),
+          (if ($f.sources // null) != null and ($e.sources // null) != $f.sources then "source order" else empty end),
+          (if (($f.ids // {}) | to_entries | map(select((($e.ids // {})[.key]) != .value)) | length) > 0 then "provider IDs" else empty end)
+        ] | join(", ")')" || { state_lock_release || true; die 5 "could not compare '${label}'"; }
+      if [[ -n "$diffs" ]]; then
+        conflicts=$((conflicts + 1))
+        case "$diffs" in
+          *"provider IDs"*) fixhint="nick, plan and sources cannot change provider IDs: run '${SELF_NAME} remove ${label} ${provider}' and import again if the file is right" ;;
+          *) fixhint="change it with nick, plan, or sources if the file is right" ;;
+        esac
+        lines+=("  conflict     ${provider} '${label}' - differs in ${diffs}; the entry here was left untouched (${fixhint})")
+      else
+        kept=$((kept + 1))
+        lines+=("  kept         ${provider} '${label}' - already registered")
+      fi
+      IMPORT_PASS_PROVIDERS+=("$provider"); IMPORT_PASS_LABELS+=("$label")
+      continue
+    fi
+    # One login per machine: add's refusal, naming the label that holds the slot.
+    held=""
+    case "$provider" in
+      cursor) held="$(cursor_label_held "$config")" ;;
+      antigravity) held="$(antigravity_label_held "$config")" ;;
+    esac
+    if [[ -n "$held" ]]; then
+      refused=$((refused + 1))
+      if [[ "$provider" == cursor ]]; then
+        lines+=("  refused      cursor '${label}' - cursor is already registered as '${held}': one Cursor IDE holds one account, so a second label would report the same usage twice")
+      else
+        lines+=("  refused      antigravity '${label}' - antigravity is already registered as '${held}': agy holds one account, so a second label would report the same usage twice")
+      fi
+      continue
+    fi
+    dir="$(profile_dir_for "$label" "$provider")"
+    newentry="$(printf '%s' "$entry" | jq -c --arg dir "$dir" --arg now "$now" '
+      {provider, label, profile_dir: $dir, added_at: $now}
+      + ({nickname, sources, ids} | with_entries(select(.value != null)))
+      + (if .plan_override then {plan_override: ({tier: .plan_override.tier}
+           + (if .plan_override.usd_per_month != null then {usd_per_month: .plan_override.usd_per_month} else {} end))} else {} end)')" \
+      || { state_lock_release || true; die 5 "could not build the entry for '${label}'"; }
+    config="$(printf '%s' "$config" | jq --argjson entry "$newentry" --arg schema "$SCHEMA_VERSION" \
+      '.schema_version = (.schema_version // $schema) | .accounts += [$entry]')" \
+      || { state_lock_release || true; die 5 "could not add the account entry"; }
+    added=$((added + 1)); changed=1
+    lines+=("  added        ${provider} '${label}'")
+    IMPORT_PASS_PROVIDERS+=("$provider"); IMPORT_PASS_LABELS+=("$label")
+  done
+  threshold="$(printf '%s' "$doc" | jq -r '.source_failure_threshold // empty | select(type == "number" and . >= 1 and . == floor)')"
+  if [[ -n "$threshold" && "$(printf '%s' "$config" | jq 'has("source_failure_threshold")')" == false ]]; then
+    config="$(printf '%s' "$config" | jq --argjson t "$threshold" '.source_failure_threshold = $t')"
+    changed=1
+    lines+=("  added        source-failure threshold ${threshold}")
+  fi
+  if [[ $changed -eq 1 ]]; then
+    write_config "$config"
+  fi
+  state_lock_release || true
+
+  echo "Import from ${file}:"
+  printf '%s\n' "${lines[@]}"
+  echo "${SELF_NAME}: ${added} added, ${kept} kept, ${conflicts} conflict(s), ${refused} refused."
+  if [[ $NO_LOGIN -eq 1 ]]; then
+    echo "--no-login: entries only. Re-run '${SELF_NAME} import ${file}' to sign in the accounts that are not signed in yet."
+  elif [[ ${#IMPORT_PASS_LABELS[@]} -gt 0 ]]; then
+    import_login_pass
+  fi
+  [[ $((conflicts + refused)) -eq 0 ]] || exit 3
+  return 0
 }
 
 # shellcheck source=./lib/ai-quotas-layout.sh
@@ -2482,10 +3371,14 @@ case "$ACTION" in
   repair-layout) action_repair_layout ;;
   add)      action_add ;;
   nick)     action_nick ;;
+  plan)     action_plan ;;
+  report)  action_report ;;
   sources)  action_sources ;;
   remove)   action_remove ;;
   relogin)  action_relogin ;;
   schedule) action_schedule ;;
   launchers)    action_launchers ;;
   share-config) action_share_config ;;
+  export)   action_export ;;
+  import)   action_import ;;
 esac

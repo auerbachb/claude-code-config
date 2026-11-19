@@ -44,7 +44,7 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$TEST_DIR/lib/skill-bash.sh"
 
 SCRIPTS_DIR="$(cd "$TEST_DIR/.." && pwd)"
-SKILL_MD="$SCRIPTS_DIR/../skills/pm/SKILL.md"
+SKILL_MD="$SCRIPTS_DIR/../skills/pm/modules/shared/ownership.md"
 SWEEP_SCRIPT="$SCRIPTS_DIR/candidate-ownership.sh"
 REAL_SESSION_STATE="$SCRIPTS_DIR/session-state.sh"
 
@@ -347,6 +347,18 @@ check_eq "liveness indeterminate" "indeterminate" \
   "$(printf '%s' "$OUT_JSON" | jq -r '.liveness')"
 check_eq "surface-and-skip, not adopt" "skip" \
   "$(printf '%s' "$OUT_JSON" | jq -r '.action')"
+
+############################################################################
+echo
+echo "== standing plans use the same read-only ownership sweep =="
+run_blocks "PM_OWNERSHIP_ISSUES=(314 315)
+export SESSION_LISTING_RAW_PATH='$RAW_LISTING'"
+OUT_JSON="$(sweep_json)"
+check_eq "the standing sweep runs clean" 0 "$RUN_RC"
+check_contains "the helper received the two prospective picks" "314 315 --json" "$(cat "$ARGV_LOG")"
+check_not_contains "the launch batch was not substituted" "311" "$(cat "$ARGV_LOG")"
+check_eq "read-only dispositions cover both standing picks in order" '[314,315]' \
+  "$(printf '%s\n' "$OUT_JSON" | jq -cs '[.[].issue]')"
 
 ############################################################################
 echo

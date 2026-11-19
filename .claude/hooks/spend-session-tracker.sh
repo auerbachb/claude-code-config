@@ -52,6 +52,17 @@ print("\x1f".join(values))
 IFS=$'\x1f' read -r HOOK_EVENT SESSION_SOURCE SESSION_ID MODEL CWD AGENT_TYPE TRANSCRIPT_PATH <<< "$PARSED_FIELDS"
 
 SESSION_ID="$(_spend_resolve_session "$SESSION_ID")"
+
+# Bridge the payload session id to Bash-tool commands under this claude process
+# (issue #2300): /wrap's link writer reads the breadcrumb when its environment
+# carries no session id. Best-effort; a failure here never blocks the hook.
+if [ "$HOOK_EVENT" != "SessionEnd" ] && [ "$SESSION_ID" != "unknown" ]; then
+  CRUMB_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts/lib" 2>/dev/null && pwd)/session-breadcrumb.sh"
+  if [ -r "$CRUMB_LIB" ] && . "$CRUMB_LIB" 2>/dev/null; then
+    session_breadcrumb_write "$SESSION_ID" 2>/dev/null || true
+  fi
+fi
+
 MODEL="$(_spend_payload_field "$INPUT" model)"
 AGENT_TYPE="$(_spend_payload_field "$INPUT" agent_type)"
 

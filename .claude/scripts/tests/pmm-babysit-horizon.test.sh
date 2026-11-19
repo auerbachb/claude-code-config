@@ -300,8 +300,12 @@ require_text "  keyed on launch ownership" "$DOC" 'launch ownership, not loop se
 require_text "  and forbids the day-slot write outright" \
   "$DOC" 'never .--set. on .\.repos\["<key>"\]\.day\.\*'
 require_text "  citing the shared-signal precedent" "$DOC" 'bgwork-ceiling\.sh. and .credit-budget\.sh'
-require_text "monitor-mode.md's per-cycle checklist already consults the horizon" \
-  "$REPO_ROOT/.claude/rules/monitor-mode.md" 'Usage horizon.*usage-horizon\.sh --observe'
+refute_text "monitor-mode.md's per-cycle checklist no longer consults the figure (#2416)" \
+  "$REPO_ROOT/.claude/rules/monitor-mode.md" 'usage-horizon\.sh'
+refute_text "  and safety.md no longer carves the figure out as a gate (#2416)" \
+  "$REPO_ROOT/.claude/rules/safety.md" 'horizon decisions may gate'
+require_text "  and says it gates nothing" \
+  "$REPO_ROOT/.claude/rules/safety.md" 'It gates no launch and parks nothing'
 
 # AC 4: the out-of-scope notes are gone from both places that carried them.
 refute_text "pm-day-mode.md no longer excludes the two loops" \
@@ -309,7 +313,7 @@ refute_text "pm-day-mode.md no longer excludes the two loops" \
 require_text "  and names them as readers instead" \
   "$DAY_MODE_DOC" 'run the consult too since #1444, but strictly as readers'
 refute_text "/pm 2D.7 no longer says they do not consult the horizon" \
-  "$REPO_ROOT/.claude/skills/pm/SKILL.md" 'They do not consult the horizon'
+  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'They do not consult the horizon'
 
 # PMM: consult before action, gate the dispatch, stand down on critical.
 require_text "PMM resolves usage-horizon.sh" "$PMM" 'USAGE_HORIZON_SH=\$\(resolve_script usage-horizon\.sh'
@@ -361,7 +365,7 @@ require_text "  mirrored in the lifecycle reference" "$PMM_LIFECYCLE" '\.pmm\.pa
 require_text "  and documented in the marker schema" "$PMM_LIFECYCLE" '\| .\.pmm\.pause_cause. \|'
 require_text "resume clears the cause with the rest of the marker" \
   "$PMM" '\.pmm\.pause_cause=null'
-require_text "  on the -wake path too" "$PMM_WAKE" "set '\.pmm\.pause_cause=null'"
+require_text "  wake delegates clearing to the canonical main lifecycle" "$PMM_WAKE" 'pmm-wake-resume-request'
 
 # The wake must re-consult BEFORE teardown, or a refusal is not a no-op.
 require_text "the wake re-consults the horizon" "$PMM_WAKE" '## Step 3\.5: Re-consult the usage horizon'
@@ -401,17 +405,15 @@ require_text "  keeping /wrap landable on approaching" \
 require_text "  and never orphaning an in-flight dispatch" \
   "$BABYSIT" 'In-flight dispatch is never orphaned'
 require_text "babysit widens its own cadence on critical" "$BABYSIT" 'HORIZON_HOLD_MIN'
-# A hold does not exempt the watcher from its own termination bounds, and the
-# skill must say so rather than promising a hold that outlasts the watch (#1653
-# review).
-require_text "  without exempting itself from the frozen-state terminate" \
-  "$BABYSIT" 'digest_streak >= 9.. is \*\*not\*\* relaxed'
-# --max-iter only bounds a hold if a suppressed tick counts, and a suppressed
-# merge-ready tick must not take the merge-ready reset (#1653 review).
-require_text "  counting a suppressed tick toward --max-iter whatever its class" \
-  "$BABYSIT" 'the horizon gate suppressed this tick.s dispatch'
-require_text "  and not letting a held merge-ready tick reset the streak" \
-  "$BABYSIT" 'only when the tick actually dispatched'
+# #2202 keeps ordinary waits active. A horizon hold that actually suppresses a
+# dispatch still spends the recovery budget (#1653). The generation-persist
+# suite executes both anchored blocks for held merge-ready and ordinary waits.
+require_text "  counting a suppressed dispatch toward --max-iter" \
+  "$BABYSIT" 'A suppressed dispatch counts toward .--max-iter.'
+require_text "  including suppressed dispatch in the blocker streak" \
+  "$BABYSIT" 'CLASS.*has-recoverable-blockers.*DISPATCH_SUPPRESSED'
+require_text "  applying termination bounds to classes outside the ordinary wait" \
+  "$BABYSIT" 'if \[\[ "\$CLASS" != waiting-on-bots \]\]; then'
 # horizon_held_since must be COMPUTED, not merely described: an unassigned
 # variable aborts under set -u and stores nothing without it (#1653 review).
 require_text "  computing HORIZON_HELD_SINCE rather than describing it" \
@@ -428,16 +430,19 @@ require_text "  and says so explicitly" "$BABYSIT" 'This watcher claims no park'
 
 # Neither loop may write the shared day slot. This is the assertion the whole
 # #1444 decision reduces to, so it is checked as a refutation on every file —
-# with a POSITIVE control on /pm's own SKILL.md, which does write that slot.
+# with a positive control on PM's day-arm module, which writes that slot.
 # Without the control this refutation would pass on a typo'd pattern that
 # matches nothing anywhere, which is the failure mode a refute-only check has.
-DAY_WRITE_RE='\-\-(set|cas) [^|]*\.repos\[[^]]*\]\.day'
+DAY_WRITE_RE='\-\-(set|cas) [^|]*(\.repos\[[^]]*\]\.day|\$\{?DAY_STATE_PATH\}?)'
 for F in "$PMM" "$PMM_LIFECYCLE" "$PMM_WAKE" "$BABYSIT"; do
   refute_text "$(basename "$F") writes nothing under .repos[<key>].day" \
     "$F" "$DAY_WRITE_RE"
 done
+DAY_ARM="$REPO_ROOT/.claude/skills/pm/modules/day-arm.md"
+require_text "positive control binds the path alias to this repo's day slot" \
+  "$DAY_ARM" 'DAY_STATE_PATH="\.repos\[[^]]*\]\.day"'
 require_text "positive control — the matcher DOES catch day mode's own day-slot writes" \
-  "$REPO_ROOT/.claude/skills/pm/SKILL.md" "$DAY_WRITE_RE"
+  "$DAY_ARM" "$DAY_WRITE_RE"
 # And the read the two loops ARE allowed is still there: PMM reads the day block
 # to refuse arming beside a live day loop, so a blanket ban on the path would be
 # the wrong fix and this pins the distinction between --get and --set/--cas.

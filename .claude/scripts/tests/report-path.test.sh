@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
 # Tests for report-path.sh — the collision-free monthly report destination
-# shared by /review-stack-audit and /harness-audit (issues #1345, #1519).
-# catalog: tests — Tests the collision-free report destination shared by `/review-stack-audit` and `/harness-audit`, over both series, with a month-only negative control
+# (issues #1345, #1519).
+# catalog: tests — Tests the collision-free monthly report destination for `/review-stack-audit`, over two series, with a month-only negative control
 #
-# THE BUG THIS PINS. Both skills used to derive their report path from the
-# calendar month alone, so two audits in one month resolved to the SAME file and
-# the second silently destroyed the first. It happened for real to
+# THE BUG THIS PINS. Audits used to derive their report path from the calendar
+# month alone, so two audits in one month resolved to the SAME file and the
+# second silently destroyed the first. It happened for real to
 # /review-stack-audit in 2026-08 and PR #1338 had to rename its report by hand
-# (#1345, fixed by PR #1511). /harness-audit carried the identical derivation
-# until #1519, which is also what moved this engine out of one skill's directory
-# into .claude/scripts/ — a helper with two consumers belongs in the shared home.
+# (#1345, fixed by PR #1511).
 #
-# Because the engine is shared, the core cases run over BOTH series: a fix that
-# only held for the series it was written against would leave the other skill
-# exactly where it started.
+# The engine is written for more than one series, so the core cases run over
+# BOTH series: a fix that only held for the series it was written against would
+# leave the other one exactly where it started. The second series is a fixture
+# name, not a live skill.
 #
 # A NEGATIVE CONTROL is included. These assertions would be worthless if they
 # passed against the buggy derivation too, so the same acceptance criterion is
@@ -28,7 +27,6 @@ set -uo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 REPORT_PATH="$REPO_ROOT/.claude/scripts/report-path.sh"
 RSA_SKILL_MD="$REPO_ROOT/.claude/skills/review-stack-audit/SKILL.md"
-HA_SKILL_MD="$REPO_ROOT/.claude/skills/harness-audit/SKILL.md"
 
 TMP_DIR="$(mktemp -d)"
 # u+rwx, not u+w: the unreadable-directory case leaves a dir at mode 000, and
@@ -63,7 +61,7 @@ rp() { "$REPORT_PATH" --dir "$1" --month "$2" --series "$3" "${@:4}"; }
 # be a property of the engine, not of whichever skill it was written for first.
 # ---------------------------------------------------------------------------
 
-for SERIES in review-stack-audit harness-audit; do
+for SERIES in review-stack-audit sample-audit; do
   SDIR="$RP_DIR/$SERIES"
   mkdir -p "$SDIR"
 
@@ -128,8 +126,8 @@ done
 # month-mates at all: each keeps its own unsuffixed canonical name.
 D="$RP_DIR/shared-dir"; mkdir -p "$D"
 a="$(rp "$D" 2026-08 review-stack-audit)"; printf 'a\n' > "$a"
-b="$(rp "$D" 2026-08 harness-audit)"; printf 'b\n' > "$b"
-[[ "$a" == "$D/review-stack-audit-2026-08.md" && "$b" == "$D/harness-audit-2026-08.md" ]] \
+b="$(rp "$D" 2026-08 sample-audit)"; printf 'b\n' > "$b"
+[[ "$a" == "$D/review-stack-audit-2026-08.md" && "$b" == "$D/sample-audit-2026-08.md" ]] \
   && ok "series: two skills sharing a directory each keep their own canonical name — neither is pushed onto a suffix by the other" \
   || fail "series: expected distinct canonical names, got a='$a' b='$b'"
 
@@ -164,7 +162,7 @@ chmod +x "$MONTH_ONLY"
 D="$RP_DIR/negative-control"; mkdir -p "$D"
 nc_collided=""
 for i in 1 2 3 4 5; do
-  p="$("$MONTH_ONLY" --dir "$D" --month 2026-08 --series harness-audit)"
+  p="$("$MONTH_ONLY" --dir "$D" --month 2026-08 --series sample-audit)"
   if [[ -e "$p" || -L "$p" ]]; then nc_collided="$p"; fi
   printf 'audit %s\n' "$i" > "$p"
 done
@@ -183,14 +181,14 @@ nc_n="$(ls -1 "$D" | wc -l | tr -d ' ')"
 # A DIRECTORY or a DANGLING SYMLINK occupies the name just as a file does: `mv`
 # onto either loses the report. A plain `-f` test would call both slots free.
 D="$RP_DIR/nonfile"; mkdir -p "$D"
-mkdir "$D/harness-audit-2026-09.md"
-got="$(rp "$D" 2026-09 harness-audit)"
-[[ "$got" != "$D/harness-audit-2026-09.md" ]] \
+mkdir "$D/sample-audit-2026-09.md"
+got="$(rp "$D" 2026-09 sample-audit)"
+[[ "$got" != "$D/sample-audit-2026-09.md" ]] \
   && ok "occupancy: a directory occupying the name counts as taken — mv onto it would not produce a report" \
   || fail "occupancy: a directory at the base name was treated as free"
-ln -s "$D/no-such-target" "$D/harness-audit-2026-10.md"
-got="$(rp "$D" 2026-10 harness-audit)"
-[[ "$got" != "$D/harness-audit-2026-10.md" ]] \
+ln -s "$D/no-such-target" "$D/sample-audit-2026-10.md"
+got="$(rp "$D" 2026-10 sample-audit)"
+[[ "$got" != "$D/sample-audit-2026-10.md" ]] \
   && ok "occupancy: a dangling symlink counts as taken — -e alone reads it as absent" \
   || fail "occupancy: a dangling symlink at the base name was treated as free"
 
@@ -198,8 +196,8 @@ got="$(rp "$D" 2026-10 harness-audit)"
 # created its own placeholder would make both audits' advisory-only contract false.
 D="$RP_DIR/pure"; mkdir -p "$D"
 before="$(ls -A "$D" | sort)"
-rp "$D" 2026-08 harness-audit >/dev/null
-rp "$D" 2026-08 harness-audit >/dev/null
+rp "$D" 2026-08 sample-audit >/dev/null
+rp "$D" 2026-08 sample-audit >/dev/null
 after="$(ls -A "$D" | sort)"
 [[ "$before" == "$after" ]] \
   && ok "purity: resolving a path writes nothing — both skills stay advisory-only" \
@@ -218,7 +216,7 @@ got="$(rp "$D" 2026-08 ai-review-tool-audit)"
 # would stop colliding by being unfindable rather than by being distinct.
 months_ok=yes
 for bad in 2026-13 2026-00 26-08 2026-8 "" ; do
-  "$REPORT_PATH" --dir "$RP_DIR" --month "$bad" --series harness-audit >/dev/null 2>&1
+  "$REPORT_PATH" --dir "$RP_DIR" --month "$bad" --series sample-audit >/dev/null 2>&1
   if [[ $? -ne 2 ]]; then
     fail "usage: month '$bad' must be a usage error (exit 2)"
     months_ok=no
@@ -228,10 +226,10 @@ done
   && ok "usage: malformed months are usage errors, never a silently off-series name" \
   || true
 
-"$REPORT_PATH" --month 2026-08 --series harness-audit >/dev/null 2>&1
+"$REPORT_PATH" --month 2026-08 --series sample-audit >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "usage: missing --dir is a usage error" \
   || fail "usage: missing --dir should exit 2"
-"$REPORT_PATH" --dir "$RP_DIR" --series harness-audit >/dev/null 2>&1
+"$REPORT_PATH" --dir "$RP_DIR" --series sample-audit >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "usage: missing --month is a usage error" \
   || fail "usage: missing --month should exit 2"
 
@@ -256,14 +254,14 @@ out="$("$REPORT_PATH" --dir "$RP_DIR" --month 2026-08 2>/dev/null)"; rc=$?
 # launder "I could not check" into "no collision" — the exact
 # guards-that-pass-by-not-running shape. It must refuse, and print NO path, so a
 # caller doing `REPORT=$(...)` gets an empty string rather than a live target.
-"$REPORT_PATH" --dir "$RP_DIR/definitely-not-here" --month 2026-08 --series harness-audit >/dev/null 2>&1
+"$REPORT_PATH" --dir "$RP_DIR/definitely-not-here" --month 2026-08 --series sample-audit >/dev/null 2>&1
 [[ $? -eq 1 ]] && ok "fail-closed: a missing target directory is refused, never assumed empty" \
   || fail "fail-closed: a missing --dir should exit 1"
 
 D="$RP_DIR/locked"; mkdir -p "$D"
-printf 'prior audit\n' > "$D/harness-audit-2026-08.md"
+printf 'prior audit\n' > "$D/sample-audit-2026-08.md"
 chmod 000 "$D"
-out="$("$REPORT_PATH" --dir "$D" --month 2026-08 --series harness-audit 2>/dev/null)"; rc=$?
+out="$("$REPORT_PATH" --dir "$D" --month 2026-08 --series sample-audit 2>/dev/null)"; rc=$?
 chmod 755 "$D"
 if [[ $rc -eq 0 ]] && [[ "$(id -u)" == "0" ]]; then
   # root ignores the permission bits, so this case cannot be staged there.
@@ -289,29 +287,29 @@ D="$RP_DIR/reserve"; mkdir -p "$D"
 # Interleave two audits the way concurrency would: A resolves and reserves, then
 # B resolves. B must be handed a different name — the reservation, not luck, is
 # what makes A's path safe to write.
-a_path="$(rp "$D" 2026-08 harness-audit)"
+a_path="$(rp "$D" 2026-08 sample-audit)"
 ( set -o noclobber; : > "$a_path" ) 2>/dev/null \
   && ok "claim: a freshly resolved path can be reserved with O_EXCL — the claim succeeds on the happy path" \
   || fail "claim: could not reserve freshly resolved path $a_path"
-b_path="$(rp "$D" 2026-08 harness-audit)"
+b_path="$(rp "$D" 2026-08 sample-audit)"
 [[ -n "$b_path" && "$b_path" != "$a_path" ]] \
   && ok "claim: a path reserved by O_EXCL is seen as taken by the next run — interleaved audits cannot share a name" \
   || fail "claim: second run returned the reserved path '$a_path' again"
 
 # The reservation must REFUSE an occupied name rather than truncating it. If
 # noclobber were inert here the claim would be the thing destroying the report.
-printf 'prior report body\n' > "$D/harness-audit-2026-09.md"
-( set -o noclobber; : > "$D/harness-audit-2026-09.md" ) 2>/dev/null \
+printf 'prior report body\n' > "$D/sample-audit-2026-09.md"
+( set -o noclobber; : > "$D/sample-audit-2026-09.md" ) 2>/dev/null \
   && fail "claim: O_EXCL reservation overwrote an existing report — the guard is inert" \
   || ok "claim: reserving an already-claimed path fails instead of truncating it"
-[[ "$(cat "$D/harness-audit-2026-09.md")" == "prior report body" ]] \
+[[ "$(cat "$D/sample-audit-2026-09.md")" == "prior report body" ]] \
   && ok "claim: the refused reservation left the prior report byte-for-byte intact" \
   || fail "claim: prior report was damaged by a refused reservation"
 
 # noclobber must agree with the resolver about dangling symlinks, or a name the
 # resolver skips would still be writable through — straight onto the link target.
-ln -s "$D/nowhere" "$D/harness-audit-2026-11.md"
-( set -o noclobber; : > "$D/harness-audit-2026-11.md" ) 2>/dev/null \
+ln -s "$D/nowhere" "$D/sample-audit-2026-11.md"
+( set -o noclobber; : > "$D/sample-audit-2026-11.md" ) 2>/dev/null \
   && fail "claim: O_EXCL wrote through a dangling symlink the resolver treats as taken" \
   || ok "claim: O_EXCL and the resolver agree that a dangling symlink is an occupied name"
 
@@ -368,8 +366,8 @@ chmod +x "$RACER"
 D="$RP_DIR/recipe"; mkdir -p "$D"
 
 # Happy path: the claimed name is the canonical one and survives with content.
-got="$(claim_recipe "$D" 2026-08 harness-audit ok)"
-[[ "$got" == "$D/harness-audit-2026-08.md" && -s "$got" ]] \
+got="$(claim_recipe "$D" 2026-08 sample-audit ok)"
+[[ "$got" == "$D/sample-audit-2026-08.md" && -s "$got" ]] \
   && ok "recipe: a successful run keeps its claimed report, non-empty, at the canonical name" \
   || fail "recipe: expected a non-empty canonical report, got '$got'"
 
@@ -377,11 +375,11 @@ got="$(claim_recipe "$D" 2026-08 harness-audit ok)"
 # under the claim. The run must retry onto the next suffix, NOT abort — aborting
 # would throw away a completed audit over a moment's contention.
 D2="$RP_DIR/recipe-race"; mkdir -p "$D2"
-got="$(claim_recipe "$D2" 2026-08 harness-audit ok "$RACER")"; rc=$?
-[[ $rc -eq 0 && "$got" == "$D2/harness-audit-2026-08-2.md" && -s "$got" ]] \
+got="$(claim_recipe "$D2" 2026-08 sample-audit ok "$RACER")"; rc=$?
+[[ $rc -eq 0 && "$got" == "$D2/sample-audit-2026-08-2.md" && -s "$got" ]] \
   && ok "recipe: a claim stolen mid-window is retried onto the next suffix, not discarded" \
   || fail "recipe: race path returned rc=$rc path='$got' (expected the -2 suffix, written)"
-[[ -e "$D2/harness-audit-2026-08.md" ]] \
+[[ -e "$D2/sample-audit-2026-08.md" ]] \
   && ok "recipe: the winner's claim is left untouched by the audit that lost the race" \
   || fail "recipe: the losing run removed the winner's claimed file"
 
@@ -389,7 +387,7 @@ got="$(claim_recipe "$D2" 2026-08 harness-audit ok "$RACER")"; rc=$?
 # it. Otherwise the canonical name stays occupied by a blank file and every later
 # audit that month is pushed onto a suffix — the confusion these issues are about.
 D3="$RP_DIR/recipe-crash"; mkdir -p "$D3"
-got="$(claim_recipe "$D3" 2026-08 harness-audit fail)"; rc=$?
+got="$(claim_recipe "$D3" 2026-08 sample-audit fail)"; rc=$?
 [[ $rc -eq 9 ]] \
   && ok "recipe: a compose failure propagates its exit status" \
   || fail "recipe: expected rc=9 from the failing compose, got $rc"
@@ -402,8 +400,8 @@ got="$(claim_recipe "$D3" 2026-08 harness-audit fail)"; rc=$?
 
 # ...and because the name was released, the next audit gets the canonical name
 # back rather than being pushed onto -2 forever.
-got="$(claim_recipe "$D3" 2026-08 harness-audit ok)"
-[[ "$got" == "$D3/harness-audit-2026-08.md" && -s "$got" ]] \
+got="$(claim_recipe "$D3" 2026-08 sample-audit ok)"
+[[ "$got" == "$D3/sample-audit-2026-08.md" && -s "$got" ]] \
   && ok "recipe: after a failed run the canonical name is reusable — no permanent suffix drift" \
   || fail "recipe: expected the canonical name to be free again, got '$got'"
 
@@ -556,8 +554,8 @@ assert_caller() {
 # guards-that-pass-by-not-running failure). Assert it fires here first, so the two
 # clean verdicts below mean the files are clean rather than the regex being dead.
 DETECTOR_FIXTURE="$TMP_DIR/regressed-skill.md"
-printf 'REPORT="$REPORT_DIR/harness-audit-$MONTH.md"\n' > "$DETECTOR_FIXTURE"
-grep -qE '(REPORT|CANDIDATE)="\$(REPORT_DIR|\{REPORT_DIR\})/harness-audit-\$(MONTH|\{MONTH\})' "$DETECTOR_FIXTURE" \
+printf 'REPORT="$REPORT_DIR/sample-audit-$MONTH.md"\n' > "$DETECTOR_FIXTURE"
+grep -qE '(REPORT|CANDIDATE)="\$(REPORT_DIR|\{REPORT_DIR\})/sample-audit-\$(MONTH|\{MONTH\})' "$DETECTOR_FIXTURE" \
   && ok "detector: the month-only derivation pattern fires on a regressed file — the two absence checks below are live" \
   || fail "detector: the month-only pattern does not match the bug it describes, so its absence proves nothing"
 
@@ -571,38 +569,38 @@ CALL_FIXTURE="$TMP_DIR/call-shape.md"
 # must match, or the pattern is over-anchored and the verdicts below would be
 # reporting on the pattern rather than on the callers. Anchoring on the closing
 # `)` failed exactly this way before.
-printf '%s\n' '  CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH" --series harness-audit)" \' > "$CALL_FIXTURE"
-call_matches "$CALL_FIXTURE" harness-audit \
+printf '%s\n' '  CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH" --series sample-audit)" \' > "$CALL_FIXTURE"
+call_matches "$CALL_FIXTURE" sample-audit \
   && ok "call shape: the real indented, line-continued invocation matches — the pattern is not over-anchored" \
   || fail "call shape: the pattern rejects the invocation both skills ship — it is over-anchored"
 
 # POSITIVE: a caller that wraps its flags across a `\` continuation is correct
 # bash and must pass. A single-line grep would reject it, so this control is
 # what keeps the "flag order is the caller's business" comment honest.
-printf '%s\n' '  CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" \' '    --month "$MONTH" --series harness-audit)"' > "$CALL_FIXTURE"
-call_matches "$CALL_FIXTURE" harness-audit \
+printf '%s\n' '  CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" \' '    --month "$MONTH" --series sample-audit)"' > "$CALL_FIXTURE"
+call_matches "$CALL_FIXTURE" sample-audit \
   && ok "call shape: a caller wrapping --series onto a continuation line still matches — continuations are spliced" \
   || fail "call shape: a legitimately rewrapped invocation fails — the matcher is line-bound and over-anchored"
 
 # NEGATIVE: the command being substituted is load-bearing. Resolving through
 # some other tool that happens to take --series is not resolving through
 # report-path.sh, and the assertion claims it is.
-printf '%s\n' '  CANDIDATE="$(some-other-resolver --dir "$REPORT_DIR" --month "$MONTH" --series harness-audit)"' > "$CALL_FIXTURE"
-call_matches "$CALL_FIXTURE" harness-audit \
+printf '%s\n' '  CANDIDATE="$(some-other-resolver --dir "$REPORT_DIR" --month "$MONTH" --series sample-audit)"' > "$CALL_FIXTURE"
+call_matches "$CALL_FIXTURE" sample-audit \
   && fail "call shape: a call through a different command matches — the resolver itself is not being checked" \
   || ok "call shape: a call through a different command does not match — the resolver is pinned"
 
 # NEGATIVE: the false pass this pattern was tightened to close — the real call
 # deleted, a commented-out copy left behind. A fragment match would call that a
 # healthy caller.
-printf '%s\n' '# CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH" --series harness-audit)"' > "$CALL_FIXTURE"
-call_matches "$CALL_FIXTURE" harness-audit \
+printf '%s\n' '# CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH" --series sample-audit)"' > "$CALL_FIXTURE"
+call_matches "$CALL_FIXTURE" sample-audit \
   && fail "call shape: a commented-out call satisfies the pattern — the assertion can pass with no live invocation" \
   || ok "call shape: a commented-out call does not satisfy the pattern"
 
 # NEGATIVE: prose naming the flags is not an invocation either.
-printf '%s\n' 'Run it with `--month "$MONTH" --series harness-audit` to select the series.' > "$CALL_FIXTURE"
-call_matches "$CALL_FIXTURE" harness-audit \
+printf '%s\n' 'Run it with `--month "$MONTH" --series sample-audit` to select the series.' > "$CALL_FIXTURE"
+call_matches "$CALL_FIXTURE" sample-audit \
   && fail "call shape: prose naming the flags satisfies the pattern" \
   || ok "call shape: prose naming the flags does not satisfy the pattern"
 
@@ -610,21 +608,20 @@ call_matches "$CALL_FIXTURE" harness-audit \
 # with the SIBLING's series is the #1519 wrong-slot bug wearing a correct-looking
 # call, so the pattern must discriminate on it.
 printf '%s\n' '  CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH" --series review-stack-audit)"' > "$CALL_FIXTURE"
-call_matches "$CALL_FIXTURE" harness-audit \
+call_matches "$CALL_FIXTURE" sample-audit \
   && fail "call shape: a call passing the sibling's --series matches anyway — the series is not being checked" \
   || ok "call shape: a call passing the sibling's --series does not match — the series is discriminated"
 
 # CONTROL for the exactly-one rule: a file carrying the live call AND a stale
 # fenced copy must be REJECTED, not quietly matched on whichever came first.
-printf '%s\n' '  CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH" --series harness-audit)"' \
+printf '%s\n' '  CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH" --series sample-audit)"' \
   'Older example, kept by accident:' \
-  '  CANDIDATE="$("$REPORT_PATH" --dir "$OLD_DIR" --month "$MONTH" --series harness-audit)"' > "$CALL_FIXTURE"
-[[ "$(call_match_count "$CALL_FIXTURE" harness-audit)" -eq 2 ]] \
+  '  CANDIDATE="$("$REPORT_PATH" --dir "$OLD_DIR" --month "$MONTH" --series sample-audit)"' > "$CALL_FIXTURE"
+[[ "$(call_match_count "$CALL_FIXTURE" sample-audit)" -eq 2 ]] \
   && ok "call shape: a stale duplicate of the call is counted, so the exactly-one rule can reject it" \
   || fail "call shape: a duplicated call was not counted twice — the exactly-one rule cannot fire"
 
 assert_caller "review-stack-audit" "$RSA_SKILL_MD" review-stack-audit
-assert_caller "harness-audit" "$HA_SKILL_MD" harness-audit
 
 # The engine is shared, so neither skill may keep a private copy: a second
 # implementation is what would drift, and only one of them would get fixed.

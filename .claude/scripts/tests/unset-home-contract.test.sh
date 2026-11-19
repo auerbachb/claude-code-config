@@ -22,6 +22,7 @@
 # anywhere: bash .claude/scripts/tests/unset-home-contract.test.sh
 #
 # Discovered by CI auto-detection (hook-scripts.yml) — no workflow edits needed.
+# covers:
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

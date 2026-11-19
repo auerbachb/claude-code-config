@@ -1,5 +1,6 @@
 """Finished-only worktree detection/apply. No age, prune, checkout or remote deletion."""
 import argparse
+import calendar
 import json
 import math
 import os
@@ -9,6 +10,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 
 
@@ -153,8 +155,20 @@ def canonical(path, cwd):
 
 
 class Sweep:
-    def __init__(self, root, caller, pr_unavailable=False):
+    def __init__(self, root, caller, pr_unavailable=False, only=None, identity=None, include_closed=False, confirmed_head=None):
         self.root = root
+        # A PR closed WITHOUT merging is set-aside work, not finished work: it is kept (reason
+        # closed_unmerged_pr) unless the caller names the worktree AND a human confirmed it.
+        self.include_closed = include_closed
+        # path -> HEAD commit the human was shown; a different HEAD at scan time is never acted on.
+        self.confirmed_head = confirmed_head or {}
+        # path -> branch the caller recorded for it. A path named here is only acted on while that
+        # branch is still checked out there, so a different worktree re-registered at the same path
+        # between the caller's read and this scan is left alone.
+        self.identity = identity or {}
+        # None = every worktree (the repo-wide default). A list restricts the
+        # scan to exactly those worktree paths; it can only narrow, never widen.
+        self.only = only
         self.caller = caller
         self.pr_unavailable = pr_unavailable
         self.cwds = None
@@ -239,7 +253,7 @@ class Sweep:
         if opened:
             raise Skip("open_pr")
         rows = self.gh(["pr", "list", "--head", branch, "--state", "all", "--author", "@me",
-                        "--limit", "100", "--json", "number,state,headRefName,headRefOid,isCrossRepository"])
+                        "--limit", "100", "--json", "number,state,headRefName,headRefOid,isCrossRepository,closedAt"])
         if any(not isinstance(row, dict) or row.get("headRefName") != branch for row in rows):
             raise Unknown("pr_lookup_out_of_scope")
         if not rows:
@@ -251,6 +265,13 @@ class Sweep:
             raise Unknown("pr_state_unknown")
         if row.get("isCrossRepository") is not False:
             raise Unknown("pr_repository_unknown")
+        if row["state"] == "CLOSED":
+            # headRefOid follows the LIVE branch, so it cannot tell work pushed after the close from
+            # the PR's own commits. The close time can: fail closed when it is unreadable.
+            try:
+                row["closed_ts"] = calendar.timegm(time.strptime(row.get("closedAt") or "", "%Y-%m-%dT%H:%M:%SZ"))
+            except (ValueError, TypeError, OverflowError) as exc:
+                raise Unknown("pr_closed_at_unknown") from exc
         if (not isinstance(row.get("number"), int) or isinstance(row["number"], bool)
                 or row["number"] <= 0 or not isinstance(row.get("headRefOid"), str)
                 or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", row["headRefOid"])):
@@ -388,12 +409,23 @@ sys.exit(11 if errors else 0)
         stamp = self.git("log", "-1", "--format=%ct", head).strip()
         if not stamp.isdigit():
             raise Unknown("commit_timestamp_unknown")
+        # Last on purpose: every other guard (open PR, authorship, unpushed or advanced branch,
+        # live process, unknown evidence) is reported first, so this reason means the worktree is
+        # otherwise removable and only a human can call closed-unmerged work done.
+        if pr["state"] == "CLOSED" and int(stamp) > pr["closed_ts"]:
+            # A commit authored after the PR closed is unlanded new work, whatever headRefOid says.
+            raise Skip("branch_advanced_after_pr")
+        if pr["state"] != "MERGED" and not self.include_closed:
+            raise Skip("closed_unmerged_pr")
         return {"path": path, "branch": branch, "head_sha": head,
                 "pr_number": pr["number"], "pr_state": pr["state"], "last_commit_ts": int(stamp)}
 
     def record(self, row, reason, unknown=False):
         key = "unknown_finished_worktrees" if unknown else "skipped_finished_worktrees"
-        self.report[key].append({"path": row.get("path", self.root), "branch": row.get("branch", ""), "reason": str(reason)})
+        entry = {"path": row.get("path", self.root), "branch": row.get("branch", ""), "reason": str(reason)}
+        if row.get("head_sha"):
+            entry["head_sha"] = row["head_sha"]
+        self.report[key].append(entry)
         if unknown:
             self.report["finished_scan"] = "incomplete"
 
@@ -440,13 +472,56 @@ sys.exit(11 if errors else 0)
         if self.caller != canonical(os.getcwd(), self.root):
             raise Unknown("caller_context_mismatch")
         self.common = canonical(os.path.join(self.root, self.git("rev-parse", "--git-common-dir").strip()), self.root)
+        wanted = None
+        expect = {}
+        expect_head = {}
+        if self.only is not None:
+            wanted = set()
+            for item in self.only:
+                if os.path.islink(os.path.normpath(os.path.join(self.root, item))):
+                    # A named path swapped for a link could resolve to another registered
+                    # worktree: never follow it, so it matches nothing.
+                    key = item
+                else:
+                    try:
+                        key = canonical(item, self.root)
+                    except Unknown:
+                        key = item  # unreadable or gone: matches no registered worktree
+                wanted.add(key)
+                if item in self.identity:
+                    expect[key] = self.identity[item]
+                if item in self.confirmed_head:
+                    expect_head[key] = self.confirmed_head[item]
+        matched = set()
         for row in self.worktrees():
+            if wanted is not None:
+                try:
+                    here = canonical(row["path"], self.root)
+                except Unknown as exc:
+                    # Unreadable: never verify or remove it. It only makes the scan incomplete when
+                    # it is literally one of the paths requested.
+                    if row["path"] in self.only:
+                        self.record(row, exc, True)
+                    continue
+                if here not in wanted:
+                    continue
+                matched.add(here)
+                if here in expect and row.get("branch", "") != expect[here]:
+                    # Not the checkout the caller recorded: never verified, never removed.
+                    self.record(row, "only_identity_mismatch")
+                    continue
+                if here in expect_head and row.get("head_sha") != expect_head[here]:
+                    self.record(row, "confirmed_head_mismatch")
+                    continue
             try:
                 self.report["finished_worktrees"].append(self.verify(row))
             except Skip as exc:
                 self.record(row, exc)
             except Unknown as exc:
                 self.record(row, exc, True)
+        if wanted is not None:
+            for item in sorted(wanted - matched):
+                self.record({"path": item}, "only_path_not_registered")
         return self.report
 
     def apply(self):
@@ -527,8 +602,31 @@ def main():
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--pr-lookup-unavailable", action="store_true")
+    parser.add_argument("--only", action="append", metavar="PATH",
+                        help="restrict the scan to this worktree path (repeatable); never widens")
+    parser.add_argument("--include-closed-unmerged", action="store_true",
+                        help="also treat a PR closed without merging as finished; needs --apply and --only/--only-identity")
+    parser.add_argument("--confirmed-head", action="append", nargs=2, metavar=("PATH", "SHA"),
+                        help="with --include-closed-unmerged: the HEAD commit the human confirmed at PATH")
+    parser.add_argument("--only-identity", action="append", nargs=2, metavar=("PATH", "BRANCH"),
+                        help="like --only PATH, but only while BRANCH is the branch checked out there")
     args = parser.parse_args()
-    sweep = Sweep(args.root, args.caller, args.pr_lookup_unavailable)
+    # Same refusal as the shell wrapper: a blank or flag-like value (`--only=-x` slips past argparse)
+    # is a usage error, never a scope.
+    if args.only is not None and any(not item.strip() or item.startswith("-") for item in args.only):
+        parser.error("--only requires a non-empty path that does not start with '-'")
+    ident = args.only_identity or []
+    if any(not path.strip() or path.startswith("-") or not branch.strip() for path, branch in ident):
+        parser.error("--only-identity requires a path (not starting with '-') and a non-empty branch")
+    only = None
+    if args.only is not None or ident:
+        only = list(args.only or []) + [path for path, _ in ident]
+    heads = dict(args.confirmed_head or [])
+    if args.include_closed_unmerged and not (args.apply and ident and not args.only
+                                             and all(path in heads for path, _ in ident)
+                                             and all(re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", h) for h in heads.values())):
+        parser.error("--include-closed-unmerged requires --apply and, for every worktree, --only-identity PATH BRANCH plus --confirmed-head PATH SHA (no bare --only)")
+    sweep = Sweep(args.root, args.caller, args.pr_lookup_unavailable, only, dict(ident), args.include_closed_unmerged, heads)
     try:
         sweep.detect()
         if args.apply:

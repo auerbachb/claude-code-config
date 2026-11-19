@@ -18,6 +18,12 @@ Design (mirrors the ticket's "lean conservative" guidance):
                          orphans are intentionally unindexed)
     - dangling pointers: a ``MEMORY.md`` link whose target file is missing
     - index health     : entry count + index byte size vs a soft budget
+    - stale index lines: a note that marks a decision superseded whose
+                         ``MEMORY.md`` line does not say the decision changed
+                         (``superseded`` / ``reversed`` / ``replaced``) — the
+                         index loads every session and the note does not, so a
+                         stale line states the old decision as current
+                         (issue #2283). ``--strict`` exits 1 when any is found.
   Advisory-only category (never auto-recommended), each citing its replacement:
     - duplicate frontmatter ``name:`` across two files
     - a supersede marker (``superseded by`` / ``replaced by`` / ``deprecated`` /
@@ -39,7 +45,7 @@ Safety (deletes are irreversible):
   - after pruning, the run FAILS if it created any new dangling pointer.
 
 Usage:
-  memory-audit.py --check [--dir DIR] [--json] [--budget-bytes N]
+  memory-audit.py --check [--dir DIR] [--json] [--budget-bytes N] [--strict]
   memory-audit.py --apply --files "a.md,b.md" [--drop-index "x.md"]
                   [--dir DIR] [--json] [--budget-bytes N]
 
@@ -56,12 +62,14 @@ Usage:
                     dropped WITHOUT deleting a file — for clearing dangling
                     pointers (the file is already gone).
   --json            Emit a JSON object on stdout instead of human text.
+  --strict          With --check: exit 1 when a stale index line is found.
   --budget-bytes N  Index size soft budget. Default 24576 (24 KB) — the index is
                     read into context every session; ~24 KB is the observed soft
                     read limit.
 
 Exit codes:
   0  OK (including "nothing flagged" and a clean prune)
+  1  --check --strict found a stale index line
   2  usage error
   3  environment error (memory dir not found / not a directory)
   4  safety refusal, post-prune integrity failure, or an unexpected filesystem /
@@ -93,6 +101,21 @@ _STALE_MARKER_RE = re.compile(
     r"\b(superseded by|replaced by|deprecated|obsolete|no longer needed)\b",
     re.IGNORECASE,
 )
+# A note that records a decision as superseded (issue #2283): the all-caps
+# marker ("SUPERSEDED 2026-11-10"), or the word used as a marker in any case
+# ("superseded by", "superseded:", "superseded the same day", "reversed on
+# 2026-..."). The bare word in running prose ("runs on superseded SHAs") does
+# not count.
+_SUPERSEDED_WORD_RE = re.compile(
+    r"\b(?:SUPERSEDED|REVERSED)\b"
+    r"|(?i:\b(?:superseded|reversed)\s*(?::|by\b|the same day|(?:on\s+)?\d{4}-\d))"
+)
+# An index line that says the decision changed.
+_INDEX_SAYS_CHANGED_RE = re.compile(r"\b(?:supersed\w*|reversed|replaced)\b", re.IGNORECASE)
+# A markdown link destination, and a label that is only a filename, removed
+# before the index line is read: a file named superseded_x.md must not count
+# as the line saying so. A descriptive label ("Policy superseded by X") stays.
+_LINK_DEST_RE = re.compile(r"\[[^\]]*\.md\]\([^)]*\)|\]\([^)]*\)")
 _WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 _MDFILE_RE = re.compile(r"([A-Za-z0-9._-]+\.md)")
 
@@ -291,6 +314,30 @@ def detect_superseded(mem_dir: str, files: List[str]) -> List[Dict[str, str]]:
     return flags
 
 
+def detect_stale_index_lines(
+    mem_dir: str, raw_lines: List[str], pointers: List[Tuple[int, str]]
+) -> List[Dict[str, str]]:
+    """A note marking a decision superseded whose index line does not say
+    the decision changed (issue #2283). One entry per such index line."""
+    flags = []
+    for line_no, target in pointers:
+        path = os.path.join(mem_dir, target)
+        if os.path.islink(path) or not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        if not _SUPERSEDED_WORD_RE.search(text):
+            continue
+        line = raw_lines[line_no]
+        if _INDEX_SAYS_CHANGED_RE.search(_LINK_DEST_RE.sub("]", line)):
+            continue
+        flags.append({"file": target, "line": line_no + 1, "index_line": line.strip()})
+    return flags
+
+
 def detect_duplicate_names(mem_dir: str, files: List[str]) -> List[Dict[str, object]]:
     """Advisory: two files sharing a frontmatter ``name:`` value."""
     by_name: Dict[str, List[str]] = {}
@@ -313,7 +360,7 @@ def detect_duplicate_names(mem_dir: str, files: List[str]) -> List[Dict[str, obj
 
 def detect(mem_dir: str, budget_bytes: int) -> Dict[str, object]:
     files = list_memory_files(mem_dir)
-    index_path, exists, _raw, pointers = parse_index(mem_dir)
+    index_path, exists, raw_lines, pointers = parse_index(mem_dir)
 
     referenced = set(ptr for _, ptr in pointers)
     file_set = set(files)
@@ -325,6 +372,7 @@ def detect(mem_dir: str, budget_bytes: int) -> Dict[str, object]:
 
     superseded = detect_superseded(mem_dir, files)
     duplicate_names = detect_duplicate_names(mem_dir, files)
+    stale_index = detect_stale_index_lines(mem_dir, raw_lines, pointers)
 
     return {
         "memory_dir": mem_dir,
@@ -339,6 +387,7 @@ def detect(mem_dir: str, budget_bytes: int) -> Dict[str, object]:
         },
         "orphans": orphans,
         "dangling": dangling,
+        "stale_index": stale_index,
         "advisory": {
             "duplicate_names": duplicate_names,
             "superseded": superseded,
@@ -346,6 +395,7 @@ def detect(mem_dir: str, budget_bytes: int) -> Dict[str, object]:
         "summary": {
             "orphan_count": len(orphans),
             "dangling_count": len(dangling),
+            "stale_index_count": len(stale_index),
             "advisory_count": len(superseded) + len(duplicate_names),
             "over_budget": index_bytes > budget_bytes,
         },
@@ -549,6 +599,18 @@ def _render_check(r: Dict[str, object]) -> str:
         lines.append("  none")
     lines.append("")
 
+    stale = r["stale_index"]
+    lines.append(
+        "Stale index lines (note says superseded, its MEMORY.md line does not) — {}:".format(len(stale))
+    )
+    if stale:
+        lines.append("  (rewrite each line to state the current decision first)")
+        for s in stale:
+            lines.append("  - {} (MEMORY.md line {}): {}".format(s["file"], s["line"], s["index_line"]))
+    else:
+        lines.append("  none")
+    lines.append("")
+
     dups = adv["duplicate_names"]
     sup = adv["superseded"]
     lines.append("Advisory — superseded / duplicate (needs your judgment):")
@@ -622,6 +684,7 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--apply", action="store_true", help="perform the prune (needs --files/--drop-index)")
     p.add_argument("--dir", dest="dir", default=None, help="target memory dir (default: auto-detect)")
     p.add_argument("--json", action="store_true", help="emit JSON instead of human text")
+    p.add_argument("--strict", action="store_true", help="with --check: exit 1 on a stale index line")
     p.add_argument("--budget-bytes", type=int, default=DEFAULT_BUDGET_BYTES, help="index size soft budget")
     p.add_argument("--files", default=None, help="comma-separated .md basenames to delete")
     p.add_argument("--drop-index", dest="drop_index", default=None, help="comma-separated .md basenames whose dangling index lines to drop")
@@ -652,6 +715,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             result = detect(mem_dir, args.budget_bytes)
             print(json.dumps(result, indent=2) if args.json else _render_check(result))
+            if args.strict and result["stale_index"]:
+                return 1
     except AuditError as exc:
         print("memory-audit.py: {}".format(exc), file=sys.stderr)
         return exc.code

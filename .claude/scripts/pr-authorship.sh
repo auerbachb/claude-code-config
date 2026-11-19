@@ -174,7 +174,13 @@ emit() {
 # --- resolve the authenticated viewer login ------------------------------------
 # Empty / failure -> fail-closed (unknown). We can't decide "mine" without a
 # viewer to compare against, and guessing would defeat the guard.
-VIEWER="$(gh api user --jq '.login' 2>/dev/null || true)"
+_PA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -r "$_PA_DIR/lib/gh-viewer.sh" ]] && . "$_PA_DIR/lib/gh-viewer.sh" 2>/dev/null; then
+  gh_viewer_resolve || true   # once per script chain, in memory (issue #2442)
+  VIEWER="${GH_VIEWER_LOGIN:-}"
+else
+  VIEWER="$(gh api user --jq '.login' 2>/dev/null || true)"
+fi
 if [[ -z "$VIEWER" || "$VIEWER" == "null" ]]; then
   emit unknown 4 "could not resolve the authenticated user (gh api user failed) — authorship undetermined; treating PR #$PR_NUMBER as not mine (fail-closed per $GUARD_REF)"
 fi

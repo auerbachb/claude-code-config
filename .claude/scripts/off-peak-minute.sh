@@ -5,8 +5,8 @@
 # PURPOSE
 #   Centralizes the minute-selection contract for any skill that needs a
 #   wall-clock cron minute. No skill currently registers one — issue #827
-#   moved the last three (/babysit-pr --durable, /pr-monitor-and-manage
-#   auto-wake, /harness-audit) onto session monitors and session-start reconciliation.
+#   moved the last two (/babysit-pr --durable, /pr-monitor-and-manage
+#   auto-wake) onto session monitors and session-start reconciliation.
 #   Kept because the contract is the hard part, not the caller.
 #   Each repo gets a stable minute in [0, 59] derived from its
 #   `owner/name` string, then nudged off the fleet pile-up minutes (0, 5, 30,

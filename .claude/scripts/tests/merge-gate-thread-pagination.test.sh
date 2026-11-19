@@ -129,8 +129,9 @@ case "$ARGS" in
   *"git/commits/"*)
     jq -cn --arg d "$PUSH_TS" '{committer:{date:$d}}'
     exit 0 ;;
+  *actions/runs*) echo '{"total_count":0,"workflow_runs":[]}'; exit 0 ;;
   *check-runs*)
-    jq -cn '{check_runs:[{id:1,name:"ci",status:"completed",conclusion:"success",
+    jq -cn '{total_count:1,check_runs:[{id:1,name:"ci",status:"completed",conclusion:"success",
       completed_at:"2026-07-23T13:01:00Z",check_suite:{id:1},app:{slug:"gha",id:1}}]}'
     exit 0 ;;
   *pulls/*/reviews*)
@@ -139,6 +140,16 @@ case "$ARGS" in
     printf '%s' "${FAKE_PR_COMMENTS:-[]}"; exit 0 ;;
   *issues/*/comments*)
     printf '%s' "${FAKE_ISSUE_COMMENTS:-[]}"; exit 0 ;;
+  *"ref(qualifiedName"*)
+    # The base-branch tip read behind the short-lived read caches (issue #2443)
+    # is not a review-thread request: answer "unavailable" (the callers then read
+    # live) without logging it, so the counts below stay a count of thread pages.
+    echo "gh: Server Error (HTTP 502)" >&2; exit 1 ;;
+  *"{headRefOid}}}"*)
+    # The HEAD re-read behind the per-PR snapshot (issue #2444) is not a
+    # review-thread request either: answer "unavailable" (nothing is then
+    # stored) without logging it, so the counts stay a count of thread pages.
+    echo "gh: Server Error (HTTP 502)" >&2; exit 1 ;;
   *graphql*)
     # Cursor-aware: record the call, then serve page 1 until the caller sends
     # page 1's endCursor back as `after`. A caller that never paginates keeps

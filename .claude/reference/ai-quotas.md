@@ -3,7 +3,7 @@
 Reference for `/quotas-setup` and `.claude/scripts/ai-quotas-setup.sh` (issue #1666).
 Not auto-loaded; read it when working on the quota tools.
 
-Quick links: [Configuration](#config-file) · [Provider credentials](#where-each-provider-keeps-its-credential) · [Report rows](#json-row-shape) · [History](#the-history-file) · [Profile recovery](#fresh-profile-reauthentication) · [Browser diagnosis](#browser-failure-diagnostics-issue-1906).
+Quick links: [Configuration](#config-file) · [Provider credentials](#where-each-provider-keeps-its-credential) · [Report rows](#json-row-shape) · [History](#the-history-file) · [Profile recovery](#fresh-profile-reauthentication) · [Browser diagnosis](#browser-failure-diagnostics-issue-1906) · [Antigravity research](./ai-quotas-antigravity.md).
 
 **Display and configuration only.** Nothing in this file — and nothing any tool built on
 it produces — may gate dispatch, pause work, downgrade a model, or feed
@@ -132,6 +132,7 @@ that has to guess is a reader that reports the wrong number.
 | `accounts[].nickname` | no | Short display name (#1700), set by `add … --nick <name>` or `nick <label> <name>`. `/quotas` shows it in place of the label. Max 32 characters; no tabs, newlines, control characters, or leading/trailing spaces — it is rendered into a tab-separated table, and a tab in it would split the row into columns that no longer line up with their headers. Clearing it (`nick <label> ""`) **deletes the key** rather than storing `""`. Enforced on **read** as well as on write: the reader accepts any compatible `1.x` registry — hand-edited, or written by a future sibling — and a nickname carrying a control character is dropped there too, falling back to the label exactly as an absent one does. |
 | `accounts[].added_at` | yes | UTC ISO-8601 registration timestamp. |
 | `accounts[].credential_ref` | no | macOS + `claude` only. The **name** of the Keychain item the login created — `{"kind":"macos-keychain","service":"…"}`. A name, never a value. |
+| `accounts[].ids` | no | Provider account/org/user IDs where already known: an object limited to `account_id`, `org_id`, `organization_id`, `user_id` (string values, max 64 characters, each exactly a UUID, digits, or a `user-`/`org-`/`acct-` prefixed ID, and never credential-shaped). Carried by `export`/`import` (#2468); nothing in this repo writes it today, so a registry gets it by hand or from an import. |
 
 **No field ever holds a token, cookie, or password.** That is not a convention, it is the
 design: every reader borrows the provider tool's own live credential at run time, so
@@ -338,9 +339,10 @@ those rows (§"Output" under "Overage" below — it was a bare array before #166
 exit codes: `ai-quotas.sh --help`.
 
 **Display only, and the reader enforces it structurally: it opens no state file for
-writing.** Its one write is the append-only telemetry line every script here emits to
+writing.** Its writes are the append-only telemetry line every script here emits to
 `~/.claude/script-usage.log` (script name and the action word `read`, never the
-arguments — those carry the account label). Nothing reads that log back into a decision,
+arguments — those carry the account label), and the last-known folder described in
+§"Last-known folder (#2280)" below, which only the display reads. Nothing reads that log back into a decision,
 so it is a log, not state. What the reader never opens for writing is the state that
 could gate work: not `session-state.json`, not `credit-budget.sh`'s inputs
 (`~/.claude/usage-limit-events.jsonl`, `~/.claude/usage-limit-last.json`, the
@@ -446,6 +448,88 @@ is within the spirit of that policy — the reader is read-only, borrows the tok
 place, and never routes model traffic through it. Renewing that same token for that same
 read is the same call, restated (2026-09-14, #1716): the renewal uses the credential
 already in the store, through Claude Code's own grant, and still routes no model traffic.
+
+### The status-line reading, tried before the token (#2403)
+
+Claude Code passes the status line a `rate_limits` object (Claude Code 2.1.321:
+`five_hour` and `seven_day`, each with `used_percentage` and `resets_at` in epoch
+seconds; it appears after the session's first API response and only for subscription
+sign-ins). `statusline.sh` already runs every 10 seconds in each CLI profile, so it now
+files those figures and the reader prefers them — they are the provider's own number
+handed over by the harness, need no token, and cannot hit the token endpoint's rate limit.
+Display and the reserve therefore stay inside `safety.md`'s rule against locally
+estimated usage.
+
+- **Where.** `~/.claude/ai-quotas/status-line/claude--<label>.json` (override:
+  `AI_QUOTAS_STATUSLINE_DIR`). Mode 600 in a 700 folder, written to a temp file and moved
+  into place. It holds the whole `rate_limits` object as handed over (`spend_limit`
+  included), `subscription_type`, the capture time (`captured_at_epoch` and UTC ISO-8601
+  `captured_at`), the account label, and a normalised `windows` view the reader uses. Later
+  columns (fetched, resets, paid usage) read their fields from this file. Only those
+  payload keys are copied, so a credential elsewhere in the payload cannot reach it.
+- **Which account.** The session's own `.claude.json` names the signed-in email
+  (`${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json`); the registry's Claude account whose
+  profile `.claude.json` (or email-shaped label) carries the same email owns the reading.
+  Never by folder name (#1850). Zero or several matches: the reading is dropped. The
+  default `~/.claude` install is the same account as the profile that shares its email.
+- **When it is used.** The reader (`lib/claude-status-reading.sh`, called first in
+  `read_claude_account`) uses a reading no older than `AI_QUOTAS_STATUSLINE_MAX_AGE`
+  (default 1800 s) whose 7-day window has not since reset, and whose stored label matches.
+  The row's `source` is `status-line` and its note says how old the figure is. Otherwise
+  the token path runs, and a successful token-path row notes why the saved reading was
+  passed over. `--five-hour` adds the saved 5-hour window.
+- **No network, no slow work.** The status line does only local file reads and writes,
+  skips the write when nothing changed inside 60 s, does nothing when the payload has no
+  `rate_limits`, and prints its line whatever happens in this path.
+- **Reserve.** `quota-reserve.sh --refresh` reads through `ai-quotas.sh --json
+  --no-last-known`, so a status-line row is a normal provider-reported row for it.
+- **Cool-off after a 429.** When the token endpoint answers 429, renewal for that
+  account is skipped for `AI_QUOTAS_CLAUDE_COOLOFF_SECONDS` (default 1800, or the
+  `Retry-After` when longer, at most 6 h). The marker is
+  `~/.claude/ai-quotas/token-cooloff/claude--<label>.json` (`AI_QUOTAS_COOLOFF_DIR`),
+  two timestamps only; a successful renewal clears it. During the cool-off the row reads
+  `rate-limited` and says renewal is paused.
+- **Live check owed.** The payload shape was taken from the 2.1.321 binary and the
+  issue, not from a captured live payload; the tests use fixtures of that shape.
+  Confirm once with `claude-work`: send a message, run `/quotas`, compare with the
+  app's usage page.
+- **Not covered.** The desktop app renders no status line (its agent files a reading
+  instead, below), and headless `-p` runs may not either; those accounts still read
+  through the token path.
+
+### The app usage tool reading (#2404)
+
+The Claude desktop app runs no status line, and its usage tool
+(`mcp__ccd_session_mgmt__get_usage`) is callable only by an agent, never by a hook or the
+scheduled reader. So the agent takes the reading and pipes the tool's JSON (the whole
+object, or just `plan`) to `claude-usage-observe.sh -` (or a file path). The skills name the
+points: `/quotas` before printing the table, `/pm` and `/subagent` at session start and
+before an autonomous launch or refill. A missing tool, or a refusal, is skipped silently:
+the reading is optional and gates nothing.
+
+- **Refused** (one-line reason, exit 1, nothing written): plan `status` not `ok`; no single
+  `Weekly · all models` window; its `percentUsed` not a number from 0 to 100; its `resetsAt`
+  not a UTC ISO-8601 timestamp or already past; the session's account unreadable (`CLAUDE_CODE_USER_EMAIL` unset and no signed-in `.claude.json`), those two disagreeing, unregistered, or matching
+  several registered accounts (compared case-insensitively, exactly; never guessed).
+- **Where.** `claude-app--<label>.json` beside the status line's file (same folder, mode
+  600/700, temp file then move, no credential). It has the status-line file's `windows`
+  shape, `source: "app-usage-tool"`, `captured_at_epoch`, and the blocks the paid-usage,
+  resets and top-tier columns read (Issues #2409, #2408, #2415; see "Paid usage, resets and
+  top tier" below): `extra_usage` (enabled, percent, spent, monthly limit, currency),
+  `weekly_models` (the per-model weekly windows) and `limit_resets` (an optional block an
+  agent supplies, because the tool does not return it).
+- **Newer of two.** The reader looks at both files for an account and uses the usable one
+  with the smaller age (fresh within `AI_QUOTAS_STATUSLINE_MAX_AGE`, weekly window not yet
+  reset). The row's `source` is `status-line` or `app-usage-tool` and its note says which.
+  A passed-over reading adds a note only when neither was usable.
+- **Capture time.** Every saved-reading row sets `fetched_at_epoch` to the capture time, the
+  field a provider sets for a figure not read live in this run, so the `fetched` column shows
+  the figure's own date.
+- **Reserve.** `quota-reserve.sh --refresh` reads through `ai-quotas.sh --json`, so the row
+  is an ordinary provider-reported one. A reading older than the limit is not used, the
+  account reads `unknown`, and the reserve fails open as before.
+- **Live check owed.** Run `/quotas` in a desktop-app session and compare with the app's
+  usage card.
 
 ### Renewing an expired access token (#1716)
 
@@ -1234,14 +1318,16 @@ to do about either on an `ok` row, and together they were the widest thing on a 
 one. `remaining_pct`, `plan`, and `source` are all still on every `--json` row —
 dropping a derived column from the display is not a reason to break a consumer.
 
-**The 100-column budget.** Five accounts with nicknames of about a dozen characters and
-rows reading `ok` render at 98 columns, which the suite asserts by measuring the widest
-line of an actual five-account render rather than by eyeballing a fixture. Two things can
-legitimately exceed it, and both should: the note on a **failing** row is as long as the
-instruction it carries, because truncating a `/quotas-setup relogin` command to save
-columns trades the one line worth printing for the merely tidy ones; and a Cursor
-`on-demand $1007.50 of $1000` overage label carries live dollars nobody would want
-abbreviated.
+**The column budget.** The table first had a 100-column budget (five accounts at 98). The
+FETCHED, paid-usage, resets and top-tier columns moved it to **140 terminal columns for
+six accounts** (Issue #2409): `ai-quotas-columns.test.sh` measures the widest line of a
+six-account render (Claude Personal and Work, two Codex, Cursor, Antigravity) with the two
+icons counted as two columns, and the older table suite holds the five-account render to
+the same 140. What makes room is described in "Paid usage, resets and top tier" below:
+one space between cells, and a note or overage label too long for its cell printed as a
+numbered footnote under the table instead of inside the row. Nothing is truncated: a
+`/quotas-setup relogin` command or a Cursor `on-demand $1007.50 of $1000` label is printed
+in full, one line under the table.
 
 Under the table, `LAST SNAPSHOT` names the most recent **scheduled** snapshot —
 `stale (>1 day)` past 24 hours, `none yet` (with the install command) when the job has
@@ -1289,7 +1375,7 @@ sentence printed to the owner, and the owner decides what to do with it.
 
 | Column | What it is |
 |--------|-----------|
-| `START` | The first day of this window any usage was recorded, as the ET weekday plus `d<N>` — `Wed d3` is "day 3 of the window, a Wednesday". A `<=` prefix (`<=Tue d2`) means the record does not reach back to the window start, so usage may have begun earlier: the day shown is the **latest** it can have been. |
+| `START` | The first day of this window any usage was recorded, as the ET weekday plus `d<N>` — `Wed d3` is "day 3 of the window, a Wednesday". A `<=` prefix (`<=Tue d2`; the table prints it as `≤Tue d2`, see below) means the record does not reach back to the window start, so usage may have begun earlier: the day shown is the **latest** it can have been. |
 | `%/DAY` | `used_pct / max(days_since_start, 1)`, one decimal. The `max` is what keeps a window whose usage started today from dividing by nothing. |
 | `LEFT` | `remaining_pct / pct_per_day` in days, one decimal — or `resets first` when that runs past the reset, because the window comes back before the account runs out. |
 
@@ -1331,14 +1417,15 @@ snapshot. That is the slowest pace consistent with the record, which is the hone
 direction to be wrong in — computing from the snapshot would divide by a shorter elapsed
 time, report a faster burn, and promise a shorter runway than the evidence supports.
 
-### `<=` and `-`, not `≤` and `—`
+### `<=` in `--json`, `≤` in the table, `-` for every unknown
 
-The table is aligned by `column -t`, which pads by counting **bytes** under the C locale
-this fleet runs in. A three-byte character in one cell shifts every column to its right
-on that row only, so the symbol that says "we are not sure it started this late" would be
-paid for in a table nobody can read across. `<=` says the same thing in ASCII and
-survives a pipe into anything; `-` is the marker every other unknown in this table
-already uses.
+The table used to be aligned by `column -t`, which pads by counting **bytes** under the C
+locale this fleet runs in, so a three-byte `≤` shifted every column to its right on that
+row and the table used `<=` instead. Since Issue #2409 the reader lays the table out
+itself (jq pads by characters and counts the two ✅/❌ icons as two terminal columns), so
+the table's START cell prints the one-column `≤` and saves a column. `usage_start_display`
+in `--json` and the forecast helper keep the ASCII `<=`, which survives a pipe into
+anything. `-` is the marker every other unknown in this table already uses.
 
 ### What the table gave up to fit
 
@@ -1745,11 +1832,11 @@ procedure never rewrites the original store.
 
 ### Ordered usage sources (#1884)
 
-Optional account `sources` arrays select the acquisition order. Defaults are Claude `oauth-usage`, Codex `app-server,http`, Cursor `ide-token,browser`. Configure with `ai-quotas-setup.sh sources <label> <comma-separated order> [<provider>]`; `default` removes the override. `sources threshold <N>` sets the registry `source_failure_threshold` (default 3). Unknown reader source names produce safe unreadable attempts; setup accepts only known provider sources. Winning rows retain their acquisition `.source` and identify `via <source>` in a compact SOURCE footer.
+Optional account `sources` arrays select the acquisition order. Defaults are Claude `oauth-usage,browser` (#2299), Codex `app-server,http`, Cursor `ide-token,browser`. Configure with `ai-quotas-setup.sh sources <label> <comma-separated order> [<provider>]`; `default` removes the override. `sources threshold <N>` sets the registry `source_failure_threshold` (default 3). Unknown reader source names produce safe unreadable attempts; setup accepts only known provider sources. Winning rows retain their acquisition `.source` and identify `via <source>` in a compact SOURCE footer.
 
 Every source attempt uses the bounded sibling outcomes ledger introduced in #1883. Its six status values are unchanged. Optional `terminal:false` marks intermediate attempts, preserving account reliability rates/streaks using the terminal result; historical rows without this field remain terminal. `requested_source` preserves adapter selection when acquisition stopped at a credential-store preflight. Per-source consecutive failures remain separate, so fallback success does not hide a broken primary. Browser skips retain `status:unreadable`, `skip_reason:browser-unattended`, and `terminal:false`; the fixed `skipped:browser-unattended` meaning is excluded from both account and source failure streaks. Reserve history redirection also isolates this derived ledger.
 
-`--browser` is explicit interactive authority to invoke the supported Claude CLI v2.1.248-or-later `--chrome` bridge. Only navigation to the Cursor usage dashboard and rendered-page reading are permitted; the bridge enforces its tool boundary with PreToolUse/PostToolUse hooks. It initializes a native tab group and creates a dedicated tab. Navigation acknowledgments never authorize reads: fresh native `tabs_context_mcp` metadata must prove the actual dedicated-tab URL before each page read, and the permission is consumed by that read. Redirects, errors and unknown context remain unavailable. It never signs in, types credentials, executes page JavaScript, or changes settings. Chrome must already have its extension/session connected. Plain shell and quiet/scheduled runs never invoke it. `--browser-results <file>` supports externally mediated observations and resumes at browser; private regular result files, schema, freshness, identity and finite pool numbers are strictly validated. CLI transport failure, missing connection and malformed observations fail closed without echoing diagnostics. See `/quotas` for the exact schema. The previous IDE-only implementation remains the default first source.
+`--browser` is explicit interactive authority to invoke the supported Claude CLI v2.1.248-or-later `--chrome` bridge. Only navigation to the Cursor usage dashboard and rendered-page reading are permitted; the bridge enforces its tool boundary with PreToolUse/PostToolUse hooks. It initializes a native tab group and creates a dedicated tab. Navigation acknowledgments never authorize reads: fresh native `tabs_context_mcp` metadata must prove the actual dedicated-tab URL before each page read, and the permission is consumed by that read. Redirects, errors and unknown context remain unavailable. It never signs in, types credentials, executes page JavaScript, or changes settings. Chrome must already have its extension/session connected. Plain shell and quiet/scheduled runs never invoke it. `--browser-results <file>` supports externally mediated observations and resumes at browser; private regular result files, schema, freshness, identity and finite pool numbers are strictly validated. CLI transport failure, missing connection and malformed observations fail closed without echoing diagnostics. See `/quotas` for the exact schema. The previous IDE-only implementation remains the default first source. Claude's `browser` source (#2299) has no collector: plain `--browser` records `browser_agent_observation_required`, and a `--browser-results` file with `provider:"claude"` (windows `7-day`, `5-hour`) is the only input. The expected identity is the profile's `oauthAccount.emailAddress` agreeing with an email-shaped label; a conflict or no identity rejects. The observation's `email` stays required; it is rendered in the claude.ai profile menu at the bottom of the sidebar. An optional `organization_id` (the Account page's "Organization ID", Settings → Account) is an extra check matched against the profile's `oauthAccount.organizationUuid` (#2337): a non-matching ID is rejected, and an ID with no email is rejected, since one organization can have several members. A profile with no recorded organization ID skips that comparison. The observation's `provider` selects the account among any that share the label: a Codex account with the same label is left out of the browser pass, and a provider with no account for that label, or an unreadable file, is a usage error (exit 3) before any read. An `ok` observation is saved to last-known through the same ok-row path as every other live read, and scheduled runs record `browser-unattended` for it.
 
 Supported CLI integration: [Claude Code Chrome documentation](https://code.claude.com/docs/en/chrome) and [CLI reference](https://code.claude.com/docs/en/cli-reference). The live Chrome extension may be unavailable in a given runtime; synthetic bridge tests verify support independently of live login availability.
 
@@ -1772,6 +1859,7 @@ clear on positive proof; missing/invalid records are unknown.
 | `browser_observation_rejected` | The completed envelope/result file failed schema, privacy, identity or freshness validation. |
 | `browser_timeout` | The actual outer subprocess raised its 90-second timeout; ledger status is `timeout`. |
 | `browser_stage_unknown` | Available facts cannot establish a stage; retain the fallback without guessing a login cause. |
+| `browser_agent_observation_required` | Claude only (#2299): plain `--browser` never opens claude.ai. Supply an agent-collected observation with `--browser-results`. |
 
 Other failures retain `unreadable`; validated signed-out observations retain
 `logged_out` / `browser_logged_out`. A model's valid `unreadable` result alone
@@ -1811,6 +1899,36 @@ still follows duration rather than slot position. The app-server path and older
 HTTP camelCase bodies retain their existing behavior. An unlabelled
 `credits.balance` is not evidence of a USD amount and is not converted.
 
+### Cursor observation route and the encrypted IDE token (Issue #1870)
+
+Cursor 3.29.9 keeps the IDE access token encrypted (`cursor-safe-storage:v1:`), so the IDE-token reader
+cannot read a user id and reports `unreadable` with a pointer to the observation route. That state is a standing
+condition, not a new fault each run: the outcome ledger records it under the fixed class `ide_token_encrypted`,
+and `quotas-outcomes.py` leaves that class out of each source's `consecutive_failures`, so it never grows into a
+"source failed N consecutive reads" recommendation. The account-level streak still counts the unreadable reads,
+because the account really was unreadable. The reader does not decrypt the token and does not ask the macOS
+keychain for the storage key.
+
+The working route is an agent reading the signed-in Spending page, `https://cursor.com/dashboard/spending`, in the
+Claude desktop app's built-in browser pane (`mcp__Claude_Browser__*`), or in Chrome (`mcp__claude-in-chrome__*`).
+`lib/quotas-browser.py --print-instructions cursor` prints the fields and file shape; the agent records them in a
+private file and passes it with `--browser-results`. Reading of 2026-11-16 (Ultra): Cursor Models 100% used,
+Other Models 100% used, On-Demand $6.33 of $50, limits reset Nov 28.
+
+Observation fields added on top of the pool rows, all optional so older files still validate: `plan`,
+`on_demand_used_usd`, `on_demand_limit_usd` (or `on_demand_unlimited: true`, never both), `cycle_resets_at_epoch`
+(fills pool rows with no reset of their own). In `--json` rows they appear as `plan`, `spend_limit_used_usd`,
+`spend_limit_usd` and `spend_limit_unlimited` (`true` or `null`). The table keeps its existing columns; separate
+paid-usage columns are Issue #2409, which only has to render these fields.
+
+Cursor identity (#1870): the Cursor dashboard shows no account email, so a Cursor observation's `email` is optional
+(empty, null or absent). Without one the figures still show, the row detail says `account not verified`, `--json`
+carries `identity_verified: false`, and the last-known record is saved under the source `live: browser (account not
+verified)`. A supplied email must match the IDE's cached email (`identity_verified: true`); a mismatch is rejected
+as before. `identity_verified` is on every row, null for every provider and path where it does not apply. Provider
+`claude` is unchanged: its email stays required. The page shows a spinner first; the figures can take 15 seconds or
+more, so the reader waits and re-reads before calling it unreadable.
+
 ### Completed native browser reads
 
 Internal Chrome-CLI `ok` observations require a private per-attempt completion
@@ -1849,3 +1967,219 @@ self-service usage endpoint was found in those references. This is a documentati
 finding, not a claim about private endpoints or this owner's eligibility. An
 eligible existing provider API remains preferable; this fix mints no key, changes
 no provider acquisition order and performs no sign-in or live verification.
+
+## Last-known folder (#2280)
+
+A failed live read used to show `unknown` even when a good reading from an hour or a week
+ago would answer the question. The reader now keeps each account's last usable reading in a
+private folder and shows it, labelled, when the live read fails.
+
+**Location.** `~/.claude/ai-quotas/last-known/`, or `AI_QUOTAS_LAST_KNOWN_DIR` when set. One
+file per account: `<provider>--<label>.json`. The folder is `0700`, each file `0600`. A symlinked
+or world-writable folder is refused with a warning, and the report still renders.
+
+**What is stored.** Usage percentages, reset times, the source name and account labels. No
+credential, cookie, token, user id or provider payload. Only `ok` rows with a finite
+`used_pct` are saved, so a failed read never overwrites its file.
+
+**Who writes it.** `.claude/scripts/lib/quotas-last-known.py` is the only code that touches the
+folder. The reader calls it with `record` after each run; `/quotas-setup report` calls it with
+`owner-report`. Locking, reread under the lock, `0600` temporary files, `fsync`, atomic replace
+and refusal of older-than-saved records follow `quotas-codex-reset.py`. Test seam:
+`AI_QUOTAS_LAST_KNOWN_BIN` replaces the helper, as `AI_QUOTAS_CHEAPEST_BIN` does.
+
+**Schema.** `schema`, `provider`, `label`, `nickname`, `fetched_at_epoch`, `fetched_at_et`,
+`source`, and `rows[]` with `window`, `pool`, `used_pct`, `resets_at_epoch`, `resets`, `overage`,
+and optional row-level `source` and `fetched_at_epoch`. Missing row fields inherit the file's
+values. A Cursor row without `pool` whose window is `cursor-models` or `other-models` is read as
+that pool, so the stopgap files still read.
+
+**Display.** A failed account gets one derived row per saved series. Its live `status`,
+`detail` and `action` are copied, `used_pct` stays `null`, and the saved figure appears only in
+the `last_known_*` fields and in the table's NOTE column: `100% (last known, Nov 12,
+owner-reported); resets Nov 28`. When the saved reset has passed, the note reads
+`expired: ...; reset ...`. A healthy account keeps `null` in every `last_known_*` field.
+JSON fields: `last_known_used_pct`, `last_known_at_epoch`, `last_known_at_et`,
+`last_known_source`, `last_known_resets_at_epoch`, `last_known_resets_et`,
+`last_known_expired`.
+
+**Owner readings.** `/quotas-setup report <label> <window> <used_pct> [<reset>] [<provider>]`
+records one reading as `owner-reported`. Cursor pools are `cursor-models` and `other-models`.
+The reset accepts `YYYY-MM-DD` (midnight Eastern), an ISO-8601 timestamp, or epoch seconds.
+The next usable live `ok` read replaces that series. Series the live run did not read `ok` keep
+their saved reading, so one failed window or pool never erases another's last good figure.
+
+**Gates never read it.** `quota-reserve.sh --refresh` passes `--no-last-known`, so the reader
+makes no helper call at all. `credit-budget.sh` never calls the reader. A static test asserts
+that neither gate names the folder, its override, or the helper.
+
+**Stopgap migration.** A hand-made `refresh.sh` and `LATEST.md` once kept this folder. Existing
+files in the stopgap shape stay readable. `refresh.sh` does not honour the lock, and the daily
+job now keeps the folder itself, so delete `refresh.sh` and any scheduler that runs it. The
+reader does not maintain `LATEST.md`; the `/quotas` table supersedes it. `/quotas-setup doctor`
+reports both leftovers and the folder mode, read-only.
+
+## The FETCHED column (#2406)
+
+The table has a **FETCHED** column after USED: when the figure on that row was read.
+`now` means it was read live during this request. A figure read earlier shows its date as
+`Mmm dd` in Eastern time with a zero-padded day (`Nov 16`, `Jan 01`); a figure saved
+earlier today shows today's date, never `now`. A row with no figure shows `-`.
+
+**The 120-second rule.** A figure read within 120 seconds before the run started counts as
+fetched for this request and shows `now`, whatever produced it: a live read, a saved
+status-line or app-usage reading, or a browser or text observation. The check is
+`run time - fetched_at_epoch <= 120`, so a figure exactly 120 seconds old is `now` and one
+121 seconds old shows its date. `fetched_at` keeps the **exact** instant the figure was
+read (it is not rounded to the run time), so `--json` still says when. A last-known
+reading restored after a failed live read never takes this rule: it is by definition not
+a figure read for this request.
+
+Every `--json` row carries three fields, stamped last (after saved figures are placed) by
+`stamp_fetched_field` in `lib/ai-quotas-report.sh`:
+
+| Field | Value |
+|-------|-------|
+| `fetched_at` | ISO-8601 UTC instant the figure was read; the run time for a live network read; the exact capture instant for a saved reading or observation; `null` with no figure, or when date operations are unavailable. |
+| `fetched` | `live` (read within the 120-second rule or by a network read in this run), `saved`, or `null` (no figure). Never depends on the date helper. |
+| `fetched_display` | What the table prints: `now`, `Mmm dd`, or `null`. With date operations unavailable a live read still says `now`; only a saved date degrades, to `null` (the blank marker), never to `now`. |
+
+**Adding a source of saved figures.** A provider only has to set one field on its row: pass
+`{"fetched_at_epoch": <epoch the figure was read>}` in the `emit_row` extra object. The
+status-line reader does (the capture time of its saved file) and so do the browser
+observations (the observation's own `observed_at_epoch`). The stamp then marks the row
+`saved` and prints the date. The default is strict: a row with a figure and no
+`fetched_at_epoch` counts as live only when its `source` is by construction a network read
+made in this run (`oauth-usage`, `app-server`, `http`, `ide-token`); every other source,
+including one added later, is left blank rather than claiming `now`. A reading whose
+`fetched_at_epoch` is within 120 seconds of the run is `live` (the rule above); an older one
+is `saved`. The Antigravity reader sets it to the saved observation's capture time, so its
+rows show that date unless it was captured within 120 seconds; a stale row (no figure) shows
+its last-known date. Last-known rows take `last_known_at_epoch`.
+
+**Per-row read times.** `record_last_known` keeps each row's own `fetched_at_epoch` (the run
+time only when a row has none), so a saved reading is never re-dated as new, and
+`quotas-last-known.py` stores and returns that time per row. The file's account-level
+`fetched_at_epoch` is the newest row time, and is the fallback for older files whose rows
+carry none. Rows read at different times (a status-line weekly row beside a live five-hour
+row) therefore each show their own date.
+
+To keep the table inside its column budget the LEFT cell prints `resets` where
+`days_left_note` says `resets first`; the `--json` value is unchanged.
+
+## Paid usage, resets and top tier (Issues #2409, #2408, #2415)
+
+Six columns say what the owner needs on contract work, where a client may not reimburse
+paid usage. All are display only: they gate nothing, and an unknown is never turned into a
+number or an icon.
+
+| Column | `--json` field(s) | Meaning |
+|--------|-------------------|---------|
+| `$?` | `paid_enabled` | ✅ when the provider says paid usage can happen, ❌ when it says it cannot, `-` when unknown. It follows whether spending can actually happen, not whether a limit is set: Claude Work has a $1,000 limit set with usage credits off and shows ❌. |
+| `$ CAP` | `paid_cap_usd`, `paid_cap_unlimited` | The limit on paid usage for the period: `$500`, `$50`; `none` when the provider said there is no limit; `off` whenever the provider said paid usage is off, even with a limit set (the limit stays in `--json` as `paid_cap_usd`, so a $1000 limit never reads as spendable money); `-` when unknown. A whole-dollar cap prints without cents. A non-USD currency leaves the amounts blank and adds a note to the row (`paid amounts are in EUR, not shown`); the `$?` flag is kept. A figure restored from last-known after a failed read is shown only while its window has not passed. |
+| `$` | `paid_spent_usd` | Dollars of paid usage this period, always with cents (`$315.79`, `$0.00`). |
+| `RST` | `limit_resets_available`, `limit_resets` | How many limit resets are available. `0` only when the provider said none are left; `-` when unknown **or** when the provider has no reset allowance. |
+| `TOP` | `top_label` | The provider's own label for the top-tier model or pool that has a separate allowance (`Fable`, `Argon`). Taken from the data, never hard-coded; `-` when there is none or it is unknown. |
+| `TOP%` | `top_used_pct`, `top_resets_at_epoch` | Percent of that allowance **used**, on the same basis as USED. |
+
+`--json` also carries `paid_currency` (always `USD`: amounts in another currency are
+dropped, because the fields are dollars), `paid_period` (`monthly`), and
+`paid_read_at_epoch` (when the figures were read). Every row of every provider declares all
+of these (null when unknown), so a consumer never tests for a missing key.
+
+**The blank-versus-zero rule.** `❌`, `0` and `$0.00` appear only when the provider said so.
+A reading that lacks the data leaves the fields `null` and the table prints `-`; nothing is
+estimated locally. Missing or unreadable amounts are dropped, not zeroed: `"lots"`, a
+negative number, or an amount in another currency becomes null while the on/off flag, if the
+provider gave one, is kept. A paid-usage cap is `none` only when the provider said
+unlimited, never because the cap was simply absent.
+
+**One value per account.** The columns describe the account, so the table shows them on one
+row only: the account's first row that carries any of them (or its first row when none
+does), and `-` on the rest, so a Cursor account's two pools or an Antigravity account's five
+groups are never double-counted by eye. `--json` repeats the values on every row of the
+account and says which row the table uses with `account_primary` (true or false on every
+row).
+
+**Where each provider's value comes from.**
+
+| Provider | Source | Notes |
+|----------|--------|-------|
+| Claude, app usage tool file (`claude-app--<label>.json`) | `extra_usage` (`enabled`, `spent`, `monthly_limit`, `currency`), `weekly_models` (`Weekly · Fable`: the label after the `Weekly · ` prefix is `top`; with several windows the first), `limit_resets` | `enabled` is saved as true, false, or null when the tool omitted it. |
+| Claude, status-line file (`claude--<label>.json`) | `rate_limits.spend_limit` and any `rate_limits.seven_day_<model>` window | **Unverified shape.** No live sample of `spend_limit` has been seen, so only an explicit boolean `enabled`/`is_enabled` and amounts under a `*_usd` key are read (a bare number could be cents); a per-model window is named from its key. A reading without them leaves the columns blank. |
+| Claude, claude.ai usage-page observation (`--browser-results`) | optional `extra_usage` (`enabled`, `spent_usd`, `monthly_limit_usd`), `limit_resets`, `top_model` (`label`, `used_pct`, `resets_at_epoch`) | Validated; a malformed block rejects the observation, an absent block means not reported. |
+| Codex | `limit_resets_available` from `free_resets_remaining` (the reset-credit count) | The payload reports credits in unlabelled units and no spend or cap, so `$?`, `$ CAP`, `$` stay blank rather than invent dollars. |
+| Cursor | `spend_limit_used_usd`, `spend_limit_usd`, `spend_limit_unlimited` (the on-demand block) | ✅ when the limit is above 0 or unlimited, ❌ when it is 0, unknown with no limit figure. `RST` and `TOP` stay blank: Cursor has no reset allowance (its [pricing page](https://cursor.com/docs/account/pricing), the one the overage table cites, describes only pay-as-you-go on-demand usage) and no separate top-tier pool is known. |
+| Antigravity | the group the `/usage` panel prints with no "Models within this group" line (a single named model with its own allowance) | `TOP` is the last word of the group name as printed (`Gemini 4 Argon` shows as `Argon`), `TOP%` is 100 minus the remaining percent the panel prints. No reset allowance is documented (see [ai-quotas-antigravity.md](./ai-quotas-antigravity.md)), so `RST` is blank. A stale capture shows none. |
+
+**Claude limit resets.** The usage page shows "Limit resets: N available" with a kind and
+an expiry for each; no saved reading carries it (the status-line input and the usage tool
+do not). An agent that reads the page supplies it as an optional `limit_resets` object next
+to the tool result passed to `claude-usage-observe.sh`
+(`{"count": 1, "items": [{"kind": "Weekly reset", "expires_at": "2027-03-09T00:00:00Z"}]}`;
+a bare list of items also works, `items` may be omitted), or as `limit_resets` in a
+claude.ai page observation (`expires_at_epoch`). It is validated (a count of 0 to 1000,
+items matching the count, a plain kind, a UTC ISO-8601 expiry); a malformed block refuses the
+observation with the reason, and writes nothing. Without it the Claude `RST` cell is `-`,
+never `0`.
+
+**Saved figures keep the columns.** `record_last_known` saves each row's account-level
+fields beside the series (`account` in the last-known file, type-checked on read), and a
+saved figure restored after a failed live read brings them back with the row's own read time
+(`paid_read_at_epoch` stays the time they were read, not the time of this run).
+
+**Why the table changed shape.** Fitting the extra columns in 140 columns meant: cells one
+space apart; the two icons counted as two columns (so the table is laid out by the reader,
+not `column -t`); the Antigravity composite window shortened (`gemini-4-argon 7d`); `AM`/`PM`
+joined to the time (`Thu 8:00PM`); the resets-count header `RST` and the top-percent header
+`TOP%`; and any note over 11 characters or overage label over 12 printed as a numbered
+footnote under the table (`[1]` in the row, `[1] text` below, identical texts sharing one
+number). The footnotes are part of the table, so `--quiet` keeps them and drops only the
+advisory sections. Every cell has control characters replaced by spaces, so a hostile label
+cannot forge a row. The time column's header is now `RESET (ET)`.
+
+**Needs a live check.** The columns are built from readings recorded on 2026-11-16; compare
+each against the provider's own page once in a live session: Claude Personal (✅ $500
+$315.79, Fable), Claude Work (❌ off $0.00, 2 resets), Cursor (✅ $50 $6.33), Antigravity
+(Argon), Codex (0 resets).
+
+## Antigravity (Issue #2407)
+
+`antigravity` is a fourth provider: one registered account, rows read from Google's quota service with the sign-in `agy` holds (source `backend`, Issue #2465), then (attended runs only, Issue #2466) interactive `agy` in a visible terminal (source `terminal`), then the saved text of the `agy` `/usage` panel, through an observation file (`~/.claude/ai-quotas-antigravity.json`), one row per model group and window, display only (never read by `quota-reserve.sh`). Limits, sample, parser, stale rule and the one unverified live step: [ai-quotas-antigravity.md](./ai-quotas-antigravity.md).
+
+## Plan tier and monthly price (TIER, $/MO) — Issue #2469
+
+The table's `TIER` and `$/MO` columns, and the `--json` fields `plan_tier`, `plan_tier_source`
+(`provider` | `override`), `plan_usd_month` and `plan_price_source` (`list` | `override`), are
+built by `derive_plan_fields` in `lib/ai-quotas-report.sh` from three inputs:
+
+1. **The plan the provider reports.** Each reader puts it in the row's existing `plan` field:
+   Claude takes `subscription_type` from the saved status-line or app reading, else
+   `subscriptionType` (refined by a `5x`/`20x` suffix of `rateLimitTier`, giving `max_20x`) from
+   the stored login (`claude_detect_plan`, in memory, no credential value kept); Codex takes
+   `planType`; Cursor takes `planName` from `get-plan-info`; Antigravity takes the `paidTier` or
+   `currentTier` name (else id) from the `loadCodeAssist` response of the backend read, saved
+   beside the observation as `plan`. A reader that is told nothing leaves it null: nothing is guessed.
+2. **The price list** `.claude/reference/quotas-plan-prices.json` (override with
+   `AI_QUOTAS_PRICE_LIST`): provider, then tier, with `usd_per_month`, `match` keys (lowercase,
+   non-alphanumerics collapsed to `_`), a source URL and a `last_checked` date. A tier is left
+   off when its price could not be verified; a reported tier the list lacks keeps its own name
+   and shows `-` for the price, never `$0`. Re-check the URLs and bump `last_checked` when prices move.
+3. **A manual override**, `plan_override: {tier, usd_per_month?}` on the account entry in the
+   registry, written by `ai-quotas-setup.sh plan <label> <tier> [<usd_per_month>] [<provider>]`
+   (an empty tier deletes it). It beats the reported tier; its price beats the list, and a
+   tier-only override is priced from the list when the list knows that tier. The table marks an
+   overridden cell with `*` and prints one line under it saying so. This stored shape is the one a
+   future export carries.
+
+Both columns show once per account, on its primary row. Display only: nothing gates work on
+them and `quota-reserve.sh` never reads them. To fit 140 columns, WINDOW is capped at 13, OVERAGE
+labels over 8 characters are footnoted, and an `IN` of ten or more days shows days only.
+
+## Export and import of the account list (#2468)
+
+`ai-quotas-setup.sh export [--out FILE]` writes `schema: "ai-quotas-accounts/1"` (default `./ai-quotas-accounts.json`, mode 600, `--out -` for stdout). Per account it copies, by name, only: `provider`, `label`, `nickname`, `ids`, `plan_override` (`tier`, `usd_per_month`), `sources`, and `login.method` (`claude-cli`, `codex-cli`, `cursor-ide`, `agy-cli`); the top level adds `exported_at` and `source_failure_threshold` when set. Each `ids` value must be a UUID, digits, or a `user-`/`org-`/`acct-` prefixed token and must not look like a credential (`sk-`, `ghp_`, JWT `eyJ`, `token`/`secret`/`key` segments, …); anything else is left out of the export with a stderr count, and refused on import. `--out` refuses the live registry (same path, symlink, or hard link). It never carries a credential, a `credential_ref` (a keychain item name is per-machine), `added_at`, or a `profile_dir` — **no path of any kind**, so nothing about the source's directory layout leaks and import has nothing stale to follow. A field added to the registry later is not exported until `export_json` is changed on purpose. The file holds emails (labels) and account IDs, so it should be kept private.
+
+`import FILE` validates every field with the rule the matching action enforces (nicknames in bytes like `nick`, prices to two decimals like `plan`) and refuses the whole file (exit 3, nothing written) on any invalid entry or a `schema` that is not exactly `ai-quotas-accounts/1`. Then, under the registry write lock: an entry already registered for `(provider, label)` is kept, and a field the file states that differs (nickname, plan override, source order, IDs) is a reported **conflict** — the entry is never overwritten; a second Cursor or Antigravity account is **refused** with `add`'s one-per-machine message; anything else is added with `profile_dir` recomputed under this environment's profile root and no `credential_ref` (the login records it). Conflicts and refusals exit 3 *after* the rest of the file is imported. Re-importing an unchanged file writes nothing.
+
+The guided login pass runs over every account the file names that is registered here, using the same sign-in status `list` reports. Signed in: skipped — except that an agy sign-in whose email differs from the label is listed under needs-you, and Cursor (whose IDE does not reveal its account) is marked ready with a note to confirm the account. Signed out: the step is printed (`manual_login_command` for Claude/Codex, the IDE or `agy` step otherwise) and the person is waited on; a Claude/Codex login runs as `relogin <label> <provider>` in a fresh process only after Enter. Nothing is typed, read, or automated. An account whose sign-in cannot be checked (`unverified`) is listed under needs-you rather than claimed. Without a terminal on both stdin and stdout (`AI_QUOTAS_IMPORT_INTERACTIVE=0` forces it), no prompt is shown and each pending login is listed to do elsewhere. `--no-login` stops after the entries.

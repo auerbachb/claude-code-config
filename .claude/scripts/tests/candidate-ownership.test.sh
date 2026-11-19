@@ -703,6 +703,17 @@ check_contains "self-attribution stated" "held by this thread" \
 check_not_contains "and not reported as a foreign claim" "fresh claim held by" \
   "$(field 412 '.evidence | join("|")')"
 
+echo "-- (4m2) default holder: no host:path token is passed as an explicit --holder (issue #2284) --"
+scenario "(4m2) default holder left to issue-claim.sh"
+export FAKE_CLAIM_414="mine:h-aaaaaaaaaaaa:alice"
+( unset CLAUDE_CLAIM_HOLDER CLAUDE_SESSION_ID; sweep 414; printf '%s' "$OUT" > "$TMP/out414"; cp "$HELPER_LOG" "$TMP/log414" )
+check_not_contains "gate call carries no explicit --holder" "--holder" \
+  "$(grep 'issue-claim.sh 414' "$TMP/log414")"
+check_contains "own default claim is self-attributed" "held by this thread" \
+  "$(jq -r 'select(.issue == 414) | .evidence | join("|")' "$TMP/out414")"
+check_eq "and not owned" "false" "$(jq -r 'select(.issue == 414) | .owned' "$TMP/out414")"
+unset FAKE_CLAIM_414
+
 echo "-- (4n) control: the same claim under a FOREIGN token still owns --"
 scenario "(4n) foreign fresh claim"
 export FAKE_CLAIM_413="claimed:threadOther:alice"
@@ -931,7 +942,11 @@ check_eq "and the linked PR is the right one" "961" "$(field 952 '.adopt.pr')"
 # calls is indistinguishable from no sweep at all.
 echo
 echo "== (10) /pm wiring and output contract =="
-PM_SKILL="$REPO_ROOT/.claude/skills/pm/SKILL.md"
+PM_ROOT="$REPO_ROOT/.claude/skills/pm"
+PM_SKILL="$TMP/pm-rank-source.md"
+cat "$PM_ROOT/SKILL.md" \
+  "$PM_ROOT/modules/shared/ownership.md" \
+  "$PM_ROOT/modules/flow/refill.md" > "$PM_SKILL" || exit 1
 in_pm() { grep -qF -- "$1" "$PM_SKILL" && echo true || echo false; }
 
 # The needles are literal snippets containing `$(`, backticks, and braces. They
@@ -941,7 +956,7 @@ NEEDLES_FILE="$TMP/pm-needles.txt"
 cat > "$NEEDLES_FILE" <<'NEEDLES'
 CANDIDATE_OWNERSHIP=$(resolve_script candidate-ownership.sh || true)
 DEGRADED: candidate-ownership.sh not found
-**Ownership sweep (runs after ranking and window-fit selection, before dispatch).**
+**Ownership sweep (read-only when planning, rechecked before dispatch).**
 - `#N` — owned by {owner_label} ({state}); resume with {resume_route}
 - `#N` — adopted from {owner_label} (archived); resuming from {adopt.from} #{adopt.pr}
 - `#N` — sweep degraded: {degraded[0]}; using claim gate only
@@ -951,7 +966,7 @@ plus the 1B.5 ownership sweep
 NEEDLES
 while IFS= read -r needle; do
   [[ -z "$needle" ]] && continue
-  check_eq "pm/SKILL.md contains: $needle" "true" "$(in_pm "$needle")"
+  check_eq "PM entry or ownership module contains: $needle" "true" "$(in_pm "$needle")"
 done < "$NEEDLES_FILE"
 # Negative control for in_pm(): a string that is certainly absent must read false.
 check_eq "in_pm() control" "false" "$(in_pm 'candidate-ownership.sh --claim')"

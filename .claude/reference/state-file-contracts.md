@@ -176,6 +176,10 @@ not a disposable sample.
 4. Document rationale and migration detail here. Do not copy the complete typed-field list into a
    script header, rule, skill, or another reference file.
 
+`usage_horizon.reading.anchors` (issue #2376) is an additive, untyped sub-field. A reader that
+does not know it ignores it, and the next `--observe` replaces the whole `usage_horizon` object,
+so there is nothing to migrate. A reading written without it is matched on `session_id` alone.
+
 Sub-shape documents may explain their own state machines without becoming schema owners.
 `merge-sequencing.md` owns merge-hold behavior, and `/babysit-pr` owns its Monitor lifecycle; the
 JSON field names and enforced types remain authoritative in `session-state-schema.json`.
@@ -200,6 +204,20 @@ is most often got wrong — step 1's *only when*:
    permanently `null`: the deadline lives once, in `.window.deadline_epoch`, and the null field is
    the signpost that says so. A reader who finds a number there is looking at corruption, not at a
    second source of truth.
+
+#### PM run receipts
+
+`pm-run-receipt.sh` owns `.repos["<key>"].pm_receipts["<session>"]`.
+It keeps up to 20 recent receipts per repo, with one latest invocation per
+known dispatcher. A start compares and updates the repo's receipt map under
+the state lock.
+A step write compares the exact `run_id` and an absent finish stamp in the
+same transaction, preserving marks for other steps. An invocation with no
+session ID uses its run ID as the slot key and prints a diagnostic at start.
+Readers use the explicit repo path outside `--session-view`.
+Reasons are bounded and single-line. Keep secrets out of reasons because the
+state helper logs writes. A missing mark means the outcome was unrecorded.
+The common exit seals the run before rendering it.
 
 #### Round membership: `.repos["<key>"].rounds["<session>"]` (issues #1604, #1712)
 
@@ -234,6 +252,17 @@ Membership selection requires an explicit valid session ID. An empty, default,
 null or malformed identity is a usage error; `/board` labels the degradation and
 uses its no-record fallbacks. A distinct identified observer can still read the
 recorded-round union. The table-freshness default clock remains unchanged.
+
+#### PM standing refill queue
+
+`.repos["<key>"].pm_standing_queues["<session>"]` is the ranked unclaimed
+plan used by `/pm` Step 3.4. The writer compares the prior generation and
+the repo map before publishing. Retirement retains an empty generation
+so a delayed writer cannot recreate a plan from an older absent read.
+`/board` projects the plan from the same snapshot as round membership.
+Claims, pipeline state, and active-work counts still come from their
+existing records.
+
 
 ## Handoff file migration
 
@@ -288,3 +317,7 @@ The hook skips re-emitting a widen instruction when `.type == "update"` and `.in
 ## Paid review grants (issue #1898)
 
 `.prs["<N>"].paid_review_grants["<vendor>"]` has exactly one writer: `.claude/scripts/paid-review-grant.sh`. A grant is written only after the owner's live approval and spent with a `session-state.sh --cas` on the exact record read, so of two racing triggers exactly one posts. An unparseable or mistyped slot is `grant_unreadable`, which refuses. Field list: `session-state-schema.json` `_paid_review_grants_comment`. Ask contract: `paid-review-approval.md`.
+
+## PM run mode (issue #2428)
+
+Path: `.repos["<key>"].run_mode`, a JSON string enum (`default`, `speed`, `cheap`). Writer: `run-mode.sh set <mode>`. Reader: `run-mode.sh get`, the only supported read path. Fail-open: absent, invalid, unreadable or unresolved-repo state reads as `default` with exit 0 and never blocks a launch. Full contract: `.claude/reference/run-modes.md`.

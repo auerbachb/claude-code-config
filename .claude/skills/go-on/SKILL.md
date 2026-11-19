@@ -109,6 +109,10 @@ If the helper cannot run, say the roster is unavailable. Do not guess a
 launcher or read credentials. Return here: do not classify, resume, clear a
 gate, or launch anything. Do not combine this flag with any resume flag.
 
+Beside the manual commands, show the returned `launcher_prerequisite`,
+including its installed setup command. The owner runs setup and uses the
+source line it prints; the roster never creates or sources launchers.
+
 ## Portable helper resolution (workflow lane)
 
 Resolve every lifecycle helper **before entering Steps 0b–10**, not before Step 0: classification needs only the stop-state helpers resolved in 0.2, and a resume that just routes to `/pause-resume` must not be blocked by a missing merge-gate helper it will never call. Inside the workflow lane a missing helper blocks rather than guessing which completed state is safe.
@@ -642,7 +646,50 @@ fi
 
 **A receipt never outranks a still-parked board.** `record_at` in the digest is the newest **un-resumed** record's timestamp (probe B), so a record that is still parked keeps producing a digest, and a record that was genuinely restored stops appearing in the union and changes the digest. A `nothing to resume` verdict therefore rests on the records themselves, with the receipt only suppressing a repeat of the *same* evidence for the *same* session.
 
+### 0.5a Log the stoppage (ranks 2–4 only; issue #2292)
+
+A stop nobody planned is written down once, to the desk's private database, so the causes can be counted later. **Never** for rank 1 (`pause` / `end` are planned stops) or rank 5. Never posted to GitHub or written to a repository file. This step records and never blocks: any failure here is one line, then dispatch continues.
+
+Resolve the desk CLI from installed locations only (`~/.claude/skills-worktree/desk/bin/human-queue.sh`, then `~/.claude/desk/bin/human-queue.sh`); unresolved → one `DEGRADED: human-queue.sh not found — stoppage log unavailable, continuing without it` line.
+
+- **Cause:** rank 2 → `usage_limit`; rank 3 → `token_exhaustion`; rank 4 → `crash` when probe E found a registry entry still `running`/`stopping`/`stop_failed` (a task that never closed, so the session died), else `unknown`.
+- **Thread:** the dead session's id when the stale registry entry names one (`session_id`), else this session's.
+- **Stop time:** the record's own time (`record_at`, the handoff's time, or the registry entry's `updated_at`) as UTC `Z`; when none is known use now and say so in the evidence.
+- **Evidence:** one fixed line — class, probe letters, and the PR or branch — never transcript text.
+- **An entry the dead session's own Stop hook already wrote** (`stoppage why --thread <id>` shows `still stopped`) is not duplicated: record nothing; it is closed after dispatch (below).
+
+```bash
+# STOP_CAUSE, STOP_THREAD, STOP_AT (UTC Z), STOP_REF (issue#N|pr#N, may be empty),
+# STOP_EVIDENCE are set from the bullets above; HQ_CLI is the resolved CLI.
+if [[ -n "${HQ_CLI:-}" ]]; then
+  if ! "$HQ_CLI" stoppage why --thread "$STOP_THREAD" 2>/dev/null | grep -q 'still stopped'; then
+    STOP_ARGS=(--thread "$STOP_THREAD" --repo "${REPO_KEY:-unknown}" --cause "$STOP_CAUSE" \
+      --evidence "$STOP_EVIDENCE" --at "$STOP_AT" --source go-on)
+    [[ -n "${STOP_REF:-}" ]] && STOP_ARGS+=(--ref "$STOP_REF")
+    "$HQ_CLI" stoppage record "${STOP_ARGS[@]}" >/dev/null 2>&1 || true
+  fi
+fi
+```
+
+**Close it only when work actually resumed.** The idle time ends when dispatch relaunches or continues work, not when `/go-on` merely ran. After a dispatch that did so (a delegated resume that re-armed work, relaunched pipelines, or entered Steps 0b–10), run the block below. When dispatch launched nothing (a usage-limit park whose window is still shut, an unreadable inventory that blocked ranks 3 and 4), leave the entry open: a later `/go-on` finds it `still stopped` and closes it then.
+
+```bash
+if [[ -n "${HQ_CLI:-}" ]]; then
+  # The marker goes only when `resume` succeeded (closed, or kept locally to be
+  # sent in order). A failed resume leaves it, so a later prompt retries.
+  if "$HQ_CLI" stoppage resume --thread "$STOP_THREAD" >/dev/null 2>&1; then
+    rm -f "${HOME:-/nonexistent}/.claude/desk-stoppages/open/$STOP_THREAD" 2>/dev/null || true
+  fi
+fi
+```
+
+An unreachable database keeps both operations locally and sends them later, in order (`desk/docs/stoppages.md`).
+
 ### 0.6 Dispatch
+
+**PM run mode reread (before any lane, silent).** Read the mode with the installed `run-mode.sh` only (`$HOME/.claude/skills-worktree/.claude/scripts/run-mode.sh`, then `$HOME/.claude/scripts/run-mode.sh`): `run-mode.sh --repo "$REPO_KEY" get` only when `REPO_KEY` is nonempty. An empty `REPO_KEY` skips the call and uses `default` directly, since an empty `--repo` would resolve an unscoped key. Print nothing on success; a missing helper also reads as `default`. Never take the mode from a stoppage record or a summary (`.claude/reference/run-modes.md`).
+
+For ranks 2–4, run 0.5a first (it records the stoppage and never blocks the dispatch below), and close the entry after a dispatch that actually resumed work.
 
 **Never duplicate a live task or Monitor.** Before any lane, list live registry entries (`"$TASK_REGISTRY_SH" --list --live`) and read `.prs["<N>"].babysit.active`. Work already covered by a live identity is reported, not relaunched; the delegated commands take the locked `stopped -> rearming` claim that makes concurrent resumes single-writer.
 
@@ -948,7 +995,7 @@ jq -c '["coderabbitai","cursor","codeant-ai","greptile-apps","graphite-app"] as 
 
 **Comment bound (issue #1953).** The query reads the first 100 comments of each thread, so a bot comment after the 100th is not in the returned nodes. That can only over-count: a thread with more comments than were returned counts regardless of author, flagged `truncated: true` — read its remaining comments, starting from that thread's `comments.pageInfo.endCursor` (`node(id: "<thread id>") { ... on PullRequestReviewThread { comments(first: 100, after: <cursor>) { pageInfo { hasNextPage endCursor } nodes { body author { login } } } } }`, repeated until `hasNextPage` is `false`) before deciding whether it holds a finding. The Step 8 merge gate (`merge-gate.sh`) paginates every thread and blocks unresolved ones regardless of author (on `ci-only` / `ci+codeant-one-round` a non-severe finding deferred by a human reply's follow-up-issue link is exempt — `review-policy.md`), so this count never decides a merge.
 
-Also check for issue-level review comments that may not have threads. Use the shared `pr-state.sh` helper — it fetches all three endpoints in one call, filters to the review bots (`coderabbitai[bot]`, `cursor[bot]` (BugBot), `codeant-ai[bot]`, `greptile-apps[bot]`, plus the retired `graphite-app[bot]`), and pre-classifies each comment with `classification.class` (`finding` vs `acknowledgment`). The classifier only runs when `--since <iso>` is passed — pass the PR's `createdAt` to include every bot comment on the PR. The helper writes the JSON bundle to a tempfile and prints its **path** on stdout — capture the path, then read with `jq < "$BUNDLE"`:
+Also check for issue-level review comments that may not have threads. Use the shared `pr-state.sh` helper — it fetches all three endpoints in one call, filters to the review bots (`coderabbitai[bot]`, `cursor[bot]` (BugBot), `codeant-ai[bot]`, `greptile-apps[bot]`), and pre-classifies each comment with `classification.class` (`finding` vs `acknowledgment`). The classifier only runs when `--since <iso>` is passed — pass the PR's `createdAt` to include every bot comment on the PR. The helper writes the JSON bundle to a tempfile and prints its **path** on stdout — capture the path, then read with `jq < "$BUNDLE"`:
 
 ```bash
 PR_CREATED=$(gh pr view "$PR_NUM" --json createdAt --jq '.createdAt')
@@ -979,10 +1026,10 @@ jq '.new_since_baseline.conversation | map(select(.classification.class == "find
 
      Exit code `0` means the reply posted (by either the inline endpoint or the PR-level fallback); the fallback path also emits a note to stderr. Non-zero means a genuine failure to post. See `reply-thread.sh --help` for the full contract, including PR-number-unresolvable-without-`--pr` or both-endpoints-404 (exit 3) and inline-404-then-fallback-non-404 (exit 4).
 
-  6. Resolve all bot threads with the shared helper (paginated; by default it selects threads whose **first** comment is from one of the review-bot authors — `coderabbitai`/`cursor`/`greptile-apps`/`codeant-ai`, plus the retired `graphite-app` — and falls back to `minimizeComment` on failure). The count above also includes a human-opened thread that a bot replied in; the default filter skips it, so pass its thread ID with `--thread-ids`, which bypasses the author filter:
+  6. Resolve the exact thread IDs you read and replied to. Write one handled thread ID per line to a temporary `$TOUCHED_THREADS` file. Include active-reviewer threads, retired Graphite threads, and human-opened threads containing a bot finding. Skip the call when there were no handled threads. The helper paginates. If resolution fails, its minimize fallback requires a bot-authored opening comment. Human-opened threads stay unresolved.
 
      ```bash
-     "$RESOLVE_REVIEW_THREADS_SH" "$PR_NUM"
+     "$RESOLVE_REVIEW_THREADS_SH" "$PR_NUM" --thread-ids-file "$TOUCHED_THREADS"
      ```
 
      Exit 1 means at least one thread failed both mutations — surface to the user and stop. Do not proceed with a non-zero exit.

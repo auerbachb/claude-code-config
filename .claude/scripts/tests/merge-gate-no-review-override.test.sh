@@ -38,14 +38,28 @@ case "$ARGS" in
   *" api repos/solo/repo/pulls/1 "*)
     [[ "${FAKE_PULL_FAIL:-0}" == 1 ]] && { echo "gh: Server Error (HTTP 500)" >&2; exit 1; }
     jq -cn --arg c "${FAKE_CREATED_AT:-2026-07-21T09:58:00Z}" --argjson d "${FAKE_DRAFT:-false}" \
-      '{number:1, created_at:$c, draft:$d, head:{ref:"feature", repo:{full_name:"solo/repo"}}}'
+      '{number:1, created_at:$c, draft:$d, user:{login:"solo"}, head:{ref:"feature", repo:{full_name:"solo/repo"}}}'
     exit 0 ;;
   *" repos/solo/repo/actions/runs?head_sha="*)
-    if [[ -n "${FAKE_RUNS:-}" ]]; then printf '%s' "$FAKE_RUNS"; exit 0; fi
+    if [[ -n "${FAKE_RUNS:-}" ]]; then
+      printf '%s' "$FAKE_RUNS" | jq '.workflow_runs |= map(. + {id:1,workflow_id:1,run_attempt:1,pull_requests:[],check_suite_id:1,html_url:"https://github.com/solo/repo/actions/runs/1",status:"completed",conclusion:"success"})'
+      exit 0
+    fi
     jq -cn --arg t "${FAKE_PUSH_AT:-2026-07-21T09:58:00Z}" \
-      '{total_count:1, workflow_runs:[{event:"pull_request", created_at:$t, head_branch:"feature",
-         head_sha:"deadbeefcafedeadbeefcafedeadbeefcafedead", head_repository:{full_name:"solo/repo"}}]}'
+      '{total_count:1, workflow_runs:[{id:1,workflow_id:1,run_attempt:1,event:"pull_request",created_at:$t,head_branch:"feature",
+         pull_requests:[{number:1,base:{ref:"main",repo:{id:1}}}],check_suite_id:1,html_url:"https://github.com/solo/repo/actions/runs/1",status:"completed",conclusion:"success",
+         head_sha:"deadbeefcafedeadbeefcafedeadbeefcafedead",head_repository:{full_name:"solo/repo"}}]}'
     exit 0 ;;
+  *" repos/solo/repo/issues/1/comments?per_page=100 "*)
+    if [[ -n "${FAKE_COMMENT_SEQUENCE:-}" ]]; then
+      if [[ -e "$FAKE_COMMENT_SEQUENCE" ]]; then
+        printf '%s' "$FAKE_LATE_COMMENTS"
+      else
+        touch "$FAKE_COMMENT_SEQUENCE"
+        printf '%s' '[]'
+      fi
+      exit 0
+    fi ;;
   *" repos/solo/repo/issues/1/timeline"*)
     [[ "${FAKE_TIMELINE_FAIL:-0}" == 1 ]] && { echo "gh: Server Error (HTTP 502)" >&2; exit 1; }
     printf '%s' "${FAKE_TIMELINE:-[]}"; exit 0 ;;
@@ -61,8 +75,34 @@ case "$ARGS" in
     jq_arg() { local prev="" a; for a in "$@"; do [[ "$prev" == "--jq" ]] && { printf '%s' "$a"; return; }; prev="$a"; done; }
     jq -r "$(jq_arg "$@")" <<<"${FAKE_PR_FILES_JSON:-[]}"
     exit 0 ;;
+  *" pr merge 1 --repo solo/repo --squash --match-head-commit "*)
+    [[ -n "${FAKE_NRO_STATE_PATH:-}" && "${*: -1}" == "${FAKE_MERGED_HEAD:-deadbeefcafedeadbeefcafedeadbeefcafedead}" ]] || exit 1
+    [[ "$(cat "$FAKE_NRO_STATE_PATH")" == OPEN && "${FAKE_NRO_REFUSE:-0}" == 0 ]] || exit 1
+    snapshot="$HOME/.claude/unreviewed-merge-snapshots/solo/repo/pr-1.json"
+    if [[ "${FAKE_NRO_EXPECT_REVIEWED:-0}" == 1 ]]; then
+      [[ ! -e "$snapshot" ]] || exit 1
+    else
+      [[ -s "$snapshot" ]] || exit 1
+    fi
+    if [[ -n "${FAKE_NRO_MERGE_READY:-}" ]]; then
+      touch "$FAKE_NRO_MERGE_READY"
+      sleep 1
+    fi
+    printf '%s\n' MERGED >"$FAKE_NRO_STATE_PATH"
+    exit 0 ;;
+  *" pr view 1 --repo solo/repo --json state,headRefOid,mergeStateStatus "*)
+    jq -cn --arg state "$(cat "$FAKE_NRO_STATE_PATH")" --arg head "${FAKE_MERGED_HEAD:-deadbeefcafedeadbeefcafedeadbeefcafedead}"       --arg merge "${FAKE_NRO_MERGE_STATE:-CLEAN}" '{state:$state,headRefOid:$head,mergeStateStatus:$merge}'
+    exit 0 ;;
+  *" pr view 1 --repo solo/repo --json state --jq .state "*)
+    if [[ "${FAKE_NRO_BREAK_LOCK:-0}" == 1 ]]; then
+      mv "$CLAUDE_STATE_LOCK_HELD" "$CLAUDE_STATE_LOCK_HELD.changed" || exit 1
+    fi
+    cat "$FAKE_NRO_STATE_PATH"
+    exit $? ;;
   *" pr view 1 --repo solo/repo --json state,headRefOid,mergeCommit,mergedAt,title,url "*)
-    jq -cn --arg s "${FAKE_MERGED_STATE:-MERGED}" --arg h "${FAKE_MERGED_HEAD:-deadbeefcafedeadbeefcafedeadbeefcafedead}" \
+    state="${FAKE_MERGED_STATE:-MERGED}"
+    if [[ -n "${FAKE_NRO_STATE_PATH:-}" ]]; then state="$(cat "$FAKE_NRO_STATE_PATH")"; fi
+    jq -cn --arg s "$state" --arg h "${FAKE_MERGED_HEAD:-deadbeefcafedeadbeefcafedeadbeefcafedead}" \
       '{state:$s, headRefOid:$h, mergeCommit:{oid:"feedface00000000000000000000000000000001"},
         mergedAt:"2026-11-06T06:00:00Z", title:"Fixture PR", url:"https://github.com/solo/repo/pull/1"}'
     exit 0 ;;
@@ -98,6 +138,7 @@ run_gate() { # $1 = check-runs bundle
   OUT=$(PATH="$BIN:$PATH" FAKE_CHECK_RUNS="$1" \
         FAKE_REVIEWS="${FAKE_REVIEWS:-[]}" FAKE_PR_COMMENTS="${FAKE_PR_COMMENTS:-[]}" \
         FAKE_ISSUE_COMMENTS="${FAKE_ISSUE_COMMENTS:-[]}" \
+        FAKE_COMMENT_SEQUENCE="${FAKE_COMMENT_SEQUENCE:-}" FAKE_LATE_COMMENTS="${FAKE_LATE_COMMENTS:-[]}" \
         "$SUT" 1 2>"$TMP/gate.err")
   RC=$?
 }
@@ -113,6 +154,31 @@ record() { printf '%s' "$OUT" | PATH="$BIN:$PATH" "$LEDGER_SUT" record --pr 1 --
 
 GREEN_11="$(bundle "$(run 1 build success 660)")"
 NEED_APPROVAL="need 1 explicit CodeRabbit or CodeAnt APPROVED review"
+
+echo "=== Issue #2225: a review request arrives after the gate's first comment read ==="
+reset
+FAKE_COMMENT_SEQUENCE="$TMP/comment-sequence"
+FAKE_LATE_COMMENTS=$(jq -cn --arg t "$(ago 30)" \
+  '[{user:{login:"solo"},created_at:$t,body:"@codeant-ai review"}]')
+run_gate "$GREEN_11"
+check_eq "false" "$(j .met)" "late request keeps gate closed"
+check_eq "review_request" "$(j .no_review_override.anchor_source)" "late request replaces push anchor"
+check_eq "window_running" "$(j .no_review_override.reason)" "late request starts its own wait"
+
+rm -f "$FAKE_COMMENT_SEQUENCE"
+FAKE_LATE_COMMENTS=$(jq -cn --arg sha "$HEAD_SHA" --arg t "$(ago 30)" '
+  [{user:{login:"codeant-ai[bot]"},created_at:$t,
+    body:("<!-- codeant-review-status:" + ([{done:true,headSha:$sha}] | tojson) + "-->")}]')
+run_gate "$GREEN_11"
+check_eq "false" "$(j .met)" "late exact reviewer verdict keeps gate closed"
+check_eq "verdict_on_head" "$(j .no_review_override.reason)" "late exact reviewer verdict holds the waiver"
+
+rm -f "$FAKE_COMMENT_SEQUENCE"
+FAKE_LATE_COMMENTS=$(jq -cn --arg t "$(ago 30)" '
+  [{user:{login:"codeant-ai[bot]"},created_at:$t,body:"The review is queued."}]')
+run_gate "$GREEN_11"
+check_eq "true" "$(j .no_review_override.applied)" "a fresh bot status without a verdict leaves the existing override available"
+unset FAKE_COMMENT_SEQUENCE FAKE_LATE_COMMENTS
 
 echo "=== TP1: green CI, no bot review, HEAD 11 min ago -> met via override + ledger row ==="
 reset; rm -f "$LEDGER_FILE"
@@ -148,6 +214,25 @@ check_eq "yes"   "$(has_missing "override window not elapsed")" "TP2 window-runn
 check_eq "yes"   "$(has_missing "$NEED_APPROVAL")"      "TP2 the normal reviewer reason still blocks"
 record >/dev/null; check_eq "4" "$?" "TP2 ledger refuses an unmet gate"
 check_eq "0"     "$(ledger_rows)"                       "TP2 no ledger row"
+
+echo "=== Retired app signals do not enter the override or its anchor (#2192) ==="
+reset
+FAKE_REVIEWS="$(jq -cn --arg sha "$HEAD_SHA" --arg t "$(ago 300)" \
+  '[{user:{login:"graphite-app[bot]",type:"Bot"}, commit_id:$sha, state:"APPROVED", body:"Graphite result", submitted_at:$t}]')"
+FAKE_PR_COMMENTS="$(jq -cn --arg sha "$HEAD_SHA" '[{id:915,user:{login:"graphite-app[bot]"},commit_id:$sha,body:"Graphite finding"}]')"
+run_gate "$(bundle "$(run 1 build success 660)" "$(run 2 'Graphite / AI Reviews' success 900 graphite-app)")"
+check_eq "window_elapsed" "$(j .no_review_override.reason)" "retired app cannot veto an elapsed override"
+check_eq "true" "$(j .no_review_override.applied)" "green build with retired app signals still applies the override"
+check_eq "0" "$(j '.no_review_override.verdicts_on_head | length')" "retired review, comment, and check are not verdicts"
+check_eq "false" "$(j '[.no_review_override.missing_reviewers[]?.reviewer] | index("graphite-app[bot]") != null')" "retired app is absent from the reviewer inventory"
+reset
+run_gate "$(bundle "$(run 1 build success 540)" "$(run 2 'Graphite / AI Reviews' success 1200 graphite)")"
+check_eq "window_running" "$(j .no_review_override.reason)" "an earlier retired check does not shorten the build-anchored window"
+run_gate "$(bundle "$(run 2 'Graphite / AI Reviews' success 900 graphite-app)")"
+check_eq "false" "$(j .met)" "retired checks alone do not satisfy the gate"
+check_eq "anchor_unavailable: no HEAD check-run start time" "$(j .no_review_override.reason)" "retired check alone cannot anchor the override"
+run_gate "$(bundle "$(run 1 build success 540)" "$(run 2 'Graphite / AI Reviews' success 1200 graphite-app | jq -c 'del(.app)')")"
+check_eq "window_running" "$(j .no_review_override.reason)" "legacy Graphite without a publisher cannot anchor the override"
 
 echo "=== TP3: 11 min + human CHANGES_REQUESTED on HEAD -> blocked ==="
 reset
@@ -420,7 +505,8 @@ done
 # so the hollow approval is still a verdict and the override stays off.
 reset; FAKE_REVIEWS="$(head_approval "")"
 mkdir -p "$TMP/nro-sut/lib"
-cp "$(dirname "$SUT")"/*.sh "$TMP/nro-sut/"; cp "$(dirname "$SUT")"/lib/*.sh "$TMP/nro-sut/lib/"
+cp "$(dirname "$SUT")"/*.sh "$TMP/nro-sut/"; cp "$(dirname "$SUT")"/lib/*.sh "$(dirname "$SUT")"/lib/*.jq "$TMP/nro-sut/lib/"
+if [[ -f "$(dirname "$SUT")/lib/check_run_workflows.py" ]]; then cp "$(dirname "$SUT")/lib/check_run_workflows.py" "$TMP/nro-sut/lib/"; fi
 printf '#!/usr/bin/env bash\necho "not json"\n' > "$TMP/nro-sut/review-substance.sh"; chmod +x "$TMP/nro-sut/review-substance.sh"
 run_gate_on greptile "$GREEN_11" "$TMP/nro-sut/merge-gate.sh"
 check_eq "false" "$(j .no_review_override.applied)" "#1932 greptile: broken evaluator -> hollow approval still a verdict, override off"
@@ -428,10 +514,129 @@ check_eq "false" "$(j .no_review_override.applied)" "#1932 greptile: broken eval
 echo "=== merge-site contracts: refresh the gate right before an override merge ==="
 SKILLS_DIR="$SCRIPT_DIR/../../skills"
 prose_has() { grep -qF "$2" "$1" && echo yes || echo no; }
-check_eq "yes" "$(prose_has "$SKILLS_DIR/merge/SKILL.md" 'first **re-run `merge-gate.sh` into the gate JSON**')" \
+check_eq "yes" "$(prose_has "$SKILLS_DIR/merge/SKILL.md" 'First **re-run `merge-gate.sh` into the gate JSON** after AC verification')" \
   "/merge re-runs merge-gate.sh after AC verification before an override merge"
 check_eq "yes" "$(prose_has "$SKILLS_DIR/wrap/SKILL.md" 'its refreshed `merge_state` still passes this same test')" \
   "/wrap re-checks the allowed merge state on the refreshed gate"
+
+echo "=== Issue #2143: wrap replays the complete gate after the merge ==="
+source "$SCRIPT_DIR/lib/skill-bash.sh"
+MERGE_BLOCK=$(extract_skill_bash "$SKILLS_DIR/wrap/SKILL.md" wrap-no-review-override-merge) || exit 1
+RECORD_BLOCK=$(extract_skill_bash "$SKILLS_DIR/wrap/SKILL.md" wrap-record-no-review-merge) || exit 1
+reset
+rm -f "$LEDGER_FILE"
+run_gate "$GREEN_11"
+check_eq "0" "$RC" "fresh gate authorizes the override"
+export FAKE_NRO_STATE_PATH="$TMP/pr-state"
+printf '%s\n' OPEN >"$FAKE_NRO_STATE_PATH"
+run_wrap_fence() (
+  export PATH="$BIN:$PATH"
+  PR_NUM=1 CURRENT_REPO=solo/repo GATE_JSON="${2:-}" AC_VERIFIED_HEAD="${3:-$HEAD_SHA}"
+  resolve_script() { printf '%s\n' "$LEDGER_SUT"; }
+  eval "$1"
+  result=$?
+  printf '%s' "${NRO_SUFFIX:-}"
+  return "$result"
+)
+SNAPSHOT_PATH="$HOME/.claude/unreviewed-merge-snapshots/solo/repo/pr-1.json"
+run_wrap_fence "$MERGE_BLOCK" "$(j '{met,head_sha,no_review_override}')" >/dev/null 2>"$TMP/snapshot.err"
+check_eq "4" "$?" "a projected gate cannot authorize the merge"
+check_eq "OPEN" "$(cat "$FAKE_NRO_STATE_PATH")" "invalid input leaves the PR open"
+run_wrap_fence "$MERGE_BLOCK" "$OUT" 1111111111111111111111111111111111111111 >/dev/null 2>"$TMP/snapshot.err"
+check_eq "4" "$?" "a new HEAD requires acceptance verification"
+check_eq "OPEN" "$(cat "$FAKE_NRO_STATE_PATH")" "changed acceptance HEAD leaves the PR open"
+for mismatch in '.pr_number=2' '.owner_repo="other/repo"'; do
+  run_wrap_fence "$MERGE_BLOCK" "$(j "$mismatch")" >/dev/null 2>"$TMP/snapshot.err"
+  check_eq "4" "$?" "same HEAD cannot authorize a different repository or PR"
+done
+export FAKE_NRO_MERGE_STATE=BEHIND
+run_wrap_fence "$MERGE_BLOCK" "$OUT" >/dev/null 2>"$TMP/snapshot.err"
+check_eq "4" "$?" "the same HEAD cannot merge after the base advances"
+check_eq "OPEN" "$(cat "$FAKE_NRO_STATE_PATH")" "a newly behind PR stays open"
+unset FAKE_NRO_MERGE_STATE
+export FAKE_NRO_MERGE_READY="$TMP/override-merge-started"
+run_wrap_fence "$MERGE_BLOCK" "$OUT" >/dev/null &
+merge_pid=$!
+for (( spin=0; spin<100; spin++ )); do
+  [[ -e "$FAKE_NRO_MERGE_READY" ]] && break
+  sleep 0.02
+done
+test -e "$FAKE_NRO_MERGE_READY"; check_eq "0" "$?" "override reached the merge request"
+PATH="$BIN:$PATH" "$LEDGER_SUT" snapshot --pr 1 --repo solo/repo --discard 2>"$TMP/snapshot.err"
+check_eq "4" "$?" "concurrent discard waits for the merge and preserves merged evidence"
+wait "$merge_pid"
+check_eq "0" "$?" "the anchored override fence merges with the saved HEAD"
+unset FAKE_NRO_MERGE_READY
+check_eq "MERGED" "$(cat "$FAKE_NRO_STATE_PATH")" "native merge succeeded"
+check_eq "$OUT" "$(cat "$SNAPSHOT_PATH")" "the snapshot has the full gate"
+FAKE_PR_OVERRIDE=$(jq -cn --arg head "$HEAD_SHA" '{state:"MERGED",headRefOid:$head}')
+export FAKE_PR_OVERRIDE
+run_gate "$GREEN_11"
+check_eq "3" "$RC" "a fresh gate after merge cannot authorize recording"
+export FAKE_MERGED_HEAD=1111111111111111111111111111111111111111
+check_eq " (no AI review — ledger write failed)" "$(run_wrap_fence "$RECORD_BLOCK" 2>"$TMP/snapshot.err")" "a mismatched merged HEAD blocks recording"
+test -s "$SNAPSHOT_PATH"; check_eq "0" "$?" "a failed record retains the snapshot"
+check_eq "0" "$(ledger_rows)" "a failed record adds no ledger row"
+unset FAKE_MERGED_HEAD
+check_eq " (no AI review — logged)" "$(run_wrap_fence "$RECORD_BLOCK")" "a separate wrap call replays and records"
+check_eq "1" "$(ledger_rows)" "exactly one ledger row after replay"
+check_eq "" "$(run_wrap_fence "$RECORD_BLOCK")" "no snapshot is a no-op on ordinary recovery"
+check_eq "1" "$(ledger_rows)" "repeated recovery does not duplicate the row"
+unset FAKE_PR_OVERRIDE
+
+printf '%s\n' OPEN >"$FAKE_NRO_STATE_PATH"
+run_gate "$GREEN_11"
+export FAKE_MERGED_HEAD=1111111111111111111111111111111111111111
+run_wrap_fence "$MERGE_BLOCK" "$OUT" >/dev/null 2>"$TMP/snapshot.err"
+check_eq "4" "$?" "head mismatch refuses the snapshot before the merge"
+check_eq "OPEN" "$(cat "$FAKE_NRO_STATE_PATH")" "head mismatch leaves the PR open"
+unset FAKE_MERGED_HEAD
+export FAKE_NRO_REFUSE=1
+run_wrap_fence "$MERGE_BLOCK" "$OUT" >/dev/null 2>"$TMP/snapshot.err"
+check_eq "1" "$?" "merge refusal is reported"
+test -s "$SNAPSHOT_PATH"; check_eq "0" "$?" "failed merge retains the snapshot"
+export FAKE_NRO_BREAK_LOCK=1
+PATH="$BIN:$PATH" "$LEDGER_SUT" snapshot --pr 1 --repo solo/repo --discard 2>"$TMP/snapshot.err"
+check_eq "6" "$?" "a writer that loses its lock cannot discard the snapshot"
+test -s "$SNAPSHOT_PATH"; check_eq "0" "$?" "lost lock retains the snapshot"
+unset FAKE_NRO_BREAK_LOCK
+unset FAKE_NRO_REFUSE
+export FAKE_NRO_EXPECT_REVIEWED=1
+MERGE_REPO_BLOCK=$(extract_skill_bash "$SKILLS_DIR/merge/SKILL.md" merge-ledger-repo-binding) || exit 1
+(
+  export PATH="$BIN:$PATH"
+  PR_NUM=1 MERGE_PR_URL="https://github.com/solo/repo/pull/1"
+  unset CURRENT_REPO
+  resolve_script() { printf '%s\n' "$LEDGER_SUT"; }
+  eval "$MERGE_REPO_BLOCK"
+  "$LEDGER_SH" merge --pr "$PR_NUM" --repo "$CURRENT_REPO" --sha "$HEAD_SHA"
+)
+check_eq "0" "$?" "reviewed merge binds its repo and clears unused evidence"
+test ! -e "$SNAPSHOT_PATH"; check_eq "0" "$?" "reviewed merge leaves no override snapshot"
+unset FAKE_NRO_STATE_PATH FAKE_MERGED_HEAD FAKE_NRO_EXPECT_REVIEWED
+
+echo "=== #2256: a request skip on HEAD never makes a failing-CI HEAD merge-ready ==="
+reset
+SKIP_NOW=$(date +%s)
+mkdir -p "$HOME/.claude"
+jq -cn --arg h "$HEAD_SHA" --argjson n "$((SKIP_NOW + 3600))" --argjson t "$((SKIP_NOW - 300))" '
+  def rec: {next_available_epoch: $n, next_available: ($n | todateiso8601), notice_epoch: $t,
+    notice_at: ($t | todateiso8601), window_seconds: 3600, notice_excerpt: "review limit reached",
+    source_repo: "solo/repo", source_pr: 2, read_at: ($t | todateiso8601)};
+  {schema_version: 1,
+   review_availability: {coderabbit: rec, codeant: rec},
+   repos: {"solo/repo": {prs: {"1": {review_request_skips: {($h):
+     {head_sha: $h, reason: "no_reviewer_available_until x", recorded_at: "2026-11-11T00:00:00Z"}}}}}}}' \
+  > "$HOME/.claude/session-state.json"
+run_gate "$(bundle "$(run 1 build success 660)")"
+check_eq "true" "$(j .met)" "control: green CI with the same skip on HEAD: met"
+check_eq "true" "$(j '(.no_review_override.skip_reason // "") | startswith("no_reviewer_available_until")')" "control: the skip is the reason the override applied"
+reset
+run_gate "$(bundle "$(run 1 build failure 660)")"
+check_eq "false" "$(j .met)" "failing CI with the same skip on HEAD: not met"
+check_eq "yes" "$(has_missing "failing check-run")" "failing CI reason still blocks the gate"
+check_eq "false" "$(j '(.path == "no-review-override")')" "a failing HEAD is not met through the override path"
+rm -f "$HOME/.claude/session-state.json"
 
 echo
 echo "Results: $PASS passed, $FAIL failed"

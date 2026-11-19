@@ -17,7 +17,13 @@ import unittest
 
 ROOT = Path(sys.argv[1])
 SHELL = os.environ['PARK_WAKE_TEST_SHELL']
-SKILL = Path(os.environ.get('PARK_WAKE_TEST_SKILL_SOURCE', ROOT / '.claude/skills/pm/SKILL.md'))
+MODULES = ROOT / '.claude/skills/pm/modules'
+SKILL_OVERRIDE = os.environ.get('PARK_WAKE_TEST_SKILL_SOURCE')
+
+
+def park_text(cause):
+    path = Path(SKILL_OVERRIDE) if SKILL_OVERRIDE else MODULES / f'day-park-{cause}.md'
+    return path.read_text()
 HELPER = Path(os.environ.get('PARK_WAKE_TEST_HELPER_SOURCE', ROOT / '.claude/scripts/park-wake-publish.sh'))
 REAL_STATE = ROOT / '.claude/scripts/session-state.sh'
 REPO = 'owner/repo'
@@ -86,9 +92,8 @@ if '--cas' in args:
 os.execv(shell,[shell,real]+args)
 ''')
         self.blocks = {}
-        text = SKILL.read_text()
         for cause, anchor in [('reactive', 'pm-day-2d6-wake-publish'), ('preemptive', 'pm-day-2d7-wake-publish')]:
-            match = re.search(r'<!-- test-anchor: ' + anchor + r' -->\s*```bash\n(.*?)\n```', text, re.S)
+            match = re.search(r'<!-- test-anchor: ' + anchor + r' -->\s*```bash\n(.*?)\n```', park_text(cause), re.S)
             self.assertIsNotNone(match, anchor)
             self.blocks[cause] = match.group(1)
         subagent=(ROOT / '.claude/reference/subagent-thread-limit-park.md').read_text()
@@ -152,6 +157,66 @@ os.execv(shell,[shell,real]+args)
 
     def run_block(self, cause, **kwargs):
         return self.finish(self.start(cause,**kwargs))
+
+    def test_park_claim_resolves_generation_in_pm_order(self):
+        checkout = self.root / 'checkout'
+        local = checkout / '.claude/scripts/park-generation.sh'
+        installed = self.home / '.claude/scripts/park-generation.sh'
+        worktree = self.home / '.claude/skills-worktree/.claude/scripts/park-generation.sh'
+        local.parent.mkdir(parents=True)
+        worktree.parent.mkdir(parents=True)
+        isolated_state = self.root / 'claim-state'
+        self.tool_path(isolated_state, '#!/usr/bin/env bash\n'
+                       'HOME="$CLAIM_HOME" exec "$TEST_SHELL" "$TEST_REAL_STATE" --repo owner/repo "$@"\n')
+
+        def run_claim(cause, unset_home=False):
+            anchor = 'pm-day-2d6-park-claim' if cause == 'reactive' else 'pm-day-2d7-park-claim'
+            match = re.search(r'<!-- test-anchor: ' + anchor + r' -->\s*```bash\n(.*?)\n```',
+                              park_text(cause), re.S)
+            self.assertIsNotNone(match, anchor)
+            self.seed(cause)
+            self.set_day(parked_until=None, limit_cause=None, park_generation=None,
+                         limit_probe_fires_remaining=None)
+            original = self.state.read_bytes()
+            env = dict(self.env, CLAIM_HOME=str(self.home), SESSION_STATE_SH=str(isolated_state),
+                       REPO_KEY=REPO, NEW_HITS='1', LIMIT_KIND='rolling_window',
+                       PARKED_UNTIL='2027-01-01T00:00:00Z')
+            if unset_home:
+                env.pop('HOME', None)
+            result = subprocess.run([SHELL, '-u', '-c', match.group(1)], cwd=checkout,
+                                    env=env, capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return original, result.stdout
+
+        for selected, count, unset_home in [
+            ('worktree', 3, False), ('installed', 2, False),
+            ('local', 1, False), ('local', 1, True), ('altered', 1, True), (None, 0, True),
+        ]:
+            for path in (local, installed, worktree):
+                path.unlink(missing_ok=True)
+            if count:
+                shutil.copy2(ROOT / '.claude/scripts/park-generation.sh', local)
+            sentinel = self.root / 'altered-generator-executed'
+            if selected == 'altered':
+                with local.open('a') as script:
+                    script.write(f'\nprintf changed > "{sentinel}"\n')
+            for path, identity in ((installed, 'installed'), (worktree, 'worktree'))[:max(0, count - 1)]:
+                self.tool_path(path, f'#!/usr/bin/env bash\nprintf "%s\\n" parkgen-{identity}\n')
+            for cause in ('reactive', 'preemptive'):
+                with self.subTest(cause=cause, selected=selected, unset_home=unset_home):
+                    sentinel.unlink(missing_ok=True)
+                    original, out = run_claim(cause, unset_home)
+                    if selected in (None, 'altered'):
+                        self.assertEqual(out.strip(), 'PARK_CLAIM=error rc=generation')
+                        self.assertEqual(self.state.read_bytes(), original)
+                        self.assertFalse(sentinel.exists())
+                    else:
+                        self.assertIn('PARK_CLAIM=won', out)
+                        if selected == 'local':
+                            self.assertRegex(self.day()['park_generation'], r'^parkgen-[0-9a-f]{32}$')
+                        else:
+                            self.assertEqual(self.day()['park_generation'], f'parkgen-{selected}')
+                        self.assertIsNone(self.day()['limit_resume_task_id'])
 
     def stopped(self):
         return self.stop_log.read_text().splitlines() if self.stop_log.exists() else []
@@ -427,7 +492,7 @@ os.execv(shell,[shell,real]+args)
         for cause in ['reactive','preemptive']:
             self.seed(cause);self.set_day(parked_until=None,limit_cause=None,limit_probe_fires_remaining=None)
             def fence(anchor):
-                match=re.search(r'<!-- test-anchor: '+re.escape(anchor)+r' -->\s*```bash\n(.*?)\n```',SKILL.read_text(),re.S)
+                match=re.search(r'<!-- test-anchor: '+re.escape(anchor)+r' -->\s*```bash\n(.*?)\n```',park_text(cause),re.S)
                 self.assertIsNotNone(match,anchor);return match.group(1)
             code=fence('pm-day-2d6-park-claim' if cause=='reactive' else 'pm-day-2d7-park-claim')
             if cause=='preemptive':code+='\n'+fence('pm-day-2d7-park-record')
@@ -443,6 +508,82 @@ os.execv(shell,[shell,real]+args)
             generation=re.search(r'^PARK_GENERATION=(parkgen-[0-9a-f]{32})$',p.stdout,re.M)
             self.assertIsNotNone(generation,p.stdout);self.assertEqual(self.day()['park_generation'],generation[1])
             self.assertIsNone(self.day()['park_claim_token']);self.assertEqual(self.day()['limit_resume_task_id'],'own-task')
+
+class ReactiveWakeDelay(unittest.TestCase):
+    def run_wake(self, now, hits, mode='ready'):
+        marker = r'<!-- test-anchor: pm-day-2d6-reactive-wake-delay -->\s*```bash\n(.*?)\n```'
+        match = re.search(marker, park_text('reactive'), re.S)
+        self.assertIsNotNone(match)
+        stubs = r'''
+date() {
+  if [ "$*" = "-u +%s" ]; then printf '%s\n' "$FIXED_NOW"
+  else printf '%s\n' '20261111T210000Z'; fi
+}
+sleep() {
+  [ "$1" -gt 0 ] || return 1
+  printf 'delay=%s\n' "$1"
+}
+state_read() {
+  [ "$*" = '--repo owner/repo --get-json .repos["owner/repo"].day' ] || return 4
+  reads=0
+  if [ -r "$WAKE_READS" ]; then reads=$(cat "$WAKE_READS"); fi
+  printf '%s\n' "$((reads + 1))" > "$WAKE_READS"
+  park="$PARK_GENERATION"
+  wake="$LIMIT_GENERATION"
+  task='task-live'
+  case "$WAKE_MODE" in
+    delayed) if [ "$reads" -lt 2 ]; then wake=""; task=""; fi ;;
+    replacement-park) park='park-other' ;;
+    replacement-wake) wake='wake-other' ;;
+    unreadable) return 4 ;;
+  esac
+  jq -cn --arg park "$park" --arg wake "$wake" --arg task "$task" '
+    def optional: if . == "" then null else . end;
+    {park_generation:$park,limit_cause:"reactive",limit_kind:"rolling_window",
+     limit_resume_generation:($wake|optional),limit_resume_task_id:($task|optional)}'
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='park-wake-delay-') as folder:
+            reads = Path(folder) / 'reads'
+            env = dict(os.environ, FIXED_NOW=str(now), RESET_EPOCH='1000', NEW_HITS=str(hits),
+                       SESSION_STATE_SH='state_read', REPO_KEY=REPO, PARK_GENERATION='park-fixture',
+                       WAKE_READS=str(reads), WAKE_MODE=mode)
+            result = subprocess.run([SHELL, '-u', '-c', stubs + match.group(1)],
+                                    cwd=ROOT, env=env, capture_output=True, text=True,
+                                    timeout=10, check=True)
+            return result.stdout.splitlines(), int(reads.read_text()) if reads.exists() else 0
+
+    def assert_resume(self, output):
+        self.assertRegex(output, r'^/pause-resume --generation limit-20261111T210000Z-[0-9]+-[0-9]+$')
+
+    def test_buffer_and_existing_backoff(self):
+        for now, hits, expected in [(1080, 1, 40), (1080, 2, 80), (1120, 1, 120),
+                                    (1121, 1, 120), (1121, 2, 240)]:
+            with self.subTest(now=now, hits=hits):
+                lines, reads = self.run_wake(now, hits)
+                self.assertEqual(reads, 1)
+                self.assertEqual(len(lines), 2, lines)
+                self.assertEqual(lines[0], f'delay={expected}')
+                self.assert_resume(lines[1])
+
+    def test_delayed_publication_waits_for_exact_wake(self):
+        lines, reads = self.run_wake(1121, 1, 'delayed')
+        self.assertEqual(reads, 3)
+        self.assertEqual(lines[:-1], ['delay=120', 'delay=10', 'delay=10'])
+        self.assert_resume(lines[-1])
+
+    def test_replaced_park_or_wake_stops_silently(self):
+        for mode in ('replacement-park', 'replacement-wake'):
+            with self.subTest(mode=mode):
+                self.assertEqual(self.run_wake(1121, 1, mode), (['delay=120'], 1))
+
+    def test_unreadable_publication_is_bounded(self):
+        lines, reads = self.run_wake(1121, 1, 'unreadable')
+        self.assertEqual(reads, 13)
+        self.assertEqual(lines[:-1], ['delay=120'] + ['delay=10'] * 12)
+        self.assertIn('Resume manually with /pause-resume.', lines[-1])
+        self.assertFalse(any(line.startswith('/pause-resume ') for line in lines))
+
 
 unittest.main(argv=[sys.argv[0]]+sys.argv[2:])
 PY

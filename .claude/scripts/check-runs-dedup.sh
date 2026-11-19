@@ -15,6 +15,8 @@
 #
 # Dedup rule: group runs by (app identity, check name); within each group find the
 # highest `check_suite.id`; retain ALL runs belonging to that newest suite.
+# GitHub Actions additionally requires authoritative workflow/event scope from
+# check-runs-snapshot.sh. Unknown Actions identity is never collapsed (Issue 2316).
 #
 #   - Newest-SUITE-per-name, never latest-single-RUN-per-name. Matrix legs share a
 #     name within one suite, so keeping only one run per name would let a passing
@@ -99,7 +101,15 @@ DEDUPED=$(jq -s -c '
       else error("unexpected top-level \(type) in check-runs input")
       end
   ]
-  | group_by([.app.slug, .app.id, .name])
+  | group_by([
+      .app.slug, .app.id, .name,
+      if .app.slug == "github-actions" then
+        # An un-enriched Actions run must never erase evidence from another
+        # workflow. The authoritative snapshot supplies the execution scope.
+        (if ._actions_scope != null then [._actions_scope, ._actions_run_id]
+         else ["unknown", .check_suite.id, .id] end)
+      else null end
+    ])
   | map(
       ([.[] | .check_suite.id | select(. != null)] | max) as $newest
       | if $newest == null then .

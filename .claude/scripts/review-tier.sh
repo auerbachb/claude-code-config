@@ -389,26 +389,66 @@ if [[ -n "$CONFIG" ]]; then
 elif [[ -n "$PR_NUMBER" ]]; then
   SOURCE="base:${BASE_REF:-default-branch}"
   CONTENT_ERR="$TMP_DIR/content.err"
-  if [[ -n "$BASE_REF" ]]; then
-    CONTENT_JSON="$(gh api --method GET "repos/$REPO/contents/.claude/pm-config.md" -f ref="$BASE_REF" 2>"$CONTENT_ERR")" || CONTENT_JSON=""
-  else
-    CONTENT_JSON="$(gh api --method GET "repos/$REPO/contents/.claude/pm-config.md" 2>"$CONTENT_ERR")" || CONTENT_JSON=""
+  # Short-lived reuse of this base-branch read (issue #2443; lib/slow-read-cache.sh):
+  # keyed by the base branch's tip SHA read before and after the live read, and
+  # bound to the repo and the signed-in login. A miss, a stale entry or any doubt
+  # is the live read below; only a definite answer (a decoded file, or an
+  # HTTP 404) is ever stored.
+  SC_OK=0 SC_TIP1="" SC_FROM_CACHE=0 SC_STORE="" SC_START=""
+  if [[ -n "$BASE_REF" && -r "$SCRIPT_DIR/lib/slow-read-cache.sh" ]] \
+     && . "$SCRIPT_DIR/lib/slow-read-cache.sh" 2>/dev/null && slow_cache_enabled pm-config \
+     && SC_START="$(date +%s)" && slow_cache_viewer \
+     && SC_TIP1="$(slow_cache_base_tip "$REPO" "$BASE_REF")"; then
+    SC_OK=1
+    if SC_HIT="$(slow_cache_get pm-config "$REPO" "$BASE_REF" "$SC_TIP1" "$SLOW_CACHE_VIEWER")" \
+       && SC_PRESENT="$(printf '%s' "$SC_HIT" | jq -r 'select(type == "object") | .present | select(type == "boolean")' 2>/dev/null)" \
+       && [[ "$SC_PRESENT" == "false" ]]; then
+      SC_FROM_CACHE=1
+    elif [[ "${SC_PRESENT:-}" == "true" ]] \
+       && printf '%s' "$SC_HIT" | jq -e '(.text | type) == "string" and (.text | length) > 0' >/dev/null 2>&1 \
+       && printf '%s' "$SC_HIT" | jq -j '.text' > "$POLICY_COPY" 2>/dev/null; then
+      SC_FROM_CACHE=1
+      HAVE_POLICY=1
+    fi
   fi
-  if [[ -z "$CONTENT_JSON" ]]; then
-    # 404 = the base branch carries no pm-config.md: the normal "no policy"
-    # case (gh says "Not Found (HTTP 404)"). Anything else is a read failure
-    # and must not read as "absent".
-    grep -qE 'HTTP 404|Not Found' "$CONTENT_ERR" 2>/dev/null \
-      || die_read "could not read .claude/pm-config.md at ${BASE_REF:-the default branch}: $(head -1 "$CONTENT_ERR" 2>/dev/null)"
-  else
-    # Only a base64 file object carries the config. A symlink, a submodule,
-    # or an over-size blob (`encoding: none`) answers 200 with no usable
-    # content; defaulting that to "" would read as "no policy".
-    printf '%s' "$CONTENT_JSON" | jq -e 'type == "object" and .type == "file" and .encoding == "base64" and (.content | type) == "string"' >/dev/null 2>&1 \
-      || die_read ".claude/pm-config.md at ${BASE_REF:-the default branch} is not a readable base64 file object"
-    printf '%s' "$CONTENT_JSON" | jq -r '.content' | base64 --decode 2>/dev/null | tr -d '\r' > "$POLICY_COPY" \
-      || die_read "could not decode .claude/pm-config.md from ${BASE_REF:-the default branch}"
-    HAVE_POLICY=1
+  if [[ "$SC_FROM_CACHE" != 1 ]]; then
+    if [[ -n "$BASE_REF" ]]; then
+      # With the cache on, read the commit the key names, so the stored value is
+      # exactly that commit's file whatever the branch does meanwhile.
+      CONTENT_JSON="$(gh api --method GET "repos/$REPO/contents/.claude/pm-config.md" -f ref="${SC_TIP1:-$BASE_REF}" 2>"$CONTENT_ERR")" || CONTENT_JSON=""
+    else
+      CONTENT_JSON="$(gh api --method GET "repos/$REPO/contents/.claude/pm-config.md" 2>"$CONTENT_ERR")" || CONTENT_JSON=""
+    fi
+    if [[ -z "$CONTENT_JSON" ]]; then
+      # 404 = the base branch carries no pm-config.md: the normal "no policy"
+      # case (gh says "Not Found (HTTP 404)"). Anything else is a read failure
+      # and must not read as "absent".
+      grep -qE 'HTTP 404|Not Found' "$CONTENT_ERR" 2>/dev/null \
+        || die_read "could not read .claude/pm-config.md at ${BASE_REF:-the default branch}: $(head -1 "$CONTENT_ERR" 2>/dev/null)"
+      SC_STORE="absent"
+    else
+      # Only a base64 file object carries the config. A symlink, a submodule,
+      # or an over-size blob (`encoding: none`) answers 200 with no usable
+      # content; defaulting that to "" would read as "no policy".
+      printf '%s' "$CONTENT_JSON" | jq -e 'type == "object" and .type == "file" and .encoding == "base64" and (.content | type) == "string"' >/dev/null 2>&1 \
+        || die_read ".claude/pm-config.md at ${BASE_REF:-the default branch} is not a readable base64 file object"
+      printf '%s' "$CONTENT_JSON" | jq -r '.content' | base64 --decode 2>/dev/null | tr -d '\r' > "$POLICY_COPY" \
+        || die_read "could not decode .claude/pm-config.md from ${BASE_REF:-the default branch}"
+      HAVE_POLICY=1
+      SC_STORE="present"
+    fi
+    if [[ "$SC_OK" == 1 && -n "$SC_STORE" ]]; then
+      # Store only when the base tip did not move while the file was read.
+      if [[ "$SC_STORE" == "present" ]]; then
+        SC_VALUE="$(jq -cn --rawfile text "$POLICY_COPY" '{present: true, text: $text}' 2>/dev/null)" || SC_VALUE=""
+      else
+        SC_VALUE='{"present":false}'
+      fi
+      SC_TIP2="$(slow_cache_base_tip "$REPO" "$BASE_REF" 2>/dev/null)" || SC_TIP2=""
+      if [[ -n "$SC_VALUE" && -n "$SC_TIP2" && "$SC_TIP2" == "$SC_TIP1" ]]; then
+        slow_cache_put pm-config "$REPO" "$BASE_REF" "$SC_TIP1" "$SLOW_CACHE_VIEWER" "$SC_VALUE" "$SC_START" >/dev/null 2>&1 || true
+      fi
+    fi
   fi
 else
   TOP="$(git rev-parse --show-toplevel 2>/dev/null)" \
@@ -576,6 +616,47 @@ resolve_codeant_cap() {
   fi
 }
 
+# When the agent asks for AI reviews (issue #2195): REVIEW_REQUEST in the same
+# live ```ini block. `after-ci` (default when absent) → request once per HEAD
+# only when the checks that matter are green; `on-push` → today's behaviour,
+# no CI gate. Any other value → `never` with one stderr warning: an unclear
+# request switch fails toward not requesting. REVIEW_REQUEST_CHECKS is a comma
+# list of check-run names that must be green first; absent or empty → every
+# non-reviewer check. Both are reported as JSON fields and read by
+# review-request-gate.sh; this script never decides the request itself.
+REQ_KEY="REVIEW_REQUEST"
+REQ_VALUE="after-ci"
+REQ_CHECKS_KEY="REVIEW_REQUEST_CHECKS"
+REQ_CHECKS=""
+REQ_LIVE_FOUND=0
+REQ_CHECKS_LIVE_FOUND=0
+resolve_review_request() {
+  local range first last found value
+  range="$(section_range "${1-}")" || die_read "could not locate ## $SECTION for $REQ_KEY"
+  [[ -n "$range" ]] || return 0
+  read -r first last <<<"$range"
+  (( first <= last )) || return 0
+  found="$(sed -n "${first},${last}p" "$POLICY_INI" | extract_knob_value "$REQ_KEY")" \
+    || die_read "could not read $REQ_KEY from ## $SECTION"
+  if [[ -n "$found" ]]; then
+    REQ_LIVE_FOUND=1
+    value="${found#=}"
+    case "$value" in
+      after-ci|on-push) REQ_VALUE="$value" ;;
+      *)
+        warn "$REQ_KEY='$value' in ## $SECTION is not after-ci or on-push — treating review requests as never (an unclear request switch fails toward not requesting)"
+        REQ_VALUE="never"
+        ;;
+    esac
+  fi
+  found="$(sed -n "${first},${last}p" "$POLICY_INI" | extract_knob_value "$REQ_CHECKS_KEY")" \
+    || die_read "could not read $REQ_CHECKS_KEY from ## $SECTION"
+  if [[ -n "$found" ]]; then
+    REQ_CHECKS_LIVE_FOUND=1
+    REQ_CHECKS="${found#=}"
+  fi
+}
+
 # A heading that is almost `## Review policy` (other case, extra spaces).
 # The gate treats it as invalid below; the switch in it is honoured.
 near_miss_heading() {
@@ -592,9 +673,21 @@ if [[ $HAVE_POLICY -eq 1 && -s "$POLICY_COPY" ]]; then
   resolve_escalation
   resolve_override_window
   resolve_codeant_cap
+  resolve_review_request
   if [[ $ESC_SECTION_FOUND -eq 0 ]]; then
     ESC_NEAR="$(near_miss_heading)"
-    [[ -z "$ESC_NEAR" ]] || { resolve_escalation "$ESC_NEAR"; resolve_override_window "$ESC_NEAR"; resolve_codeant_cap "$ESC_NEAR"; }
+    [[ -z "$ESC_NEAR" ]] || { resolve_escalation "$ESC_NEAR"; resolve_override_window "$ESC_NEAR"; resolve_codeant_cap "$ESC_NEAR"; resolve_review_request "$ESC_NEAR"; }
+  fi
+  # A request key outside a live ini block is never honoured; say so once.
+  if [[ $REQ_LIVE_FOUND -eq 0 ]]; then
+    REQ_STRAY="$(extract_knob_value "$REQ_KEY" < "$POLICY_COPY")" || REQ_STRAY=""
+    [[ -z "$REQ_STRAY" ]] \
+      || warn "$REQ_KEY is not inside a live \`\`\`ini block under ## $SECTION (it is in prose, a comment, another fence, or another section) — ignored; review requests stay after-ci"
+  fi
+  if [[ $REQ_CHECKS_LIVE_FOUND -eq 0 ]]; then
+    REQ_CHECKS_STRAY="$(extract_knob_value "$REQ_CHECKS_KEY" < "$POLICY_COPY")" || REQ_CHECKS_STRAY=""
+    [[ -z "$REQ_CHECKS_STRAY" ]] \
+      || warn "$REQ_CHECKS_KEY is not inside a live \`\`\`ini block under ## $SECTION — ignored; every non-reviewer check is awaited"
   fi
   # A cap key outside a live ini block is never honoured; say so once.
   if [[ $CAP_LIVE_FOUND -eq 0 ]]; then
@@ -625,6 +718,7 @@ emit() {
     jq -cn --arg policy "$1" --arg gate "$2" --arg tier "$3" --arg source "$SOURCE" \
       --arg error "$4" --argjson matches "$5" --arg escalation "$ESCALATION" \
       --argjson nro "$NRO_MINUTES" --argjson cap_full "$CAP_FULL" \
+      --arg req "$REQ_VALUE" --arg req_checks "$REQ_CHECKS" \
       '{policy: $policy, gate: $gate,
         tier: (if $tier == "" then null else $tier end),
         source: $source,
@@ -632,7 +726,11 @@ emit() {
         matches: $matches,
         escalation: $escalation,
         no_review_override_minutes: $nro,
-        codeant_lifetime_cap_full: $cap_full}'
+        codeant_lifetime_cap_full: $cap_full,
+        review_request: $req,
+        review_request_checks: (if $req_checks == "" then null
+          else ($req_checks | split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) | map(select(length > 0))
+                | if length == 0 then null else . end) end)}'
   else
     printf '%s\n' "$2"
   fi

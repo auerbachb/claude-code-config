@@ -78,6 +78,11 @@
             "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/question-leak-warn.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/stoppage-log.sh",
+            "timeout": 10
           }
         ]
       }
@@ -116,6 +121,16 @@
         ]
       },
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/issue-claim-guard.sh",
+            "timeout": 30
+          }
+        ]
+      },
+      {
         "matcher": "Write|Edit|NotebookEdit",
         "hooks": [
           {
@@ -131,6 +146,16 @@
           {
             "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/human-queue-capture.sh",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion|mcp__ccd_session__start_session",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/unattended-question-guard.sh",
             "timeout": 15
           }
         ]
@@ -192,6 +217,16 @@
             "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/quota-reserve-turn.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/unattended-digest.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/stoppage-log.sh",
+            "timeout": 10
           }
         ]
       }

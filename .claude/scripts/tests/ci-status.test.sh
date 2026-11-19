@@ -104,11 +104,40 @@ for concl in failure timed_out action_required startup_failure stale; do
   check_eq 3 "$RC" "blocking conclusion '$concl' on the newest run still exits 3"
 done
 
-# Non-blocking conclusions stay non-blocking.
+# Non-blocking conclusions stay non-blocking. `cancelled` here is the preserved
+# policy for checks that are NOT required (issues #211, #1361): this script counts
+# every check-run and has no notion of required contexts. A cancelled REQUIRED
+# check is held by merge-gate.sh instead — merge-gate-required-cancelled.test.sh
+# (issue #1846) — so do not tighten this loop to "fix" that case.
 for concl in success neutral skipped cancelled; do
   run_stdin "$(bundle "$(cr 1 test failure 100)" "$(cr 2 test "$concl" 200)")"
   check_eq 0 "$RC" "non-blocking conclusion '$concl' on the newest run exits 0"
 done
+
+CANCELLED="$(bundle "$(cr 2 test cancelled 200)")"
+run_stdin "$CANCELLED"
+check_eq '[{"id":2,"name":"test"}]' "$(jq -c '.cancelled_runs' <<<"$OUT")" "optional cancellation remains visible in JSON"
+SUMMARY=$(printf '%s' "$CANCELLED" | "$SUT" "$SHA" --format summary --check-runs-stdin)
+check_eq "CI: 1/1 passed"$'\n'"Cancelled checks: test. Use merge-gate.sh to verify whether any are required." \
+  "$SUMMARY" "summary directs cancelled checks to the required-context gate"
+
+# Fail closed (issue #1846): the non-blocking set is a whitelist, so a conclusion
+# nobody has listed — one GitHub adds later — blocks instead of passing silently.
+run_stdin "$(bundle "$(cr 1 test success 100)" "$(cr 2 test brand_new_conclusion 200)")"
+check_eq 3 "$RC" "unknown conclusion on the newest run: exit 3, not a silent pass"
+check_eq 1 "$(field .failing)" "unknown conclusion: counted failing"
+check_eq 0 "$(field .passing)" "unknown conclusion: not counted passing"
+check_eq "brand_new_conclusion" "$(field '.blocking[0].conclusion')" "unknown conclusion: named in blocking"
+
+# A run marked completed that carries no conclusion cannot be read as a pass either.
+run_stdin "$(bundle "$(cr 1 test null 100 gha completed)")"
+check_eq 3 "$RC" "completed with no conclusion: exit 3"
+check_eq "none" "$(field '.blocking[0].conclusion')" "completed with no conclusion: reported as 'none'"
+
+# ...while a run that has not completed is still WAIT, never a failure.
+run_stdin "$(bundle "$(cr 1 test null 100 gha in_progress)")"
+check_eq 1 "$RC" "in-progress run with no conclusion: exit 1 (WAIT), unchanged"
+check_eq 0 "$(field .failing)" "in-progress run with no conclusion: not failing"
 
 # --------------------------------------------------------------------------
 # 5. Same name from two different apps must not collapse into each other.
@@ -147,7 +176,9 @@ case "$ARGS" in
   "repo view --json nameWithOwner --jq .nameWithOwner")
     echo "solo/repo"; exit 0 ;;
   *check-runs*)
-    printf '%s' "$FAKE_CHECK_RUNS"; exit 0 ;;
+    printf '%s' "$FAKE_CHECK_RUNS" | jq '. + {total_count:(.check_runs | length)}'; exit 0 ;;
+  *actions/runs*)
+    echo '{"total_count":0,"workflow_runs":[]}'; exit 0 ;;
 esac
 echo "unexpected gh call: $ARGS" >&2
 exit 1
@@ -225,9 +256,28 @@ check_eq 3 "$RC" "exclude-reviewers control: without the flag a failed reviewer 
 run_excl "$FAILED_REVIEWER"
 check_eq 0 "$RC" "exclude-reviewers: failed reviewer checks with green build checks are clean"
 
-for slug in codeant cursor-com coderabbit graphite-app graphite greptile-apps greptile; do
+for slug in codeant cursor-com coderabbit greptile-apps greptile; do
   run_excl "$(bundle "$(cr 1 build success 100)" "$(cr 2 r failure 200 "$slug")")"
   check_eq 0 "$RC" "exclude-reviewers: slug $slug is a reviewer"
+done
+
+for slug in graphite-app graphite; do
+  for view in run_stdin run_excl; do
+    "$view" "$(bundle "$(cr 1 build success 100)" "$(cr 2 retired failure 200 "$slug")" "$(cr 3 pending null 300 "$slug" in_progress)")"
+    check_eq 0 "$RC" "retired $slug failure and pending runs cannot block $view"
+    check_eq 1 "$(field .total)" "only build remains in $view after retired $slug runs"
+    "$view" "$(bundle "$(cr 2 retired success 200 "$slug")")"
+    check_eq 1 "$RC" "retired $slug success alone cannot pass $view"
+    check_eq 0 "$(field .total)" "no active checks remain in $view"
+  done
+done
+
+LEGACY_GRAPHITE="$(cr 2 'Graphite / AI Reviews' success 200 graphite-app | jq -c 'del(.app)')"
+for view in run_stdin run_excl; do
+  "$view" "$(bundle "$LEGACY_GRAPHITE")"
+  check_eq 1 "$RC" "legacy Graphite-only success cannot pass $view"
+  "$view" "$(bundle "$(cr 2 'Graphite / AI Reviews' failure 200 github-actions)")"
+  check_eq 3 "$RC" "known publisher with the legacy Graphite name still blocks $view"
 done
 
 # A check NAMED after a reviewer but published by a workflow is build CI.

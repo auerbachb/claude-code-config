@@ -7,15 +7,19 @@ Canonical human-facing output policy (Issue #1873). CLAUDE.md gives this policy 
 | Situation | Human-facing default | Required record/action |
 |---|---|---|
 | Routine progress, successful check, launch or dispatch | Silent | Update existing issue/PR/session records and continue |
-| Unchanged monitoring, first/resume tick, backoff, table age | Silent | Persist tick, digest, watermarks, cadence; retain script-side filtering |
+| Unchanged monitoring, first/resume tick, backoff | Silent | Persist tick, digest, watermarks, cadence; retain script-side filtering |
+| Round dispatch, and each `TABLE FLOOR:` line from the armed floor watch (last full board over an hour old while work runs) | Full "Running now" table, running and queued rows together, once per dispatch and once per floor line | `table-freshness.sh --note-rendered` after every render; watch, wake-up check and re-arm per `time-estimates.md` §"Table freshness" |
+| Board below limit after a refill evaluation | One line when occupied slots or reason counts change, including a verified `refill_missed` fault | Persist every census and keep unchanged notices and full boards quiet |
 | Ordinary recoverable failure | Silent during authorized recovery | Preserve full failure capture and nonzero exit; repair/retry within existing bounds |
 | Owner-only blocker, ambiguity, safety event, exhausted recovery or genuine stall | Immediate concise notice | State action, practical options/consequence, evidence; persist stop and resume state |
 | Explicit status, summary, board or verbose request | Answer the requested scope | Render from existing records; tables are available on request |
+| `/pm` standing status request | Report a changed active board every 30 minutes by default and immediately on a terminal outcome | Set `report_every_min: 0` to opt out or a positive value to change cadence. Use the existing PM turn, canonical board and exact report receipt |
+| Completion of a user `/pm` invocation | One step receipt, after the immediate tick on a day arming invocation | Render recorded outcomes and flag missing ones. Internal ticks and probes stay silent. |
 | Terminal completion | Minimal outcome; useful artifact link only | Preserve full verification in PR/issue/logs; emit clean merge line once |
 
 A stopped pipeline must never disappear: when recovery ends, surface why and how it can resume even if the owner cannot fix the underlying service. Do not repeat an unchanged notice every tick. A materially changed blocker, failed notification, or a new required decision may notify again. Never silence a safety event merely because recovery is possible.
 
-Use one or two concise sentences for an ask: “Choose A (effect) or B (effect) so work can resume. Evidence: [PR/issue/log].” Include time only when it affects that choice, such as a real deadline or reset time. No timestamp prefixes for ceremony. Routine recap tables, hourly board floors, file-write counters, refill announcements, and skill startup/teardown banners are not exceptions. Explicit requests for status remain immediate.
+Use one or two concise sentences for an ask: “Choose A (effect) or B (effect) so work can resume. Evidence: [PR/issue/log].” Include time only when it affects that choice, such as a real deadline or reset time. No timestamp prefixes for ceremony. Scheduled PM reports cover the invoking repository. Ordinary recap tables, file-write counters, refill announcements, and skill banners remain silent. A `TABLE FLOOR:` line is the exception: it means render the full table now, the same rule `/subagent` Step 8 and `time-estimates.md` apply. Explicit requests for status remain immediate.
 
 ## Evidence and recovery
 
@@ -33,7 +37,7 @@ Issue #1878 owns avoiding unchanged-tick model invocation. Keep its script-side 
 - `/fixpr`: save the latest snapshot in handoff `.fixpr_wait` before classification (HEAD, baseline, bundle path, observation time and complete wait verdict); a failed write cannot return clean. Retain bounded wait-state fields (`bots_pending`, `ci_pending`, `ci_failing`, `new_findings`, `head_moved`) and parser footers. Wait-loop diagnostic echoes go to evidence, not routine chat.
 - `/babysit-pr`: retain fetch error handling (skip classification on empty state), gate exit codes, digest/cadence persistence, dispatch locks and exact teardown. T7 is an optional status rendering, not a per-tick notification.
 - `/pr-monitor-and-manage`: persist `.pmm.watch_posture` (status, hold reason, launch/finish flags and observation time) before dispatch; clear ticks overwrite previous holds, and failed writes stop the tick. Compute/persist state and row digests even with no table; retain complete dispatch inputs. Status tables/reviewer engagement matrices render only on explicit request; owner asks need only relevant rows.
-- `/pm` and `/subagent`: retain launch/queue/claim and handoff records. Routine board freshness does not trigger a model or render; maintain explicit `/board` access. Do not stamp a board render that did not occur.
+- `/pm` and `/subagent`: retain launch/queue/claim and handoff records. Keep explicit `/board` access. The scheduled PM report gate uses existing turns and never starts a model or watch for routine board freshness. Do not stamp a board render that did not occur.
 
 No new proxy, universal interception, or optional compression tooling is introduced. Existing compact-result and PR-state contracts remain the foundation.
 

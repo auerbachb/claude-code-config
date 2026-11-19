@@ -48,7 +48,7 @@ check_eq() {
 # ---- canonical production projection --------------------------------------
 FILTER_OK="yes"
 [[ -r "$FILTER" ]] || FILTER_OK="not readable"
-if [[ "$FILTER_OK" == "yes" ]] && ! jq -e -f "$FILTER" <<<'[]' >/dev/null 2>&1; then
+if [[ "$FILTER_OK" == "yes" ]] && ! jq -e -L "$TEST_DIR/../lib" -f "$FILTER" <<<'[]' >/dev/null 2>&1; then
   FILTER_OK="invalid jq"
 fi
 check_eq "canonical CR_SPLIT projection is readable jq" "yes" "$FILTER_OK"
@@ -61,7 +61,7 @@ fi
 # filter to its output.
 project() {
   # $1 = raw check-runs JSON array, $2 = jq filter over the projection output
-  jq -c -f "$FILTER" <<<"$1" | jq -c "$2"
+  jq -c -L "$TEST_DIR/../lib" -f "$FILTER" <<<"$1" | jq -c "$2"
 }
 
 # ---- fixtures ---------------------------------------------------------------
@@ -136,6 +136,15 @@ check_eq "app key is present even when identity is unknown" \
 
 ############################################################################
 echo
+LEGACY_AND_FOREIGN_GRAPHITE='[
+  {"id":20,"name":"Graphite / AI Reviews","status":"completed","conclusion":"success"},
+  {"id":21,"name":"Graphite / mergeability_check","status":"queued","conclusion":null,"app":{"slug":null}},
+  {"id":22,"name":"Graphite / AI Reviews","status":"completed","conclusion":"failure","app":{"slug":"github-actions"}}
+]'
+check_eq "only the known non-Graphite publisher stays in the CI projection" \
+  '[1,0,1,0,[22]]' \
+  "$(project "$LEGACY_AND_FOREIGN_GRAPHITE" '[.total,.passing,.failing,.in_progress,[.all[].id]]')"
+
 echo "== backward compatibility: the change is purely additive =="
 # Exact key sets (jq `keys` sorts), so a dropped or renamed pre-#956 field fails
 # here instead of surfacing as a downstream consumer reading null.
@@ -163,6 +172,16 @@ check_eq "counts unchanged (total/passing/failing/in_progress)" \
 check_eq "top-level bundle key set unchanged" \
   '["all","failing","failing_runs","in_progress","in_progress_runs","passing","total"]' \
   "$(project "$RUNS" 'keys')"
+
+UNRECOGNIZED='[
+  {"id":30,"name":"future","status":"completed","conclusion":"future_result"},
+  {"id":31,"name":"pending","status":"queued","conclusion":"failure"},
+  {"id":32,"name":"optional","status":"completed","conclusion":"cancelled"},
+  {"id":33,"name":"unknown","status":"completed","conclusion":null}
+]'
+check_eq "unknown conclusions fail closed and each check is classified once" \
+  '[4,1,2,1,[30,33],[31]]' \
+  "$(project "$UNRECOGNIZED" '[.total,.passing,.failing,.in_progress,[.failing_runs[].id],[.in_progress_runs[].id]]')"
 
 ############################################################################
 echo
@@ -210,6 +229,12 @@ check_eq "graphite-app's pending check (any name) is not CI" \
 check_eq "graphite-app's failed check is not CI failing" \
   '{"ci_pending":[],"ci_failing":[]}' \
   "$(wait_ci '[{"name":"Graphite / mergeability_check","status":"completed","conclusion":"failure","app":{"slug":"graphite-app","id":158384}}]')"
+check_eq "legacy failed Graphite AI review without a slug is excluded" \
+  '{"ci_pending":[],"ci_failing":[]}' \
+  "$(wait_ci '[{"name":"Graphite / AI Reviews","status":"completed","conclusion":"failure"}]')"
+check_eq "known publisher takes precedence over the legacy Graphite name" \
+  '{"ci_pending":["Graphite / AI Reviews"],"ci_failing":[]}' \
+  "$(wait_ci '[{"name":"Graphite / AI Reviews","status":"in_progress","app":{"slug":"github-actions"}}]')"
 check_eq "other app's failed 'graphite' check stays CI failing" \
   '{"ci_pending":[],"ci_failing":["graphite-lint"]}' \
   "$(wait_ci '[{"name":"graphite-lint","status":"completed","conclusion":"failure","app":{"slug":"github-actions","id":15368}}]')"
@@ -219,6 +244,9 @@ check_eq "a GitHub Actions job named after a reviewer stays CI pending" \
 check_eq "another app's failed 'codeant lint' build check stays CI failing" \
   '{"ci_pending":[],"ci_failing":["codeant lint"]}' \
   "$(wait_ci '[{"name":"codeant lint","status":"completed","conclusion":"failure","app":{"slug":"github-actions","id":15368}}]')"
+check_eq "look-alike Cursor publisher stays in build CI" \
+  '{"ci_pending":["lint"],"ci_failing":["security"]}' \
+  "$(wait_ci '[{"name":"lint","status":"queued","app":{"slug":"cursor-integrations"}},{"name":"security","status":"completed","conclusion":"failure","app":{"slug":"cursor-integrations"}}]')"
 check_eq "the real CodeRabbit check (by slug) is not CI" \
   '{"ci_pending":[],"ci_failing":[]}' \
   "$(wait_ci '[{"name":"CodeRabbit","status":"in_progress","conclusion":null,"app":{"slug":"coderabbitai","id":173846}}]')"

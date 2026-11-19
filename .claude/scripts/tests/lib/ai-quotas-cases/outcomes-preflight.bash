@@ -24,8 +24,8 @@ write_config "$(account_json codex outcomes-no-access "$X1")"
 run --json
 OUTCOMES_LEDGER="$CASE_HOME/.claude/ai-quotas-history.outcomes.jsonl"
 check_eq "$RC" "0" "missing-access Codex fallback fixture reaches the reader"
-check_eq "$(tail -n 1 "$OUTCOMES_LEDGER" | jq -r '.status')" "logged_out" "missing Codex access token records logged_out"
-check_eq "$(tail -n 1 "$OUTCOMES_LEDGER" | jq -r '.source')" "credential-store" "missing Codex fallback token records its credential preflight"
+check_eq "$(jq -c 'select(.skip_reason == null)' "$OUTCOMES_LEDGER" | tail -n 1 | jq -r '.status')" "logged_out" "missing Codex access token records logged_out"
+check_eq "$(jq -c 'select(.skip_reason == null)' "$OUTCOMES_LEDGER" | tail -n 1 | jq -r '.source')" "credential-store" "missing Codex fallback token records its credential preflight"
 check_eq "$(wc -l < "$STUB_CURL_LOG" | tr -d ' ')" "0" "missing Codex fallback token makes no HTTP request"
 
 reset_state
@@ -48,7 +48,7 @@ write_config "$(account_json claude outcomes-no-refresh "$C1" Claude-outcomes-no
 run --json
 OUTCOMES_LEDGER="$CASE_HOME/.claude/ai-quotas-history.outcomes.jsonl"
 check_eq "$RC" "0" "missing-refresh Claude fixture reaches the reader"
-check_eq "$(tail -n 1 "$OUTCOMES_LEDGER" | jq -r '.status')" "logged_out" "missing Claude refresh token records logged_out"
-check_eq "$(tail -n 1 "$OUTCOMES_LEDGER" | jq -r '.source')" "credential-store" "missing Claude refresh token records its credential preflight"
+check_eq "$(jq -c 'select(.skip_reason == null)' "$OUTCOMES_LEDGER" | tail -n 1 | jq -r '.status')" "logged_out" "missing Claude refresh token records logged_out"
+check_eq "$(jq -c 'select(.skip_reason == null)' "$OUTCOMES_LEDGER" | tail -n 1 | jq -r '.source')" "credential-store" "missing Claude refresh token records its credential preflight"
 check_eq "$(wc -l < "$STUB_CURL_LOG" | tr -d ' ')" "0" "missing Claude refresh token makes no HTTP request"
 

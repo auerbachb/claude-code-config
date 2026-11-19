@@ -27,9 +27,9 @@ BEHAVIOR
 
   The capture hook runs this on every question: a registered control session
   whose last tick is recent is a live desk, and only then are questions
-  queued instead of shown in the asking thread (desk/README.md, "Capture
-  hook"). Any tick since the session was registered counts (registering a
-  different session clears tick_at); in practice only the desk ticks.
+  queued instead of shown in the asking thread (desk/docs/capture-hook.md).
+  Any tick since the session was registered counts (registering a different
+  session clears tick_at); in practice only the desk ticks.
 
 OUTPUT
   Two lines: `control session SESSION` (or `no control session`), then
@@ -75,6 +75,8 @@ SELECT jsonb_build_object(
          'session', session,
          'last_tick_at', to_char(tick_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
          'tick_age_seconds', age)
+       || CASE WHEN EXISTS (SELECT 1 FROM state WHERE key = 'mobile_answers_imported')
+               THEN '{"mobile_answers_imported":true}'::jsonb ELSE '{}'::jsonb END
   FROM a;
 SQL
   else

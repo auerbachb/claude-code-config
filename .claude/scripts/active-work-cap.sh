@@ -27,8 +27,9 @@
 #   productive review. 6 is that limit plus one slot of operating headroom.
 #
 # USAGE
-#   active-work-cap.sh [--json | --free | --cap | --ceiling]
+#   active-work-cap.sh [--json | --free | --cap | --ceiling | --width]
 #                      [--repo <owner/name>] [--path <dir>]
+#   active-work-cap.sh --poll-interval <n-concurrent-pipelines>
 #   active-work-cap.sh --help | -h
 #
 # MODES
@@ -43,6 +44,15 @@
 #              default 4) — the raw resolved value, NOT min()'d with the cap;
 #              consumers apply min(CEILING, CAP) themselves. Resolves nothing
 #              else (a bad cap cannot warn here) and makes no network call.
+#   --width    Print the parallel width the thread may launch up to in its
+#              current run mode (run-mode.sh get): default/speed read
+#              DEFAULT_MODE_WIDTH / SPEED_MODE_WIDTH (default 15); cheap reads
+#              CHEAP_MODE_WIDTH (default PIPELINE_CEILING). Always clamped to
+#              CAP, so the governing limit is min(mode width, ACTIVE_WORK_CAP).
+#              Network-free; the mode is read fail-open (default).
+#   --poll-interval N
+#              Print the review-poll cadence in seconds for N concurrent
+#              pipelines: 120 above 8, otherwise 60. Network-free.
 #
 # FLAGS
 #   --repo <owner/name>  Count open PRs in this repo instead of the one
@@ -59,7 +69,7 @@
 #        Author-scoped per #732/#733; a collaborator's PR is never counted.
 #     2. Live offered issue-maker work — the UNION of:
 #          a. The chip offer registry (chip-offer-registry.sh --count), which
-#             covers all emitters (/pm, /prompt, /wave, /issue-maker,
+#             covers all emitters (/pm, /wave, /issue-maker,
 #             /start-issue). Entries in `offered` or `running` state are counted;
 #             `pr-backed`, `done`, `retracted`, and `expired` are not.
 #             chip-offer-registry.sh "Offer Registry" (chip-launching.md) is the
@@ -286,6 +296,22 @@ CEILING_DEFAULT=4
 CEILING_MIN=1
 CEILING_MAX=20
 
+# Per-mode parallel width (PM run modes, #2430). Default and speed allow up to
+# 15 pipelines; cheap defaults to the repo's PIPELINE_CEILING. Keys live in the
+# same `## Active work` section and share the ceiling's env -> config -> default
+# cascade and bounds. The governing limit is min(mode width, CAP): a mode never
+# raises the repo-wide cap, and --width applies that min itself.
+WIDTH_DEFAULT=15
+WIDTH_MIN=1
+WIDTH_MAX=20
+
+# Polling cadence above the pipeline threshold (#2430). Above POLL_WIDE_THRESHOLD
+# concurrent pipelines the review poll runs at POLL_WIDE_S instead of POLL_BASE_S,
+# so the shared GitHub request allowance holds. --poll-interval applies it.
+POLL_BASE_S=60
+POLL_WIDE_S=120
+POLL_WIDE_THRESHOLD=8
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 HANDOFF_DIR="${CLAUDE_ACTIVE_WORK_HANDOFF_DIR:-$HOME/.claude/handoffs}"
@@ -310,17 +336,25 @@ die_read() {
 MODE="plain"
 REPO=""
 FROM_PATH=""
+POLL_N=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h) usage; exit 0 ;;
-    --json|--free|--cap|--ceiling)
+    --json|--free|--cap|--ceiling|--width)
       local_mode="${1#--}"
       if [[ "$MODE" != "plain" ]]; then
         die_usage "conflicting output modes (--$local_mode after --$MODE)"
       fi
       MODE="$local_mode"
       shift
+      ;;
+    --poll-interval)
+      [[ $# -ge 2 && -n "${2:-}" ]] || die_usage "--poll-interval requires a pipeline count"
+      if [[ "$MODE" != "plain" ]]; then
+        die_usage "conflicting output modes (--poll-interval after --$MODE)"
+      fi
+      MODE="poll"; POLL_N="$2"; shift 2
       ;;
     --repo)
       [[ $# -ge 2 && -n "${2:-}" ]] || die_usage "--repo requires a value"
@@ -373,6 +407,21 @@ extract_knob_value() {
   '
 }
 
+# Succeeds (exit 0) when the config text carries a `KEY=`/`KEY:` line for the key,
+# whether or not it has a value. Same matching rules as extract_knob_value.
+knob_line_present() {
+  awk -v key="$1" '
+    {
+      i = match($0, /[=:]/)
+      if (i == 0) next
+      k = substr($0, 1, i - 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", k)
+      if (tolower(k) == tolower(key)) { found = 1; exit }
+    }
+    END { exit (found ? 0 : 1) }
+  '
+}
+
 # Resolve one knob: env override -> the `## Active work` config line -> the
 # built-in default. Prints "<value> <source>". Both knobs share this path so
 # their precedence and warn-and-fall-back contract cannot drift apart. An empty
@@ -406,7 +455,15 @@ resolve_knob() {
           warn "pm-config-get.sh usage error while reading the $noun; using default"
         elif [[ $rc -eq 0 ]]; then
           raw="$(printf '%s\n' "$body" | extract_knob_value "$key")"
-          [[ -n "$raw" ]] && source="config"
+          if [[ -n "$raw" ]]; then
+            source="config"
+          elif printf '%s\n' "$body" | knob_line_present "$key"; then
+            # `KEY=` with no value is a configured mistake, not an absent key:
+            # warn and take the default, like any other invalid value.
+            warn "$key is set but empty in pm-config.md — using default $def"
+            printf '%s %s' "$def" "default"
+            return
+          fi
         fi
       fi
     fi
@@ -449,6 +506,24 @@ resolve_ceiling() {
     "$CEILING_DEFAULT" "$CEILING_MIN" "$CEILING_MAX" ceiling
 }
 
+# --poll-interval N prints the review-poll cadence in seconds for N concurrent
+# pipelines: POLL_WIDE_S above POLL_WIDE_THRESHOLD, POLL_BASE_S at or below.
+# Pure arithmetic, network-free, and it reads no config. Digits are counted
+# before any arithmetic so an overlong count cannot wrap into range.
+if [[ "$MODE" == "poll" ]]; then
+  [[ "$POLL_N" =~ ^[0-9]+$ ]] || die_usage "--poll-interval requires a non-negative integer (got: $POLL_N)"
+  digits="${POLL_N#"${POLL_N%%[!0]*}"}"
+  if [[ -z "$digits" ]]; then
+    digits=0
+  fi
+  if (( ${#digits} > 6 )) || (( digits > POLL_WIDE_THRESHOLD )); then
+    printf '%s\n' "$POLL_WIDE_S"
+  else
+    printf '%s\n' "$POLL_BASE_S"
+  fi
+  exit 0
+fi
+
 # --ceiling resolves ONLY the ceiling: resolving the cap first would let a
 # malformed ACTIVE_WORK_CAP warn on every ceiling read, blaming the wrong knob.
 # --repo names whose PRs to COUNT; it cannot pick the pm-config.md a knob is
@@ -464,6 +539,46 @@ if [[ "$MODE" == "ceiling" ]]; then
 fi
 
 read -r CAP CAP_SOURCE <<<"$(resolve_cap)"
+
+# --width prints the parallel width the thread may launch up to in its current
+# run mode: min(mode width, CAP). The mode comes only from run-mode.sh get, which
+# fails open to default, so an unreadable mode never blocks a launch. Network-free.
+#   default / speed -> DEFAULT_MODE_WIDTH / SPEED_MODE_WIDTH (default 15)
+#   cheap           -> CHEAP_MODE_WIDTH (default: PIPELINE_CEILING)
+if [[ "$MODE" == "width" ]]; then
+  RUN_MODE="default"
+  if [[ -x "$SCRIPT_DIR/run-mode.sh" ]]; then
+    if [[ -n "$REPO" ]]; then
+      RUN_MODE="$("$SCRIPT_DIR/run-mode.sh" --repo "$REPO" get 2>/dev/null)" || RUN_MODE="default"
+    else
+      RUN_MODE="$("$SCRIPT_DIR/run-mode.sh" get 2>/dev/null)" || RUN_MODE="default"
+    fi
+  fi
+  case "$RUN_MODE" in
+    speed)
+      read -r MODE_WIDTH _ <<<"$(resolve_knob SPEED_MODE_WIDTH "${CLAUDE_SPEED_MODE_WIDTH:-}" \
+        "$WIDTH_DEFAULT" "$WIDTH_MIN" "$WIDTH_MAX" width)" ;;
+    cheap)
+      read -r CEILING_FOR_WIDTH _ <<<"$(resolve_ceiling)"
+      read -r MODE_WIDTH _ <<<"$(resolve_knob CHEAP_MODE_WIDTH "${CLAUDE_CHEAP_MODE_WIDTH:-}" \
+        "$CEILING_FOR_WIDTH" "$WIDTH_MIN" "$WIDTH_MAX" width)"
+      # Cheap is the ceiling "or lower": a configured value above the per-thread
+      # ceiling warns once on stderr and is clamped to it.
+      if (( MODE_WIDTH > CEILING_FOR_WIDTH )); then
+        warn "CHEAP_MODE_WIDTH ($MODE_WIDTH) is above PIPELINE_CEILING ($CEILING_FOR_WIDTH) — cheap mode runs at the ceiling"
+        MODE_WIDTH="$CEILING_FOR_WIDTH"
+      fi ;;
+    *)
+      read -r MODE_WIDTH _ <<<"$(resolve_knob DEFAULT_MODE_WIDTH "${CLAUDE_DEFAULT_MODE_WIDTH:-}" \
+        "$WIDTH_DEFAULT" "$WIDTH_MIN" "$WIDTH_MAX" width)" ;;
+  esac
+  if (( MODE_WIDTH > CAP )); then
+    printf '%s\n' "$CAP"
+  else
+    printf '%s\n' "$MODE_WIDTH"
+  fi
+  exit 0
+fi
 
 if [[ "$MODE" == "cap" ]]; then
   printf '%s\n' "$CAP"

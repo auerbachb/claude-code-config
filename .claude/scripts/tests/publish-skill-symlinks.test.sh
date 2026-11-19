@@ -14,6 +14,7 @@
 #
 # Usage: bash .claude/scripts/tests/publish-skill-symlinks.test.sh
 # Exit code: 0 = all pass, 1 = any fail
+# covers: .claude/account-config.md .claude/rules/safety.md CLAUDE.md
 
 set -uo pipefail
 

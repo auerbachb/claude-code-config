@@ -16,7 +16,7 @@ Use `state` — **not** a `merged` field. `gh` has no `merged` JSON field; `--js
 ## Gate refresh (every iteration)
 
 ```bash
-GATE_JSON=$("$MERGE_GATE_SH" "$PR_NUM")
+GATE_JSON=$("$MERGE_GATE_SH" "$PR_NUM" --live)
 GATE_EXIT=$?
 HEAD_NOW=$(printf '%s' "$GATE_JSON" | jq -r '.head_sha // empty')
 ```

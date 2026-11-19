@@ -135,7 +135,7 @@ are changed.
 
 ## Related
 
-- `.claude/reference/prompt-hotspot-decision.md` — closest precedent; same chip-contract
+- `prompt-hotspot-decision.md` (deleted with the `/prompt` skill, Issue #2342) — closest precedent; same chip-contract
   propagation pattern; KEEP verdict (Issue #949, 12 PRs)
 - `.claude/reference/start-issue-hotspot-decision.md` — KEEP for another canonical chip emitter
   (Issue #981, 9 PRs); same propagation reasoning

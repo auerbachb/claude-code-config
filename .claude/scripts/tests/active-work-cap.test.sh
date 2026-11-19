@@ -13,6 +13,11 @@ set -uo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT="$REPO_ROOT/.claude/scripts/active-work-cap.sh"
 
+# Inherited env overrides would make the default-width cases read the caller's
+# shell instead of the fixture. Every case sets what it needs explicitly.
+unset CLAUDE_ACTIVE_WORK_CAP CLAUDE_PIPELINE_CEILING CLAUDE_DEFAULT_MODE_WIDTH \
+  CLAUDE_SPEED_MODE_WIDTH CLAUDE_CHEAP_MODE_WIDTH CLAUDE_ACTIVE_WORK_MERGED_PR_LIMIT
+
 TMP_DIR="$(mktemp -d)"
 cleanup() { chmod -R u+w "$TMP_DIR" 2>/dev/null || true; rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
@@ -917,8 +922,8 @@ for FLAG in -- --json --free --cap --ceiling --repo --path \
 done
 ok "--help prints every documented section, flag, and tunable"
 
-# --- 19. Registry chips (from /pm, /prompt, /wave) count toward the cap ------
-# Before this fix, chips offered by /pm and /prompt were invisible to the count
+# --- 19. Registry chips (from /pm, /wave) count toward the cap ------
+# Before this fix, chips offered by /pm and /wave were invisible to the count
 # because only the issue-maker log was read. Now the registry covers all emitters.
 #
 # Use a real chip-offer-registry.sh (via a minimal fake session-state) so that
@@ -971,12 +976,12 @@ CHIPS=$(printf '%s' "$JSON" | jq -r '.live_chips')
 [[ "$CHIPS" == "1" ]] || fail "19: /pm chip in registry should count as 1, got '$CHIPS'"
 ok "a chip offered by /pm through the registry is counted toward the cap"
 
-# A /prompt chip in running state also counts.
+# A /wave chip in running state also counts.
 export REG_FAKE_LIST="$(jq -cn --arg now "$NOW_REG" \
-  '[{task_id:"tid-p-2",emitter:"prompt",issue:102,state:"running",offered_at:$now,
+  '[{task_id:"tid-p-2",emitter:"wave",issue:102,state:"running",offered_at:$now,
      expires_at:$now,pr:null,last_updated:$now}]')"
 CHIPS=$(run --json | jq -r '.live_chips') || fail "19: --json failed for running state"
-[[ "$CHIPS" == "1" ]] || fail "19: /prompt chip in 'running' state should count, got '$CHIPS'"
+[[ "$CHIPS" == "1" ]] || fail "19: /wave chip in 'running' state should count, got '$CHIPS'"
 ok "a chip in 'running' state (clicked, no PR yet) is counted"
 
 # A /wave chip in pr-backed state is NOT counted (its PR is already in source 1).
@@ -1735,6 +1740,247 @@ for PAIR in "--cap --ceiling" "--ceiling --json" "--ceiling --ceiling"; do
 done
 ok "38i: --ceiling conflicts with --cap / --json / itself (exit 2)"
 
+set_cap_config '```ini
+ACTIVE_WORK_CAP=6
+```'
+
+# --- 39. Per-mode parallel width (#2430) --------------------------------------
+# --width reads the run mode (run-mode.sh get, fail-open to default) and prints
+# min(mode width, ACTIVE_WORK_CAP). Default and speed allow 15; cheap allows
+# PIPELINE_CEILING. The mode is stored per repo in session-state.json.
+set_run_mode() {  # $1 = stored mode, or empty for no state entry
+  # Merges into an existing state file so pipelines already written by
+  # set_pipelines survive a mode change: only .run_mode is touched.
+  local F="$HOME/.claude/session-state.json"
+  if [[ -z "${1:-}" ]]; then
+    rm -f "$F"
+    return
+  fi
+  if [[ -f "$F" ]]; then
+    jq --arg k "$SLUG" --arg m "$1" '.repos[$k].run_mode = $m' "$F" > "$F.tmp" && mv "$F.tmp" "$F"
+  else
+    jq -cn --arg k "$SLUG" --arg m "$1" \
+      '{repos: {($k): {prs: {}, run_mode: $m}}, active_agents: {}}' > "$F"
+  fi
+}
+set_pipelines '[]'
+set_open_prs 0
+set_open_issues ""
+# run-mode.sh keys the state entry by the same repo resolution session-state.sh
+# uses: $CLAUDE_SESSION_REPO first, then the cwd origin. The fixture has no
+# origin, so name the repo explicitly to match the SLUG entries set_run_mode writes.
+export CLAUDE_SESSION_REPO="$SLUG"
+
+# (a) Default mode with no mode set: 15, clamped by the cap (18 here -> 15).
+set_cap_config '```ini
+ACTIVE_WORK_CAP=18
+PIPELINE_CEILING=5
+```'
+set_run_mode ""
+W=$(run --width 2>"$TMP_DIR/widerr") || fail "39a: --width failed with no mode set"
+[[ "$W" == "15" && ! -s "$TMP_DIR/widerr" ]] || fail "39a: absent mode should read default 15 silently, got '$W' / $(cat "$TMP_DIR/widerr")"
+set_run_mode default
+W=$(run --width) || fail "39a: --width failed with mode default"
+[[ "$W" == "15" ]] || fail "39a: stored default should read 15, got '$W'"
+ok "39a: default mode (absent or stored) reads 15 under a cap of 18"
+
+# (b) Speed reads 15 by default and the config key when set; cheap reads the
+# PIPELINE_CEILING (5) by default, and CHEAP_MODE_WIDTH overrides it.
+set_run_mode speed
+W=$(run --width) || fail "39b: --width failed in speed"
+[[ "$W" == "15" ]] || fail "39b: speed should read 15, got '$W'"
+set_run_mode cheap
+W=$(run --width) || fail "39b: --width failed in cheap"
+[[ "$W" == "5" ]] || fail "39b: cheap with PIPELINE_CEILING=5 should read 5, got '$W'"
+set_cap_config '```ini
+ACTIVE_WORK_CAP=18
+PIPELINE_CEILING=5
+SPEED_MODE_WIDTH=12
+CHEAP_MODE_WIDTH=4
+```'
+set_run_mode speed
+W=$(run --width) || fail "39b: speed with SPEED_MODE_WIDTH=12 failed"
+[[ "$W" == "12" ]] || fail "39b: SPEED_MODE_WIDTH=12 should read 12, got '$W'"
+set_run_mode cheap
+W=$(run --width) || fail "39b: cheap with CHEAP_MODE_WIDTH=4 failed"
+[[ "$W" == "4" ]] || fail "39b: CHEAP_MODE_WIDTH=4 should read 4, got '$W'"
+ok "39b: speed reads 15 (or SPEED_MODE_WIDTH); cheap reads PIPELINE_CEILING (or CHEAP_MODE_WIDTH)"
+
+# (b2) Cheap is the ceiling or lower: CHEAP_MODE_WIDTH=9 above PIPELINE_CEILING=5
+# warns once naming both and clamps to 5.
+set_cap_config '```ini
+ACTIVE_WORK_CAP=18
+PIPELINE_CEILING=5
+CHEAP_MODE_WIDTH=9
+```'
+W=$(run --width 2>"$TMP_DIR/widerr") || fail "39b2: cheap above the ceiling must clamp, not exit non-zero"
+[[ "$W" == "5" ]] || fail "39b2: CHEAP_MODE_WIDTH=9 above ceiling 5 should clamp to 5, got '$W'"
+grep -q 'CHEAP_MODE_WIDTH' "$TMP_DIR/widerr" && grep -q 'PIPELINE_CEILING' "$TMP_DIR/widerr" || \
+  fail "39b2: the clamp must warn naming both knobs, stderr: $(cat "$TMP_DIR/widerr")"
+ok "39b2: cheap above PIPELINE_CEILING warns and clamps to the ceiling"
+
+# (c) The governing limit is min(mode width, CAP) in every mode: a cap of 6
+# holds default and speed to 6 even though their own width is 15.
+set_cap_config '```ini
+ACTIVE_WORK_CAP=6
+PIPELINE_CEILING=5
+```'
+for M in default speed cheap; do
+  set_run_mode "$M"
+  W=$(run --width) || fail "39c: --width failed in $M"
+  case "$M" in
+    cheap) EXPECT=5 ;;
+    *)     EXPECT=6 ;;
+  esac
+  [[ "$W" == "$EXPECT" ]] || fail "39c: cap 6 must clamp $M to $EXPECT, got '$W'"
+done
+ok "39c: the cap clamps every mode: default and speed read 6, cheap reads its ceiling 5"
+
+# (d) Out-of-range per-mode values warn naming the key and fall back to the
+# default for that mode (15, or the ceiling for cheap). Env overrides win.
+set_cap_config '```ini
+ACTIVE_WORK_CAP=18
+DEFAULT_MODE_WIDTH=0
+```'
+set_run_mode default
+W=$(run --width 2>"$TMP_DIR/widerr") || fail "39d: a bad DEFAULT_MODE_WIDTH should fall back, not exit non-zero"
+[[ "$W" == "15" ]] || fail "39d: DEFAULT_MODE_WIDTH=0 should fall back to 15, got '$W'"
+grep -q 'DEFAULT_MODE_WIDTH' "$TMP_DIR/widerr" || \
+  fail "39d: DEFAULT_MODE_WIDTH=0 must warn naming the key, stderr: $(cat "$TMP_DIR/widerr")"
+W=$(CLAUDE_DEFAULT_MODE_WIDTH=3 run --width) || fail "39d: --width failed with env override"
+[[ "$W" == "3" ]] || fail "39d: CLAUDE_DEFAULT_MODE_WIDTH=3 should win, got '$W'"
+ok "39d: out-of-range DEFAULT_MODE_WIDTH warns and falls back to 15; the env override wins"
+
+# (e) A missing run-mode state reads default, never blocks: --width still prints.
+set_cap_config '```ini
+ACTIVE_WORK_CAP=18
+```'
+set_run_mode "bogus-value"
+W=$(run --width) || fail "39e: a non-enum stored mode must fail open, not exit non-zero"
+[[ "$W" == "15" ]] || fail "39e: a non-enum stored mode should read default 15, got '$W'"
+ok "39e: a non-enum stored mode fails open to default"
+
+# (f) Switching default to cheap with 10 pipelines running stops none and
+# reports zero free slots under the cap of 6. The pipelines are written first,
+# then only the mode changes, so the width is read before and after the switch
+# over the same ten pipelines.
+set_cap_config '```ini
+ACTIVE_WORK_CAP=6
+PIPELINE_CEILING=5
+```'
+set_pipelines '[{"id":"a1"},{"id":"a2"},{"id":"a3"},{"id":"a4"},{"id":"a5"},{"id":"a6"},{"id":"a7"},{"id":"a8"},{"id":"a9"},{"id":"a10"}]'
+set_run_mode default
+W_BEFORE=$(run --width) || fail "39f: --width failed in default with 10 pipelines"
+[[ "$W_BEFORE" == "6" ]] || fail "39f: default under cap 6 should read 6, got '$W_BEFORE'"
+set_run_mode cheap
+W_AFTER=$(run --width) || fail "39f: --width failed in cheap with 10 pipelines"
+[[ "$W_AFTER" == "5" ]] || fail "39f: cheap under ceiling 5 should read 5, got '$W_AFTER'"
+CENSUS=$(run) || fail "39f: census failed with 10 pipelines in cheap mode"
+[[ "$CENSUS" == *"FREE=0"* ]] || fail "39f: 10 pipelines under cap 6 should leave FREE=0, got '$CENSUS'"
+N_AFTER=$(jq '.active_agents | length' "$HOME/.claude/session-state.json")
+[[ "$N_AFTER" == "10" ]] || fail "39f: the mode switch must stop none; expected 10 active agents, got $N_AFTER"
+ok "39f: default to cheap over 10 pipelines under cap 6 reads 6 then 5, reports FREE=0, and stops none"
+
+# (g) A failed width read prints no width and exits non-zero, so the skills'
+# `if CEILING=$(... --width)` branch sets LIMIT=0 and launches nothing new.
+# A guessed width here would be a silent uncap, so the failure must surface.
+set_run_mode default
+if G_OUT=$(run --width --cap); then
+  fail "39g: a usage error on --width must exit non-zero, got a width '$G_OUT'"
+fi
+[[ -z "$G_OUT" ]] || fail "39g: a failed --width read must print no width, got '$G_OUT'"
+ok "39g: a failed width read prints nothing and exits non-zero, so callers launch nothing new"
+
+# (h) An empty configured key is a mistake, not an absent one: DEFAULT_MODE_WIDTH=
+# warns naming the key and falls back to 15. An absent key stays silent.
+set_run_mode default
+set_cap_config '```ini
+ACTIVE_WORK_CAP=18
+DEFAULT_MODE_WIDTH=
+```'
+W=$(run --width 2>"$TMP_DIR/emptyerr") || fail "39h: an empty DEFAULT_MODE_WIDTH must fall back, not exit non-zero"
+[[ "$W" == "15" ]] || fail "39h: an empty DEFAULT_MODE_WIDTH should read the default 15, got '$W'"
+grep -q 'DEFAULT_MODE_WIDTH' "$TMP_DIR/emptyerr" || fail "39h: an empty DEFAULT_MODE_WIDTH must warn naming the key, stderr: $(cat "$TMP_DIR/emptyerr")"
+set_cap_config '```ini
+ACTIVE_WORK_CAP=18
+```'
+W=$(run --width 2>"$TMP_DIR/absenterr") || fail "39h: an absent key must not fail"
+[[ "$W" == "15" ]] || fail "39h: an absent DEFAULT_MODE_WIDTH should read 15, got '$W'"
+[[ ! -s "$TMP_DIR/absenterr" ]] || fail "39h: an absent key must stay silent, stderr: $(cat "$TMP_DIR/absenterr")"
+ok "39h: an empty configured width key warns and falls back; an absent key is silent"
+
+# (i) One reader for every launch limit. /pm, /subagent and /wave bound their
+# parallel width with --width, and the orchestration rule names that same width
+# as the per-thread limit. No skill derives a launch limit from the raw ceiling.
+for F in pm/SKILL.md subagent/SKILL.md wave/SKILL.md; do
+  P="$REPO_ROOT/.claude/skills/$F"
+  grep -q 'ACTIVE_WORK_CAP_SH" --width' "$P" || fail "39i: $F must read its launch limit with --width"
+  if grep -F -e 'ACTIVE_WORK_CAP_SH" --ceiling' -e 'ACTIVE_WORK_CAP_SH --ceiling' "$P" >/dev/null; then
+    fail "39i: $F still derives a launch limit from --ceiling (the raw PIPELINE_CEILING)"
+  fi
+done
+grep -q -- 'active-work-cap.sh --width' "$REPO_ROOT/.claude/rules/subagent-orchestration.md" \
+  || fail "39i: subagent-orchestration.md must name the mode width (--width) as the per-thread limit"
+ok "39i: pm, subagent, wave and the orchestration rule all read the one width"
+
+# (j) No Phase B path keeps a fixed 60-second cadence once the parent supplies
+# one. The agent definition may name 60 only as the no-value default.
+PB="$REPO_ROOT/.claude/agents/phase-b-reviewer.md"
+if grep -n -E 'every 60 seconds|stays 60 s|Polling cadence stays 60|60-second cycle' "$PB" >/dev/null; then
+  fail "39j: phase-b-reviewer.md still hard-codes a 60-second poll cadence"
+fi
+grep -q 'poll_interval_s' "$REPO_ROOT/.claude/reference/session-state-schema.json" \
+  || fail "39j: the schema must record poll_interval_s for running Phase B agents to re-read"
+SK="$REPO_ROOT/.claude/skills/subagent/SKILL.md"
+if grep -n -E 'stays 60|[Pp]oll(ing)? every 60|60-second cycle|cadence stays 60' "$SK" "$PB" >/dev/null; then
+  fail "39j: the subagent prompt or the Phase B agent still states a fixed 60-second cadence"
+fi
+# The cadence is repo-scoped: never written or read at the state-file root, so
+# another repo's monitor cannot overwrite this repo's value.
+# Matches bare, single- or double-quoted root forms of --set, --get and --get-json.
+if grep -n -E -- "--(set|get|get-json)[[:space:]]+['\"]?\.poll_interval_s" "$SK" "$PB" >/dev/null; then
+  fail "39j: poll_interval_s must be read and written under .repos[\"<key>\"], not at the root"
+fi
+grep -q -F '].poll_interval_s' "$SK" || fail "39j: the subagent monitor must write poll_interval_s under the repo key"
+grep -q -F '].poll_interval_s' "$PB" || fail "39j: phase-b-reviewer must read poll_interval_s under the repo key"
+grep -q -F -- '--repo-key' "$PB" || fail "39j: phase-b-reviewer must read the normalized --repo-key, not the raw repo name"
+grep -n -F 'enter 60s' "$REPO_ROOT/.claude/rules/subagent-orchestration.md" >/dev/null && \
+  fail "39j: subagent-orchestration.md still instructs 60s polling"
+grep -n -F 'Widening the ceiling itself is the repo' "$REPO_ROOT/.claude/skills/wave/SKILL.md" >/dev/null && \
+  fail "39j: wave still says widening is the PIPELINE_CEILING knob"
+grep -q -F 'run_script session-state.sh' "$PB" || \
+  fail "39j: phase-b-reviewer must read the cadence through run_script session-state.sh (the resolver contract)"
+grep -n -F 'non-zero exit from `--ceiling`' "$REPO_ROOT/.claude/skills/wave/SKILL.md" >/dev/null && \
+  fail "39j: wave's failure check must name --width, the reader Step 6 calls"
+CR_RULE="$REPO_ROOT/.claude/rules/cr-github-review.md"
+grep -n -E 'every 60 seconds|Poll every 60s' "$CR_RULE" >/dev/null && \
+  fail "39j: cr-github-review.md still states a fixed 60-second cycle"
+grep -q -F 'active-work-cap.sh --poll-interval' "$CR_RULE" || \
+  fail "39j: cr-github-review.md must name the --poll-interval cadence"
+# Width wording must match the reader: default and speed are 15 only by default
+# (configurable to 20), and cheap may sit below PIPELINE_CEILING.
+for F in "$SK" "$REPO_ROOT/.claude/skills/wave/SKILL.md" "$REPO_ROOT/.claude/rules/subagent-orchestration.md"; do
+  if grep -n -F 'allow up to 15' "$F" >/dev/null; then fail "39j: ${F#"$REPO_ROOT"/} still says default/speed allow up to 15"; fi
+  if grep -n -F 'cheap `PIPELINE_CEILING`, default 4' "$F" >/dev/null; then fail "39j: ${F#"$REPO_ROOT"/} says cheap is PIPELINE_CEILING, ignoring CHEAP_MODE_WIDTH"; fi
+done
+ok "39j: Phase B polls on the parent's cadence from the repo-scoped state, with no fixed 60s path; width wording matches the reader"
+unset CLAUDE_SESSION_REPO
+
+# --- 40. Review-poll cadence (#2430) ------------------------------------------
+# 120s above 8 concurrent pipelines, 60s at or below. Network-free, pure count.
+for PAIR in "0 60" "3 60" "8 60" "9 120" "0009 120" "99999999 120"; do
+  read -r N WANT <<<"$PAIR"
+  GOT=$(run --poll-interval "$N" 2>"$TMP_DIR/pollerr") || fail "40: --poll-interval $N failed"
+  [[ "$GOT" == "$WANT" ]] || fail "40: --poll-interval $N should print $WANT, got '$GOT'"
+done
+ok "40: --poll-interval prints 60 at or below 8 pipelines and 120 above, including overlong counts"
+
+# 40b: a non-integer count is a usage error, not a silent default.
+run --poll-interval x >/dev/null 2>"$TMP_DIR/pollerr"; RC=$?
+[[ $RC -eq 2 ]] || fail "40b: --poll-interval x should exit 2, got $RC"
+ok "40b: a non-integer --poll-interval count exits 2"
+
+set_run_mode ""
 set_cap_config '```ini
 ACTIVE_WORK_CAP=6
 ```'

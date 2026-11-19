@@ -15,7 +15,14 @@
 # Usage (CI or local, runnable from anywhere):
 #   bash .github/scripts/run-python-tests.sh          # verbose unittest output (default)
 #   bash .github/scripts/run-python-tests.sh --json   # compact result contract
+#   bash .github/scripts/run-python-tests.sh --only-file <file>   # run only the selected modules
 #   bash .github/scripts/run-python-tests.sh --help
+#
+# --only-file <file> (issue #2153): the file is the output of
+# .github/scripts/select-hook-tests.sh. A line `ALL` runs every module, exactly as with no
+# argument. Otherwise only the listed tests/test_*.py modules run. An empty selection
+# runs nothing and exits 0 with a summary that says so. An unreadable file is a usage
+# error (exit 2).
 #
 # --json (issue #782): emits the compact result contract from
 # .claude/reference/compact-result-contract.md as the ONLY thing on stdout:
@@ -45,9 +52,15 @@ set -uo pipefail
 shopt -s nullglob
 
 JSON=0
+ONLY_FILE=""
+ONLY_FILE_GIVEN=0   # distinguishes "--only-file given (maybe empty)" from "not given"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --json) JSON=1; shift ;;
+    --only-file)
+      [ "$#" -ge 2 ] || { echo "::error::run-python-tests.sh: --only-file needs a path" >&2; exit 2; }
+      ONLY_FILE="$2"; ONLY_FILE_GIVEN=1; shift 2
+      ;;
     -h|--help)
       awk 'NR == 1 { next } /^#/ { print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
         { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
@@ -59,6 +72,43 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+# Read the selection before the cd below, so a relative --only-file path still resolves
+# against the caller's directory (same contract as run-hook-tests.sh).
+SELECT_MODE=0
+SELECTION=""
+SEL_ALL=0
+SEL_REASON=""
+if [ "$ONLY_FILE_GIVEN" -eq 1 ]; then
+  # An explicitly empty path is an unreadable selection, never a silent full run.
+  [ -n "$ONLY_FILE" ] || { echo "::error::run-python-tests.sh: --only-file was given an empty path" >&2; exit 2; }
+  SELECT_MODE=1
+  SELECTION="$(cat -- "$ONLY_FILE" 2>/dev/null)" || {
+    echo "::error::run-python-tests.sh: cannot read --only-file: $ONLY_FILE" >&2
+    exit 2
+  }
+  SEL_REASON="$(printf '%s\n' "$SELECTION" | awk '/^# reason: / { sub(/^# reason: /, ""); print; exit }')"
+  # The selector always writes a `# reason:` header. Its absence means an empty or
+  # truncated file, which must never pass as an explained zero-run.
+  if ! grep -q '^# reason: ' <<<"$SELECTION"; then
+    echo "::error::run-python-tests.sh: --only-file has no '# reason:' header (empty or truncated?): $ONLY_FILE" >&2
+    exit 2
+  fi
+  if grep -Fxq 'ALL' <<<"$SELECTION"; then SEL_ALL=1; fi
+  # The selector ends every selection with its terminator. A file without it was cut
+  # short by a failed write, so run every module rather than trust a partial list.
+  if ! grep -Fxq '# end-of-selection' <<<"$SELECTION"; then
+    echo "::warning::run-python-tests.sh: --only-file has no '# end-of-selection' terminator (truncated?): running ALL" >&2
+    SEL_ALL=1
+    SEL_REASON="truncated selection file: full run"
+  fi
+fi
+
+# A module runs when no selection was given, the selection is ALL, or it is listed.
+is_selected() {
+  if [ "$SELECT_MODE" -eq 0 ] || [ "$SEL_ALL" -eq 1 ]; then return 0; fi
+  grep -Fxq -- "$1" <<<"$SELECTION"
+}
 
 # Resolve to the repo root regardless of caller cwd so the glob below resolves.
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || {
@@ -84,17 +134,60 @@ if [ "${#mods[@]}" -eq 0 ]; then
   exit 3
 fi
 
-if [ "$JSON" -eq 1 ]; then
-  echo "Discovered ${#mods[@]} Python test module(s)." >&2
-else
-  echo "Discovered ${#mods[@]} Python test module(s)."
+# Selection: keep only the discovered modules the selection names. NMODS is what this
+# run reports as `modules`; without --only-file it is the full discovered count.
+SEL_NAMES=()
+if [ "$SELECT_MODE" -eq 1 ]; then
+  for m in "${mods[@]}"; do
+    if is_selected "$m"; then SEL_NAMES+=("$(basename "$m" .py)"); fi
+  done
 fi
+NSEL="${#SEL_NAMES[@]}"
+NMODS="${#mods[@]}"
+if [ "$SELECT_MODE" -eq 1 ]; then NMODS="$NSEL"; fi
+
+EXTRA_JSON='{}'
+if [ "$SELECT_MODE" -eq 1 ]; then
+  EXTRA_JSON="$(jq -cn --arg r "$SEL_REASON" --argjson d "${#mods[@]}" '{selection: $r, discovered: $d}')"
+fi
+
+if [ "$SELECT_MODE" -eq 1 ] && [ "$NSEL" -eq 0 ]; then
+  # A zero-module run is a real, explained outcome: say so, and do not pass silently.
+  if [ "$JSON" -eq 1 ]; then
+    jq -cn --arg log "$LOG" --argjson extra "$EXTRA_JSON" \
+      '{ok: true, failed_tests: [], relevant_error: null, log_path: $log, modules: 0} + $extra'
+  else
+    echo "No Python test modules selected ($SEL_REASON); none run, ${#mods[@]} discovered."
+  fi
+  exit 0
+fi
+
+if [ "$SELECT_MODE" -eq 1 ]; then
+  ANNOUNCE="Selected $NSEL of ${#mods[@]} Python test module(s) ($SEL_REASON)."
+else
+  ANNOUNCE="Discovered ${#mods[@]} Python test module(s)."
+fi
+if [ "$JSON" -eq 1 ]; then
+  echo "$ANNOUNCE" >&2
+else
+  echo "$ANNOUNCE"
+fi
+
+# Selected modules run by name; PYTHONPATH=tests reproduces what `discover -s tests`
+# puts on sys.path, so the names resolve the same way. Unselected runs are unchanged.
+run_py() {
+  if [ "$SELECT_MODE" -eq 1 ] && [ "$SEL_ALL" -eq 0 ]; then
+    PYTHONPATH="$PWD/tests${PYTHONPATH:+:$PYTHONPATH}" python3 -m unittest -v "${SEL_NAMES[@]}"
+  else
+    python3 -m unittest discover -s tests -p 'test_*.py' -v
+  fi
+}
 
 rc=0
 if [ "$JSON" -eq 1 ]; then
   # unittest writes its report to stderr; capture both streams into the log and
   # keep stdout clean for the contract.
-  python3 -m unittest discover -s tests -p 'test_*.py' -v >"$LOG" 2>&1 || rc=$?
+  run_py >"$LOG" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     # A red run prints in full — see the header note.
     {
@@ -121,15 +214,16 @@ if [ "$JSON" -eq 1 ]; then
     --arg failed_list "$FAILED_LIST" \
     --arg relevant "$RELEVANT" \
     --arg log "$LOG" \
-    --argjson modules "${#mods[@]}" \
+    --argjson modules "$NMODS" \
+    --argjson extra "$EXTRA_JSON" \
     '{ok: $ok,
       failed_tests: ($failed_list | split("\n") | map(select(length > 0))),
       relevant_error: (if $relevant == "" then null else $relevant end),
-      log_path: $log, modules: $modules}'
+      log_path: $log, modules: $modules} + $extra'
 else
   # Default mode is unchanged: stream verbose output, and also persist it so
   # `log_path` means the same thing in both modes.
-  python3 -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee "$LOG"
+  run_py 2>&1 | tee "$LOG"
   rc="${PIPESTATUS[0]}"
   echo "Full output: $LOG"
 fi

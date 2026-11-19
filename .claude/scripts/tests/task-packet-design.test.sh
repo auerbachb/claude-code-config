@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # catalog: tests — Offline task-packet design walkthrough: overlap, resume, source drift, unknown evidence and context bounds
+# covers: CLAUDE.md
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 python3 - "$ROOT" <<'PY'

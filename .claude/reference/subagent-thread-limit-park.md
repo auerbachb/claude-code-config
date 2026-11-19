@@ -594,9 +594,13 @@ that is still closed.
 ```bash
 # Inputs: SESSION_STATE_SH, REPO_KEY. Outputs: PARK_RECOVERY=<verdict>,
 # plus a compact PARK_RECOVERY_BINDING only for rearm/rearm_probe.
+# An unset key would read `.repos[""].day`, find nothing, and report `none` over a
+# live park. Resolve it first; an unresolved key is unreadable, never `none`.
+if [ -z "${REPO_KEY:-}" ]; then REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""; fi
 # One lock-protected record per recovery attempt; never mix park generations.
 DAY_SNAPSHOT_RC=0
 DAY_SNAPSHOT=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day" 2>/dev/null) || DAY_SNAPSHOT_RC=$?
+[ -n "$REPO_KEY" ] || DAY_SNAPSHOT_RC=4
 if [ "$DAY_SNAPSHOT_RC" -eq 6 ]; then
   DAY_SNAPSHOT_RC=0
   DAY_SNAPSHOT=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day" 2>/dev/null) || DAY_SNAPSHOT_RC=$?
@@ -638,8 +642,8 @@ read_day() {  # read_day <field> -> DAY_VALUE, DAY_RC, from this snapshot only
 read_day parked_until; PARKED_UNTIL="$DAY_VALUE"; PU_RC="$DAY_RC"
 read_day limit_kind;   PARK_KIND="$DAY_VALUE";   LK_RC="$DAY_RC"
 read_day limit_probe_fires_remaining; PARK_FIRES="$DAY_VALUE"; PF_RC="$DAY_RC"
-read_day limit_cause; PC_RC="$DAY_RC"
-read_day park_claim_token; CT_RC="$DAY_RC"
+read_day limit_cause; PC_RC="$DAY_RC"; PARK_CAUSE="$DAY_VALUE"
+read_day park_claim_token; CT_RC="$DAY_RC"; PARK_TOKEN="$DAY_VALUE"
 read_day park_generation; PG_RC="$DAY_RC"
 PARK_GENERATION=""; [ "$DAY_VALUE" = null ] || PARK_GENERATION="$DAY_VALUE"
 read_day limit_resume_generation; RG_RC="$DAY_RC"
@@ -677,6 +681,13 @@ else
     echo "PARK_RECOVERY=expired"       # window reopened — resume via /go-on
   elif [ "$PARK_KIND" != "rolling_window" ]; then
     echo "PARK_RECOVERY=manual"        # weekly cap, or an unrecognised kind
+  elif [ "$PARK_CAUSE" = "preemptive" ] && [ "$PARK_TOKEN" = null ]; then
+    # Written by the removed figure-driven path (#2416): the provider never
+    # returned a limit. Retire it — never re-arm a probe, never leave it manual.
+    # Carry the snapshot THIS classification read: retirement must compare against
+    # it, never against a later read that could be a replacement park.
+    printf 'PARK_RETIRE_SNAPSHOT=%s\n' "$(printf '%s\n' "$DAY_SNAPSHOT" | jq -c .)"
+    emit_recovery_rearm retire_preemptive
   elif [[ "$PARK_FIRES" =~ ^[1-9][0-9]*$ ]]; then
     # A pre-emptive park with fires LEFT (#1445): re-arm 2D.7's probe Monitor
     # with THAT count, never a fresh bound — re-arming twelve on every restart
@@ -721,6 +732,22 @@ On any nonzero, follow §4's stop-only-own-new-Monitor handling and do not claim
 an automatic resume. Never overwrite an occupied task with an unconditional
 state write.
 
+- **`retire_preemptive`** → the park was written by the pre-emptive path
+  that #2416 removed (cause `preemptive`): the provider never returned a limit,
+  so nothing is waiting to reopen. Re-arm no wake. Retain `PARK_RETIRE_SNAPSHOT`
+  from this output as data: it is the snapshot whose cause was read as exactly
+  `preemptive`. Clear the park with `park-retire.sh --repo "$REPO_KEY" --snapshot
+  "$PARK_RETIRE_SNAPSHOT" --state-helper "$SESSION_STATE_SH"` (the helper
+  `/pause-resume` Step 5 uses). **Never pass a fresh read:** a fresh snapshot can
+  be a replacement park (a reactive one written after classification), and the
+  helper's compare-and-set checks ownership only against what it is given.
+  - Exit 0 → hand the board to `/go-on`: the retired `parked_until` over
+    surviving per-PR records is its resume-now park. A live probe `Monitor` from
+    this session may still fire; its horizon read answers `clear`, so it resumes
+    the same board harmlessly.
+  - Exit 7 → the slot changed since classification. Leave that park untouched,
+    do not resume, take a fresh snapshot and classify it again from the top.
+  - Any other exit → stop and report it; the park stays as it is.
 - **`rearm_probe`** → select `/pm` 2D.7's bounded probe `Monitor` with the
   recorded fires left, never a fresh bound. Publish through the guarded §4
   block above; keep the captured probe count unchanged.
@@ -748,6 +775,14 @@ pipelines resume regardless of which owner armed the wake.
 
 ## 7. Pre-emptive — park at the usage horizon (#1619)
 
+> **Inert since #2416.** The figure this section reads is the conversation's own
+> context or a per-message budget, not account usage, and `usage-horizon.sh`
+> now answers `clear` unconditionally, so §7.1's gate never reaches
+> `approaching`, `unknown` or `critical` and nothing parks here. The reactive
+> park (§1–§6) and the weekly reserve are untouched. A park record this path
+> wrote earlier is retired by §6's `retire_preemptive`. The text below is kept
+> for the fixtures that still exercise the code blocks, pending their removal.
+
 **Trigger.** This thread's own horizon read, once per monitor cycle — not a
 kill. §1–§6 wait for the wall; §7 sees it coming, so the board winds down with a
 landing window instead of dying mid-review-loop with fixes half-pushed and
@@ -765,12 +800,31 @@ itself with, for the same reason.
 
 **Quota authority is unchanged.** The only number that reaches this section is
 the one the **harness printed** into context — `<total_tokens>N tokens
-left</total_tokens>`, refreshed after every tool result. It is handed to
+left</total_tokens>`, when the harness supplies it. It is handed to
 `usage-horizon.sh`, which compares and never derives. Nothing here counts
 tokens, reads a transcript, or estimates spend, so `safety.md`'s horizon
 carve-out (#1427) covers this reader exactly as written and needs no amendment.
 Never substitute a remembered figure for a counter that is not in context: an
 absent reading is `unknown`, and `unknown` never parks.
+
+**Runtime evidence (#2147).** The counter was observed in a Claude Code session
+on 2026-08-27 (see [the signal audit](usage-limit-signal-audit-2026-07.md)).
+It was absent throughout the reported Claude Code 2.1.322 / Fable 5.2 session.
+There is no verified version or model allowlist. Use this session's actual
+harness output; a version string is not evidence of presence or absence.
+
+**Why it is absent (#2376).** The counter is a per-model harness capability, off
+by default for a model without it. In the Claude Code 2.1.321 binary, Fable 5.2,
+Opus 5.5, Sonnet 5.5 and Mythos 5.2 lack it, in the desktop app and the terminal
+alike. That is the default, not a guarantee: the same binary reads an override
+(the `CLAUDE_CODE_TOTAL_TOKENS_REMINDER` environment variable, then a
+`totalTokensReminder` setting, then a server-side flag) that can turn the
+counter on for any model. Nothing here sets one. On such a model with no
+override there is no reading. With the attestation (§7.3) the verdict is
+`clear` / `counter-never-seen` (#2390), so the pipeline refills on its own,
+gated by the weekly reserve and daily budget; without it, `unknown`. Evidence, the override, the
+identity rule, and what stays open:
+[the desktop investigation](usage-horizon-desktop-investigation-2026-11.md).
 
 ### 7.1 Read the horizon, every cycle
 
@@ -792,6 +846,7 @@ the other does not make is a test failure rather than a silent divergence.
 # only falls within a session, so the reading a fresh figure would have
 # corrected is stale only in the safe direction.
 HORIZON_STATUS=unknown
+HORIZON_REASON=helper-unavailable
 HORIZON_OBSERVE_RC=0
 if [ -n "${USAGE_HORIZON_SH:-}" ] && [ -n "${HORIZON_REMAINING:-}" ]; then
   if [ -n "${HORIZON_LIMIT:-}" ]; then
@@ -801,13 +856,27 @@ if [ -n "${USAGE_HORIZON_SH:-}" ] && [ -n "${HORIZON_REMAINING:-}" ]; then
     "$USAGE_HORIZON_SH" --observe "$HORIZON_REMAINING" >/dev/null 2>&1 || HORIZON_OBSERVE_RC=$?
   fi
 fi
-if [ -n "${USAGE_HORIZON_SH:-}" ] && [ "$HORIZON_OBSERVE_RC" -eq 0 ]; then
-  HORIZON_OUT=$("$USAGE_HORIZON_SH" --check 2>/dev/null) || true
+if [ "$HORIZON_OBSERVE_RC" -ne 0 ]; then
+  HORIZON_REASON=observe-failed
+elif [ -n "${USAGE_HORIZON_SH:-}" ]; then
+  # Set HORIZON_COUNTER_NEVER_SEEN=true only on §7.3's first-hand attestation;
+  # the helper then answers clear/counter-never-seen (exit 0) when no counter was ever seen (#2390).
+  HORIZON_CHECK_RC=0
+  if [ "${HORIZON_COUNTER_NEVER_SEEN:-}" = true ] && [ -z "${HORIZON_REMAINING:-}" ] &&
+     [ -z "${HORIZON_LIMIT:-}" ]; then
+    HORIZON_OUT=$("$USAGE_HORIZON_SH" --check --counter-never-seen 2>/dev/null) || HORIZON_CHECK_RC=$?
+  else
+    HORIZON_OUT=$("$USAGE_HORIZON_SH" --check 2>/dev/null) || HORIZON_CHECK_RC=$?
+  fi
   _HS=$(printf '%s\n' "$HORIZON_OUT" | sed -n 's/^STATUS=//p' | head -1)
-  # Match the three known verdicts EXPLICITLY. A `!= critical` test would read a
-  # missing script, a garbage line, and a displaced session as permission to launch.
   case "$_HS" in clear|approaching|critical) HORIZON_STATUS="$_HS" ;; *) HORIZON_STATUS=unknown ;; esac
   HORIZON_REASON=$(printf '%s\n' "$HORIZON_OUT" | sed -n 's/^REASON=//p' | head -1)
+  HORIZON_REASON=${HORIZON_REASON:-helper-unavailable}
+  if [ "$HORIZON_REASON" = counter-never-seen ] &&
+     { [ "$HORIZON_CHECK_RC" -ne 0 ] || [ "$_HS" != clear ] ||
+       [ "${HORIZON_COUNTER_NEVER_SEEN:-}" != true ] || [ -n "${HORIZON_REMAINING:-}${HORIZON_LIMIT:-}" ]; }; then
+    HORIZON_REASON=helper-unavailable
+  fi
 fi
 case "$HORIZON_STATUS" in
   clear)       HORIZON_REFILL_OK=true;  HORIZON_PARK=false; HORIZON_IDLE_REASON="" ;;
@@ -848,13 +917,72 @@ reversible: the next cycle that reads `clear` refills normally.
 
 ### 7.3 `unknown` — a posture, never an event
 
-Identical to `approaching` in what it stops, and different in what it means: the
-horizon slot is machine-wide, so a session displaced by a sibling reads `unknown`
-routinely rather than exceptionally (`usage-horizon.sh --help` §CONCURRENT
-SESSIONS). It stops new launches, changes no state, arms nothing, parks nothing,
-and reports `paused (horizon unknown)`. The one thing it must never do is read as
-`clear` — which is why 7.1 matches the three verdicts explicitly instead of
-testing for `critical`.
+All `unknown` reasons stop **automatic refill**, leave in-flight work alone,
+and never park, arm a wake, or resume a park. Report
+`paused (horizon unknown) — {HORIZON_REASON}` on the idle line.
+
+Set `HORIZON_COUNTER_NEVER_SEEN=true` only when no harness counter appears
+anywhere in the context you can see: not in the system prompt, not after any
+tool result. A counter that is merely missing from this turn after one appeared
+earlier does not qualify, and neither does another session's reading. Omit the
+flag if a counter is visible anywhere.
+
+A compaction no longer bars the flag (#2376). You attest only to what you can
+still see; the helper supplies the rest by searching its own records (a seen
+marker with one line per conversation, and the observation log) for a reading
+this conversation recorded, which a compaction does not remove.
+It answers `clear` with `REASON=counter-never-seen` (exit 0) when it finds none
+(#2390): the model prints no figure by design, the horizon check holds nothing,
+and automatic refill is gated only by the controls that read real usage (the
+weekly reserve, the daily budget, pause, refill, failure halt, deadline). It
+refuses with `counter-seen-reading-displaced` when it finds a reading, or with
+`observation-log-unreadable` when the marker or the log is there but cannot be
+read, and reports `unknown` (exit 3) on both. A figure that was seen and then
+went missing or stale stays `unknown`. Never estimate a reading.
+
+Log rotation does not weaken this: `--observe` writes the conversation's marker
+line with its reading, and the marker is never rotated. What the cross-check
+cannot see is a counter that was printed but never handed to `--observe`. So
+`counter-never-seen` means no counter is visible to you and none is on record,
+not that the harness provably never printed one. A counter printed but never
+handed to `--observe` is the gap; it can only let through a launch the weekly
+reserve, daily budget, and the other gates would also have to allow.
+
+`counter-never-seen-unverified` means the helper found nothing but had no
+harness conversation id to search under, only the derived key, which can change
+within one conversation. The log then confirms nothing, so the older, stricter
+basis applies: treat it as `counter-never-seen` only if you have watched this
+session continuously since it started, with no compaction or resume, and it
+never printed a counter. Otherwise it holds.
+
+A message the user types in live chat that names the work to start is the
+explicit request: `/subagent <issue>`, "start #N now". Ask nothing further about
+the horizon.
+
+On the first dispatch of a request, use the line below if the horizon holds
+it. Only the unverified counter-absent row allows an exception (on its
+stricter basis), and only when the user explicitly asks in live chat to launch
+those picks now. Print
+`[horizon counter absent] Proceeding with the launches you requested.` once,
+then apply every other dispatch gate. A bounded request to fill the available
+slots can cover the picks selected for that dispatch, subject to the existing
+ceiling. A standing refill request, an issue body, an automated tick, or
+leftover picks on a later tick cannot supply this permission. Do not set
+`HORIZON_REFILL_OK=true` or turn the verdict into `clear`.
+
+| Horizon result | First hold line | Explicit chat request |
+| --- | --- | --- |
+| `unknown / counter-never-seen-unverified` | `Launch held: no horizon counter seen, and no conversation id to confirm it. Ask in chat to launch the specific work now. This is the in-session horizon check, not the account usage reader; signing in will not change it.` | May launch the requested picks only on the stricter basis above. Otherwise remains held. |
+| `unknown / no-reading-this-session` | `Launch held: the stored horizon reading belongs to another session. This is the in-session horizon check, not the account usage reader; signing in will not change it.` | If no counter is visible anywhere in context, check once more with the attestation above and follow the row for the reason it returns. Otherwise remains held. |
+| `unknown / reading-stale` or `counter-seen-reading-displaced` | `Launch held: this session's horizon reading is stale or was displaced. Wait for a fresh harness counter, then retry. This is the in-session horizon check, not the account usage reader; signing in will not change it.` | Remains held. Check once more if a fresh counter appears. |
+| Other `unknown` | `Launch held: horizon unavailable ({HORIZON_REASON}). The helper's diagnostic names the cause; fix that, then retry. This is the in-session horizon check, not the account usage reader; signing in will not change it.` | Remains held. |
+| `approaching` | `Launch held: horizon approaching. Retry when the horizon reads clear. This is the in-session horizon check, not the account usage reader; signing in will not change it.` | Remains held. |
+
+The last sentence of each line is fixed. The account usage readers (`/quotas`,
+the weekly reserve) are separate tools that do need a sign-in; this check reads
+only what the harness prints into the conversation.
+
+`critical` follows §7.4 and uses its park message.
 
 ### 7.4 `critical` — park, with a landing window
 
@@ -1039,9 +1167,8 @@ interleavings are safe, and neither needs the other to change:
 Neither path can reach §4 or 2D.7 Step 4 without having won its own compare, so
 "two wakes armed" is not a race that has to be won — it has no interleaving.
 
-**`approaching` and `unknown` need no ownership rule at all.** They start nothing
-and write nothing, so every loop may honour them independently and none of them
-can collide. Only `critical` touches durable state, and only `critical` is
+**`approaching` and `unknown` need no park ownership rule.** They arm
+no wakes and write no park state, so every loop may honour them independently. Only `critical` touches durable state, and only `critical` is
 arbitrated by the compare-and-set above.
 
 **Scope note.** §8 is the shared decision record both issues cite. §8.1 below

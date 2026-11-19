@@ -134,7 +134,8 @@ input() {
 }
 
 receipt() {
-  printf 'Queued as %s. Print exactly: question %s sent to human queue. Then proceed on your recommended default or park and wait for a wake-up.' "$1" "$1"
+  printf 'Queued as %s. Print exactly: question %s sent to human queue. Then proceed on your recommended default or park and wait for a wake-up. ' "$1" "$1"
+  printf "If you park, first arm the phone push: ~/.claude/skills-worktree/.claude/scripts/phone-push-wait.sh arm %s --thread <name> --question '<one line>' and follow what it prints." "$1"
 }
 
 PUBLIC_BEFORE=$(admin_sql "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")
@@ -237,7 +238,7 @@ IDA=$(sql_in "SELECT id FROM items WHERE question = 'Which region?'")
 IDB=$(sql_in "SELECT id FROM items WHERE question = 'And the instance size?'")
 check "two questions: two new items" "$(n_items)" "$((BEFORE + 2))"
 check "two questions: both ids in the reason" "$(reason)" \
-  "Queued as $IDA, $IDB. Print exactly: questions $IDA, $IDB sent to human queue. Then proceed on your recommended defaults or park and wait for a wake-up."
+  "Queued as $IDA, $IDB. Print exactly: questions $IDA, $IDB sent to human queue. Then proceed on your recommended defaults or park and wait for a wake-up. If you park, first arm the phone push for each id: ~/.claude/skills-worktree/.claude/scripts/phone-push-wait.sh arm <id> --thread <name> --question '<one line>' and follow what it prints."
 
 # --------------------------------------- 4.3a: the URL only in a shell profile
 case "$HUMAN_QUEUE_DATABASE_URL" in

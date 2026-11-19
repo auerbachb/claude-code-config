@@ -10,17 +10,18 @@
 
 While active: poll subagents, verify outputs, execute phase transitions, refill free capacity, update state. No code edits, issue/PR creation, or source analysis — delegate fix work to subagents. Message only on blockers, decisions, failures, or defined exceptions — never routine status.
 
+**Delegate first (premium parent, also outside monitor mode):** decide; hand reading, checking, summarizing to a script or cheapest eligible worker — `.claude/reference/lean-orchestrator.md`.
+
 If the user explicitly requests substantive work, warn that monitoring N active PR(s) will pause, do the work, then immediately re-enter monitor mode.
 
 ## Monitor Loop — Per-Cycle Checklist (MANDATORY)
 
 Every ~60s, in order:
-0. **Usage horizon.** Feed the harness-printed `<total_tokens>` to `usage-horizon.sh --observe`, then `--check`: `approaching`/`unknown` → start nothing new (item 4; item 2's successors continue); `critical` → park per `subagent-thread-limit-park.md` §7, then end the cycle.
 1. Process completed subagents and parse exit reports.
 2. Execute phase transitions via `phase-protocols.md`; also launch transitions stalled in `session-state.json`.
 3. For every session PR still on `reviewer == cr`, run `.claude/scripts/escalate-review.sh <PR_NUMBER>` and act on its `STATUS=` verdict before sleeping.
 4. Below the pipeline ceiling? Refill: queued chain heads, then `/pm` Step 3.4's backlog pass (under `/pm` only). Chains, re-validation, pause still bind.
-5. Follow `scheduling-reliability.md` §Mandatory Pre-Exit Checklist item 2 for what to emit (canonical output rule).
+5. Follow `scheduling-reliability.md` §Mandatory Pre-Exit Checklist item 2 for what to emit.
 6. Investigate stale agents: >15 min Phase A, >10 min Phase B, >5 min Phase C.
 7. Before ending the turn, confirm the ceiling is still armed: `bgwork-ceiling.sh --check`.
 
@@ -32,7 +33,7 @@ Respawn permissions: crash asks, exhaustion auto, limit-parked neither — it pa
 
 ## Liveness
 
-Routine per-tick heartbeats are removed; liveness and output rules: `scheduling-reliability.md` §Mandatory Pre-Exit Checklist. Parent freshness is not child progress. The ceiling tick independently checks exact-session Agent artifacts; `CHILD STALL SUSPECT` requests investigation, never proves a crash or authorizes stop/respawn. Missing evidence remains `CHILD PROGRESS UNKNOWN`. Coverage/limits: `bgwork-ceiling.md`. Drain-time closing message: `final-wrapup-format.md`.
+Liveness and output rules: `scheduling-reliability.md` §Mandatory Pre-Exit Checklist. Parent freshness is not child progress. The ceiling tick independently checks exact-session Agent artifacts; `CHILD STALL SUSPECT` requests investigation, never proves a crash or authorizes stop/respawn. Missing evidence remains `CHILD PROGRESS UNKNOWN`. Coverage/limits: `bgwork-ceiling.md`. Drain-time closing message: `final-wrapup-format.md`.
 
 ## File-Write Status
 

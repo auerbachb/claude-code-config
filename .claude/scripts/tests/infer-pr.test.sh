@@ -2,6 +2,7 @@
 # Unit tests for infer-pr.sh (issues #448 / #447 — shared PR inference helper).
 # catalog: tests — Tests for `infer-pr.sh`
 # Uses a temporary HOME so it never touches the real ~/.claude/. Requires jq.
+# covers:
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

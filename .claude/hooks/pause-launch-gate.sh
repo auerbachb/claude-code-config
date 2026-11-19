@@ -74,10 +74,10 @@ fi
 STATUS=""
 RC=0
 if [[ -n "$CWD" && -d "$CWD" ]]; then
-  STATUS="$(cd "$CWD" && CLAUDE_STATE_LOCK_TIMEOUT=3 \
+  STATUS="$(cd "$CWD" && CLAUDE_STATE_LOCK_TIMEOUT=3 CLAUDE_EXECUTION_PAUSE_LAUNCH_CHECK=1 \
     "$PAUSE_SH" --repo "$REPO_KEY" --status --session "$SESSION_ID" 2>/dev/null)" || RC=$?
 else
-  STATUS="$(CLAUDE_STATE_LOCK_TIMEOUT=3 \
+  STATUS="$(CLAUDE_STATE_LOCK_TIMEOUT=3 CLAUDE_EXECUTION_PAUSE_LAUNCH_CHECK=1 \
     "$PAUSE_SH" --repo "$REPO_KEY" --status --session "$SESSION_ID" 2>/dev/null)" || RC=$?
 fi
 

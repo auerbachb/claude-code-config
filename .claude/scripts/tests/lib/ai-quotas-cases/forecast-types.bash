@@ -36,3 +36,19 @@ check_eq "$(table_only "$OUT" | awk 'NR == 1 { for (i = 1; i <= NF; i++) if ($i 
                                      c { print $c }' | sort -u | tr -d '\n')" "-" \
   "and the START column carries no d0"
 FORECAST_BIN_OVERRIDE=""
+
+# jq -e on a stream uses the last result. A valid final projection must not
+# admit an earlier, unrelated document into the reader's JSON report.
+cat > "$TMP/multi-forecast.sh" <<'MULTI_FORECAST'
+#!/usr/bin/env bash
+jq -c '{unexpected: true}, (.rows |= map(. + {pct_per_day: 7.5}))'
+MULTI_FORECAST
+chmod +x "$TMP/multi-forecast.sh"
+overage_case 40 50
+FORECAST_BIN_OVERRIDE="$TMP/multi-forecast.sh"
+run --json
+check_eq "$RC" "0" "a multi-document projection leaves the report usable"
+check_contains "$ERR" "DEGRADED" "the whole multi-document projection is rejected"
+check_eq "$(printf '%s' "$DOC" | jq -rs 'length == 1 and (.[0].rows | all(.pct_per_day == null))')" "true" \
+  "only the original single report remains, with no figures from the rejected projection"
+FORECAST_BIN_OVERRIDE=""

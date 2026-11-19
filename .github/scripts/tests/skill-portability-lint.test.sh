@@ -5,6 +5,7 @@
 # asserts the lint catches it. The clean case asserts the shipped corpus passes,
 # so a fixture that stops reproducing its own premise shows up as a failure
 # rather than a silent green.
+# covers: .claude/skills .claude/agents/phase-b-reviewer.md .claude/reference/chip-launching.md .claude/reference/portable-skill-resolution.md .claude/reference/subagent-phase-guardrails.md .claude/skills/fixpr/SKILL.md .claude/skills/issue-maker/modules/update.md .claude/skills/pause-resume/SKILL.md .claude/skills/pm/SKILL.md .claude/skills/pr-monitor-and-manage/references/pmm-act.md .claude/skills/wave/SKILL.md
 
 set -euo pipefail
 
@@ -31,7 +32,7 @@ make_fixture() {
   while IFS= read -r skill; do
     mkdir -p "$dir/.claude/skills/${skill}"
     cp "$REPO_ROOT/.claude/skills/${skill}/SKILL.md" "$dir/.claude/skills/${skill}/"
-    if [[ "$skill" == "issue-maker" ]]; then
+    if [[ "$skill" == "issue-maker" || "$skill" == "pm" ]]; then
       cp -R "$REPO_ROOT/.claude/skills/${skill}/modules" "$dir/.claude/skills/${skill}/"
     fi
     if [[ -d "$REPO_ROOT/.claude/skills/${skill}/references" ]]; then
@@ -74,6 +75,35 @@ hide_issue_modules() {
   mv .claude/skills/issue-maker/modules .claude/skills/issue-maker/modules-missing
 }
 expect "missing issue-maker module directory fails closed" 3 'Guarded module directory missing' hide_issue_modules
+
+poison_pm_module() {
+  printf '\nUse .claude/scripts/issue-claim.sh directly.\n' >> .claude/skills/pm/modules/day-tick.md
+}
+expect "PM day module gets portable-path enforcement" 1 'day-tick.md.*issue-claim.sh|issue-claim.sh' poison_pm_module
+
+hide_pm_modules() {
+  mv .claude/skills/pm/modules .claude/skills/pm/modules-missing
+}
+expect "missing PM module directory fails closed" 3 'Guarded module directory missing: .claude/skills/pm/modules' hide_pm_modules
+
+link_pm_module() {
+  mv .claude/skills/pm/modules/day-tick.md detached-tick.md
+  printf '\nUse .claude/scripts/issue-claim.sh directly.\n' >> detached-tick.md
+  ln -s ../../../../detached-tick.md .claude/skills/pm/modules/day-tick.md
+}
+expect "PM module cannot escape the lint through a link" 3 'PM module sources must be regular files' link_pm_module
+
+dangle_pm_module() {
+  mv .claude/skills/pm/modules/day-tick.md detached-tick.md
+  ln -s missing.md .claude/skills/pm/modules/day-tick.md
+}
+expect "dangling PM module links fail closed" 3 'PM module sources must be regular files' dangle_pm_module
+
+link_pm_modules_directory() {
+  mv .claude/skills/pm/modules detached-modules
+  ln -s ../../../detached-modules .claude/skills/pm/modules
+}
+expect "linked PM module directory fails closed" 3 'PM module sources must be regular files' link_pm_modules_directory
 
 noop() { :; }
 
@@ -173,7 +203,7 @@ drift_resolve_block() {
 
 drift_claim_bullet() {
   perl -0pi -e 's/^(- Claim the issue before anything else\.).*$/$1 Run `.claude\/scripts\/issue-claim.sh <N> --check`./m' \
-    ".claude/skills/prompt/SKILL.md"
+    ".claude/skills/issue-maker/modules/handoff.md"
 }
 
 strip_worktree_from_canonical_claim() {
@@ -207,7 +237,7 @@ unterminate_both_resolve_blocks() {
 }
 
 make_surface_unreadable() {
-  chmod 000 ".claude/skills/prompt/SKILL.md"
+  chmod 000 ".claude/skills/wave/SKILL.md"
 }
 
 # --- Cases -----------------------------------------------------------------

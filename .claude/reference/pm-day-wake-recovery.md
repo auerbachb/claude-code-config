@@ -3,6 +3,8 @@
 Both 2D.1(b+) and 2D.5 use this path after
 selecting an active rolling-window park. Reuse the original `DAY_SNAPSHOT`
 and its exit code. A completed park with an empty wake slot may re-arm.
+A preemptive park with a positive saved probe count stays active past its nominal
+deadline. Only a one-shot reset needs a future timestamp.
 An occupied slot requires a confirmed stop of its exact task in its owning
 native session. Restart, absence from a list, a stale registry row, or
 unknown session identity cannot prove that. An unfinished claim or
@@ -30,8 +32,9 @@ pm_wake_project() {
       select(.park_claim_token == null and .limit_kind == "rolling_window") |
       select(.limit_cause == "reactive" or .limit_cause == "preemptive") |
       select(.parked_until | type == "string" and
-        (try (fromdateiso8601 | todateiso8601) catch null) == . and
-        (try fromdateiso8601 catch 0) > $now) |
+        (try (fromdateiso8601 | todateiso8601) catch null) == .) |
+      select(.limit_probe_fires_remaining != null or
+        (.parked_until | fromdateiso8601) > $now) |
       select(.limit_probe_fires_remaining == null or
         (.limit_cause == "preemptive" and (.limit_probe_fires_remaining | type == "number"
           and . > 0 and . <= 9007199254740991 and floor == .))) |

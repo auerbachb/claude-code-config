@@ -1,5 +1,7 @@
 # Desk operating manual hotspot decision
 
+Issue #2178 superseded the single-manual decision below after the November audit measured 25 changes in 60 days. The [operating manual index](../../desk/README.md) links to the separate feature documents.
+
 Issue #1796. The untruncated default-branch detector after PR #2064 counted three changes to `desk/README.md`, with score 3 and no recorded conflict rounds.
 
 KEEP a single operating manual. The README owns the queue's CLI, storage and capture contracts; `DESIGN.md` explains the design and `skill/` routes day-to-day work. Skills and hook documentation already refer to named sections in the README, so keeping those entry points stable helps readers find the contract they need.

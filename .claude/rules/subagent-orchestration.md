@@ -12,27 +12,29 @@ Use `.claude/agents/` definitions. Custom `subagent_type` agents automatically i
 3. Explicit `model` (see "Model Selection").
 4. Runtime context: PR/issue/branch, repo, handoff path, HEAD SHA, reviewer, optional pre-fetched findings.
 5. The verbatim `SAFETY:` block from `safety.md` — kept as a deliberate safety-critical restatement even though it is inherited.
-6. The verbatim `MINDSET:` block from `safety.md` — same rationale (try CLI/browser before handoff — see "Capability Discovery").
+6. The verbatim `MINDSET:` block from `safety.md` — same rationale (try CLI/browser before handoff — see "Capability Discovery") — and `QUESTIONS:` from `human-queue.md`.
 7. Same step, but not part of the call: arm the silence ceiling — `bgwork-ceiling.sh --arm-command` → `Monitor` (`persistent: true`).
 
 See `.claude/agents/README.md` for the full placeholder reference and spawning examples.
 
 ### Fallback: Explore/Plan and Non-Custom Spawns
 
-Any spawn that does NOT use a `.claude/agents/` definition — built-in Explore/Plan, a bare `general-purpose` call, or a custom type the session has not registered (`Agent type '<name>' not found`) — gets the verbatim SAFETY/MINDSET/SKILLS blocks pasted manually, plus the role-specific procedure from `.claude/reference/phase-decomposition.md`. **Never paste the full CLAUDE.md + rules corpus.** Causes and rationale: `.claude/reference/phase-decomposition.md` §Non-custom spawns.
+Any spawn that does NOT use a `.claude/agents/` definition — built-in Explore/Plan, a bare `general-purpose` call, or a custom type the session has not registered (`Agent type '<name>' not found`) — gets the verbatim SAFETY/MINDSET/QUESTIONS/SKILLS blocks pasted manually, plus the role-specific procedure from `.claude/reference/phase-decomposition.md`. **Never paste the full CLAUDE.md + rules corpus.** Causes and rationale: `.claude/reference/phase-decomposition.md` §Non-custom spawns.
 
 ## Model Selection
 
-**Cost-first selection (every spawn).** Resolve `model-route.sh` and execute
+**Run-mode selection (every spawn).** Resolve `model-route.sh` and execute
 `.claude/reference/task-model-routing.md`'s dispatch block for each task/phase.
-Choose the cheapest available capable tier; preserve explicit owner choices,
-tool/context support, permissions and launch/reserve/budget gates. Persist the
-request and decision through scoped state helpers before dispatch; failed writes
-launch nothing. Pass the returned alias explicitly; frontmatter is only a cheap
-fallback.
+The run mode (`default`, `speed`, `cheap`) and the issue tier choose the starting
+tier; preserve explicit owner choices, tool/context support, permissions and
+launch/reserve/budget gates. Persist the request and decision through scoped state
+helpers before dispatch; failed writes launch nothing. Pass the returned alias
+explicitly; frontmatter is only a cheap fallback.
 
-Keep cheap retries while producing useful evidence. Slow work, one failed test
-or an arbitrary retry count never upgrades a worker. Diagnose equivalent failures
+Retries stay on the current tier while producing useful evidence. Speed mode
+moves up after one failure without new evidence; default and cheap modes need a
+diagnosis first. In default and cheap modes, slow work, one failed test or an
+arbitrary retry count never upgrades a worker by itself. Diagnose equivalent failures
 or poor-patch review/CI churn before task-local escalation. Preserve discoveries,
 local checks, batched changed pushes, independent review and merge gates. Store
 actual cost or unknown; routine retries stay silent.
@@ -41,7 +43,7 @@ actual cost or unknown; routine retries stay silent.
 
 ## Phase Transition Autonomy (Quick Reference)
 
-**Always do:** park + arm the wake on a limit-killed subagent (never ask); local CR review; commit/push after clean local review; create PR after push; enter 60s GitHub polling; fix valid reviewer findings; follow the escalation gate's verdict; launch Phase B after Phase A; launch Phase C after `merge_ready` (auto — no merge-approval pause); verify AC after merge gate; respawn exhaustion with valid handoff.
+**Always do:** park + arm the wake on a limit-killed subagent (never ask); local CR review; commit/push after clean local review; create PR after push; enter `--poll-interval` GitHub polling; fix valid reviewer findings; follow the escalation gate's verdict; launch Phase B after Phase A; launch Phase C after `merge_ready` (auto — no merge-approval pause); verify AC after merge gate; respawn exhaustion with valid handoff.
 
 **Ask first only:** respawning a crashed/no-handoff subagent.
 
@@ -60,7 +62,7 @@ Give each subagent one phase with explicit exit criteria. **A/B/C decomposition:
 **Orchestration:**
 
 - **Transitions:** parent launches Phase A (parallel across PRs allowed); A complete → cleanup per `phase-protocols.md`, then B; B `merge_ready` → launch C within 60s (C verifies gate + AC before `/wrap`).
-- **Ceiling:** `PIPELINE_CEILING` (default 4) CR-polled PRs, never over the repo-wide `active_work_cap` (`min()` governs, never raises — `active-work-cap.md`); past CR's hourly cap expect `no_reviewer`. Refill when below — `CLAUDE.md` "KEEP THE PIPELINE FULL".
+- **Ceiling:** the run mode's width from `active-work-cap.sh --width` (default and speed 15 unless configured; cheap `CHEAP_MODE_WIDTH`, default `PIPELINE_CEILING`, may be lower) CR-polled PRs, never over the repo-wide `active_work_cap` (`min()` governs, never raises — `active-work-cap.md`); past CR's hourly cap expect `no_reviewer`. Refill when below — `CLAUDE.md` "KEEP THE PIPELINE FULL".
 - **Scope:** counts only PRs you authored (`@me`); a collaborator's or bot's PRs never enter it (contention is context, never a gate).
 - **Overflow:** past-ceiling work **queues inline, never becomes a thread chip** (slots: `.claude/skills/subagent/SKILL.md` Step 7).
 

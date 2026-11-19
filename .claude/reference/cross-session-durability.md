@@ -44,8 +44,8 @@ Both remaining needs were already satisfied by state on disk:
 
 - A paused PR fleet resumes from `.pmm.paused_at` in `session-state.json` —
   read by `pmm-lifecycle.md` Step 0a on the next invocation, in any session.
-- The monthly audit's cadence is driven by
-  `~/.claude/harness-audit/last-run.json`, checked at session start.
+- The review-stack audit's cadence is driven by
+  `~/.claude/review-stack-audit/last-run.json`, checked at session start.
 
 Reconciling durable state at session start is strictly more reliable than any
 scheduler for these: sessions begin many times a day, there is no job id to
@@ -137,8 +137,7 @@ Per feature: `--durable` was **dropped** from `/babysit-pr` (accepted and
 ignored, so an old chip payload does not hard-error); `--auto-wake` was
 **reframed** to a persistent Monitor re-scan in `/pr-monitor-and-manage`, keeping its
 user-visible promise while deleting a fail-closed cron teardown that had been
-duplicated across three files; `/harness-audit`'s daily-registration cadence
-became the **session-start watermark check** above.
+duplicated across three files.
 
 ## When to revisit
 

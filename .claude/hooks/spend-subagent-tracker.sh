@@ -76,12 +76,16 @@ if [ -f "$TRANSCRIPT_PATH" ]; then
 else
   # Keep an event denominator even when the installed runtime omits the child
   # transcript path. The actual model and usage remain explicitly unavailable.
+  # Name the cause: a payload that omits the path differs from a payload whose
+  # path does not exist on disk (issue #2300).
+  MISSING_REASON="unsupported:agent_transcript_path_missing"
+  [ -n "$TRANSCRIPT_PATH" ] && MISSING_REASON="unsupported:agent_transcript_file_missing"
   EVENT_KEY="$(_spend_event_key "$SESSION_ID" "$AGENT_ID" subagent_transcript_missing)"
   _spend_append_v2 "subagent_stop" "inline" "unknown" "$AGENT_TYPE" \
     "$SESSION_ID" "$AGENT_ID" "" "$EVENT_KEY" "$REPO_ROOT" "unknown" \
     "$REQUESTED_MODEL" "$REQUESTED_SOURCE" "" "unavailable" "" "" "" "" "" \
     "unsupported:no_authoritative_per_event_cost_field" "" "unknown" \
-    "subagent" "unsupported:agent_transcript_path_missing" || true
+    "subagent" "$MISSING_REASON" || true
 fi
 
 exit 0

@@ -6,12 +6,23 @@
 # "all check-runs must be status=completed AND none in the blocking conclusion set".
 # Blocking conclusions: failure, timed_out, action_required, startup_failure, stale.
 # Non-blocking: success, neutral, skipped, cancelled.
+# Fail closed (issue #1846): a completed run is non-blocking ONLY with one of the four
+# conclusions above. A completed run with a missing conclusion, or one GitHub adds later,
+# counts as blocking (reported as `none` when missing) instead of silently passing.
 #
-# Check-runs are deduped through check-runs-dedup.sh before classification: per
-# (app, check name) only runs from that check's newest check suite are counted, so a
-# superseded failure from an earlier re-trigger on the same commit stops blocking the
-# moment a newer run of that check lands (issue #675). This matches what GitHub's own
-# merge box shows. Matrix legs sharing a name inside the newest suite are all kept.
+# `cancelled` is non-blocking HERE because this script counts every check-run, required
+# or not, and a superseded or concurrency-cancelled optional run must not hold a merge
+# (issues #211, #1361). That policy does NOT extend to a branch-protection REQUIRED
+# context: this script has no notion of required contexts, and merge-gate.sh evaluates
+# those separately, accepting only success, neutral, or skipped. So a cancelled required
+# check is counted as passing here yet holds the merge there; do not read an exit 0 from
+# this script as "every required check passed" — run merge-gate.sh for that.
+#
+# Live reads use check-runs-snapshot.sh to retain distinct Actions workflows and
+# events, including queued executions without jobs. Newer executions in the
+# same verified scope supersede completed older runs; unfinished runs stay. Other apps retain the
+# newest-suite-per-name rule (issue #675); unknown Actions identity is not
+# collapsed. Matrix siblings inside the selected execution are all kept.
 #
 # Used by .claude/scripts/merge-gate.sh (internally) and can be called standalone
 # from any skill/agent that needs a CI-only health check without running the full
@@ -38,13 +49,12 @@
 #   Opt-in. Drop the AI reviewers' own check-runs before classifying, so the
 #   verdict is BUILD CI only. Matched by exact app slug, never by check name:
 #   codeant-ai, codeant, cursor, cursor-com, coderabbitai, coderabbit,
-#   graphite-app, graphite (retired 2026-11-03, #1889; kept for leftover runs),
 #   greptile-apps, greptile. Without it a reviewer that
 #   was never invited can hold CI "pending" forever, and one that failed can
 #   hold it "red" — so a trigger gated on green CI would deadlock waiting for
 #   itself (review-triggers-allowed.sh). Applied after the dedup. When no build
 #   check is left, the result is pending, exactly as for an empty run list.
-#   Without the flag the output and exit codes are unchanged.
+#   Both views ignore retired Graphite checks by app slug, with exact names for old data.
 #
 # Output (JSON, default):
 #   {
@@ -62,7 +72,7 @@
 # can disambiguate matrix jobs that share a `name`. Synthesized "no check-runs
 # reported yet" sentinels have id: null.
 #
-# Output (summary, one line):
+# Output (summary, with an extra line if checks were cancelled):
 #   CI: <passing>/<total> passed, <failing> failing (names), <in_progress> in progress (names)
 #
 # Exit codes:
@@ -163,6 +173,9 @@ fi
 # Resolve HEAD SHA (+ owner/repo only if we need to fetch check-runs ourselves)
 # --------------------------------------------------------------------------
 HEAD_SHA=""
+# The PR number when the input named one: lets check-runs-snapshot.sh share its
+# result with the other scripts of this poll cycle (issue #2444). Empty for a SHA.
+SNAP_PR=""
 # All-digits AND length < 10 -> PR number. Longer all-digit strings (e.g. a
 # 40-char all-zero SHA, or any numeric-only abbreviated SHA) fall through to
 # the SHA path so we don't mis-resolve them as astronomically large PR numbers.
@@ -200,6 +213,7 @@ if [[ "$INPUT" =~ ^[0-9]+$ ]] && [[ "${#INPUT}" -lt 10 ]]; then
       echo "ERROR: could not resolve HEAD SHA for PR #$INPUT" >&2
       exit 4
     fi
+    SNAP_PR="$INPUT"
   fi
 else
   # Treat as SHA — API accepts full or abbreviated forms.
@@ -224,7 +238,7 @@ else
   OWNER="${OWNER_REPO%/*}"
   REPO="${OWNER_REPO#*/}"
 
-  if ! CHECK_RUNS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" 2>&1); then
+  if ! CHECK_RUNS_RAW=$("$(dirname "$0")/check-runs-snapshot.sh" --repo "$OWNER/$REPO" --head "$HEAD_SHA" ${SNAP_PR:+--pr "$SNAP_PR"} 2>&1); then
     # Distinguish 404 (SHA not found) from other gh errors by pattern-matching
     # the stderr message text. `gh api` exits non-zero and writes "HTTP 404" /
     # "Not Found" / "No commit found for SHA" to stderr; it does not expose the
@@ -250,7 +264,8 @@ fi
 # check counts as currently blocking, and this script reports a commit as failing
 # that GitHub's own merge box shows as green (issue #675). Applies to both input
 # paths: the stdin caller hands us its raw fetch, same as the live fetch above.
-CHECK_RUNS_DEDUP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-runs-dedup.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CHECK_RUNS_DEDUP="$SCRIPT_DIR/check-runs-dedup.sh"
 if [[ ! -x "$CHECK_RUNS_DEDUP" ]]; then
   echo "ERROR: check-runs-dedup.sh not found or not executable at $CHECK_RUNS_DEDUP" >&2
   exit 5
@@ -261,18 +276,18 @@ if [[ -z "$RUNS_JSON" ]]; then
   exit 5
 fi
 
-# Build-CI-only view (--exclude-reviewers, issue #1749). Exact slugs, so a
-# workflow job that merely NAMES itself after a reviewer still counts as build CI.
-if [[ "$EXCLUDE_REVIEWERS" -eq 1 ]]; then
-  RUNS_JSON=$(printf '%s' "$RUNS_JSON" | jq -c '
-    ["codeant-ai", "codeant", "cursor", "cursor-com", "coderabbitai", "coderabbit",
-     "graphite-app", "graphite", "greptile-apps", "greptile"] as $reviewers
-    | [ .[] | select((.app.slug // "") as $s | ($reviewers | any(. == $s)) | not) ]
-  ' 2>/dev/null || true)
-  if [[ -z "$RUNS_JSON" ]]; then
-    echo "ERROR: could not filter reviewer check-runs" >&2
-    exit 5
-  fi
+# Ignore the retired app in both views. Use exact check names only when the
+# publisher is absent (issues #1749, #2192).
+RUNS_JSON=$(printf '%s' "$RUNS_JSON" | jq -c --argjson exclude "$EXCLUDE_REVIEWERS" '
+  [ .[] | (.app.slug // "") as $slug
+    | select((if $slug == "" then (.name // "") | IN("Graphite / AI Reviews", "Graphite / mergeability_check")
+              else $slug | IN("graphite-app", "graphite") end) | not)
+    | select($exclude == 0 or (($slug | IN("codeant-ai", "codeant", "cursor", "cursor-com",
+        "coderabbitai", "coderabbit", "greptile-apps", "greptile")) | not)) ]
+' 2>/dev/null || true)
+if [[ -z "$RUNS_JSON" ]]; then
+  echo "ERROR: could not filter reviewer check-runs" >&2
+  exit 5
 fi
 
 # --------------------------------------------------------------------------
@@ -283,18 +298,21 @@ fi
 # downstream `/merge` / `/wrap` callers will proceed as if CI passed when no
 # checks have even started. Surface total==0 as in_progress in the JSON AND
 # via exit 1, not just implicitly via exit 0.
-SPLIT=$(echo "$RUNS_JSON" | jq -c --arg head_sha "$HEAD_SHA" '
-  def is_blocking: . == "failure" or . == "timed_out" or . == "action_required" or . == "startup_failure" or . == "stale";
+SPLIT=$(printf '%s\n' "$RUNS_JSON" | jq -c -L "$SCRIPT_DIR/lib" --arg head_sha "$HEAD_SHA" '
+  include "check-run-conclusions";
   . as $runs
-  | ([$runs[] | select(.status != "completed")]) as $incomplete
+  | ([$runs[] | select(completed_check | not)]) as $incomplete
+  | ([$runs[] | select(completed_check and (.conclusion | optional_check_passes))]) as $passing
+  | ([$runs[] | select(completed_check and (.conclusion | optional_check_passes | not))]) as $failing
   | {
     head_sha: $head_sha,
     total: ($runs | length),
-    passing: ([$runs[] | select(.status == "completed" and (.conclusion | is_blocking | not))] | length),
-    failing: ([$runs[] | select(.status == "completed" and (.conclusion | is_blocking))] | length),
+    passing: ($passing | length),
+    failing: ($failing | length),
     in_progress: (($incomplete | length) + (if ($runs | length) == 0 then 1 else 0 end)),
-    blocking: [$runs[] | select(.status == "completed" and (.conclusion | is_blocking)) | {id, name, conclusion}],
-    in_progress_runs: (($incomplete | map({id, name, status})) + (if ($runs | length) == 0 then [{id: null, name: "(no check-runs reported yet)", status: "queued"}] else [] end))
+    blocking: [$failing[] | {id, name, conclusion: (.conclusion // "none")}],
+    in_progress_runs: (($incomplete | map({id, name, status})) + (if ($runs | length) == 0 then [{id: null, name: "(no check-runs reported yet)", status: "queued"}] else [] end)),
+    cancelled_runs: [$passing[] | select(.conclusion == "cancelled") | {id, name}]
   }
 ' 2>/dev/null)
 
@@ -322,6 +340,10 @@ if [[ "$FORMAT" == "summary" ]]; then
     LINE="$LINE, $IN_PROGRESS in progress ($IN_PROG_NAMES)"
   fi
   echo "$LINE"
+  CANCELLED_NAMES=$(printf '%s\n' "$SPLIT" | jq -r '.cancelled_runs | map(.name) | join(", ")')
+  if [[ -n "$CANCELLED_NAMES" ]]; then
+    printf 'Cancelled checks: %s. Use merge-gate.sh to verify whether any are required.\n' "$CANCELLED_NAMES"
+  fi
 else
   echo "$SPLIT"
 fi

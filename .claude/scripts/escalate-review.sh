@@ -94,6 +94,14 @@
 #   while its policy is unreadable. The merge gate is unaffected.
 
 set -euo pipefail
+# Per-run GitHub REST call count (issue #2441): off unless GH_REST_COUNT=1 or GH_REST_WARN_AT is set.
+if [[ -z "${GH_REST_COUNT_ACTIVE:-}" && ( -n "${GH_REST_COUNT:-}" || -n "${GH_REST_WARN_AT:-}" ) ]]; then
+  if . "$(dirname "${BASH_SOURCE[0]}")/lib/gh-count.sh" 2>/dev/null; then
+    gh_count_reexec "${BASH_SOURCE[0]}" "$@" || true
+  else
+    printf '%s: REST call count unavailable (counter library missing)\n' "$(basename "${BASH_SOURCE[0]}")" >&2
+  fi
+fi
 
 # Installed BEFORE anything else can fail, and it owns two jobs (issue #1600).
 #
@@ -183,12 +191,34 @@ emit() {
 # spend exactly what the owner's policy exists to save. gate_met, never a
 # paid verdict. FAILS OPEN to today's routing: a missing gate, any non-zero
 # exit, or unparseable output changes nothing.
+gate_cache_reuse() {
+  local lib="$SCRIPT_DIR/lib/gate-result-cache.sh" vlib="" viewer="" shas="" h="" b="" r=""
+  [[ -r "$lib" ]] && . "$lib" 2>/dev/null || return 1
+  # No saved file for this PR: skip the live SHA read (it could not hit anyway).
+  [[ -f "$(gate_cache_file "$OWNER/$REPO" "$PR_NUMBER")" && -r "$(gate_cache_file "$OWNER/$REPO" "$PR_NUMBER")" ]] || return 1
+  vlib="$SCRIPT_DIR/lib/gh-viewer.sh"
+  [[ -r "$vlib" ]] && . "$vlib" 2>/dev/null || return 1
+  gh_viewer_resolve || return 1
+  viewer="${GH_VIEWER_LOGIN:-}"
+  [[ -n "$viewer" ]] || return 1
+  shas="$(gate_cache_live_shas "$PR_NUMBER" "$OWNER/$REPO")" || return 1
+  read -r r h b <<<"$shas"
+  [[ "$(printf '%s' "$r" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$OWNER/$REPO" | tr '[:upper:]' '[:lower:]')" && "$h" == "$HEAD_SHA" ]] || return 1
+  gate_cache_load "$OWNER/$REPO" "$PR_NUMBER" "$h" "$b" "$viewer"
+}
 override_gate_met() {
   local gate="$SCRIPT_DIR/merge-gate.sh" out="" rc=0 here=""
   [[ -x "$gate" ]] || return 1
   # merge-gate.sh judges the cwd's repo; never let it answer for another one.
   here="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || return 1
   [[ "$(printf '%s' "$here" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$OWNER/$REPO" | tr '[:upper:]' '[:lower:]')" ]] || return 1
+  # Same-cycle reuse (issue #2442): the gate result polling-state-gate.sh just
+  # saved, used only on a fully fail-closed match (gate-result-cache.sh header);
+  # any miss falls through to the live run below, exactly as before.
+  if out="$(gate_cache_reuse)"; then
+    printf '%s' "$out" | jq -e '.met == true and .no_review_override.applied == true' >/dev/null 2>&1
+    return
+  fi
   out="$("$gate" "$PR_NUMBER" 2>/dev/null)" || rc=$?
   [[ "$rc" -eq 0 ]] || return 1
   printf '%s' "$out" | jq -e '.met == true and .no_review_override.applied == true' >/dev/null 2>&1
@@ -301,6 +331,18 @@ if [[ "$CURRENT_REVIEWER" == "self_review" ]]; then
   emit "self_review"
 fi
 
+# Per-PR snapshot (issue #2444): resolve the signed-in login once, here, so that
+# pr-state.sh and the scripts it runs inherit it instead of each looking it up
+# (a REST call apiece); the snapshot itself is initialised below, once HEAD is
+# known. Off (no call at all) when PR_SNAPSHOT_TTL=0; a missing library means
+# plain live reads, exactly as before.
+if [[ -r "$SCRIPT_DIR/lib/pr-snapshot.sh" ]] && . "$SCRIPT_DIR/lib/pr-snapshot.sh" 2>/dev/null; then
+  if slow_cache_enabled pr-reviews; then slow_cache_viewer || true; fi
+else
+  pr_snap_init() { :; }
+  pr_snap_object() { gh api "$2"; }
+fi
+
 STATE_PATH="$("$PR_STATE" --pr "$PR_NUMBER" 2>/dev/null)"
 if [[ -z "$STATE_PATH" || ! -f "$STATE_PATH" ]]; then
   die 4 "failed to gather PR state for #$PR_NUMBER"
@@ -313,6 +355,7 @@ read -r OWNER REPO HEAD_SHA < <(jq -r '[.pr.owner, .pr.repo, .pr.head_sha] | @ts
 if [[ -z "$OWNER" || -z "$REPO" || -z "$HEAD_SHA" ]]; then
   die 4 "PR state missing owner/repo/head_sha"
 fi
+pr_snap_init "$OWNER/$REPO" "$PR_NUMBER" "$HEAD_SHA" || true
 
 # Gate-already-met short-circuit (issue reported on PR #619, 2026-07-21): before
 # evaluating ANY CR->BugBot->Greptile escalation, check whether the CR-path
@@ -376,7 +419,7 @@ SUBSTANCE_OK=false
 # in. Read only by the evaluator-outage cap after AGE_SECONDS.
 EVALUATOR_UNUSABLE=false
 if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
-  HEAD_COMMIT_TS="$(gh api "repos/$OWNER/$REPO/git/commits/$HEAD_SHA" 2>/dev/null | jq -r '.committer.date // ""' 2>/dev/null || echo "")"
+  HEAD_COMMIT_TS="$(pr_snap_object head-commit "repos/$OWNER/$REPO/git/commits/$HEAD_SHA" 2>/dev/null | jq -r '.committer.date // ""' 2>/dev/null || echo "")"
   if [[ -z "$HEAD_COMMIT_TS" ]]; then
     # Fail closed, matching merge-gate.sh's CR_APPROVAL_FRESHNESS_UNKNOWN: an
     # unverifiable approval must not short-circuit escalation. Callers re-poll
@@ -939,14 +982,13 @@ BUGBOT_CHECK_PRESENT="$(jq -r '
 #
 # Newest matching comment only; the freshness compare happens in bash below.
 # Scoped to `.comments.conversation` (the PR conversation) because that is where
-# a trigger is posted, and to non-`cursor[bot]` authors because BugBot quoting
-# the phrase back is not an invitation. Narrow on purpose: a missed invite costs
+# a trigger is posted. Exclude BugBot quoting itself and the retired Graphite app. Narrow on purpose: a missed invite costs
 # one duplicate `@cursor review` (harmless per bugbot.md), while a false one
 # costs a paid Greptile review. No new gh api call — the bundle is already here
 # (meta-guard scenario L).
 BUGBOT_TRIGGER_TS="$(jq -r '
   [.comments.conversation[]?
-   | select((.user.login // "") != "cursor[bot]")
+   | select((.user.login // "") | IN("cursor[bot]", "graphite-app[bot]") | not)
    | select((.body // "") | test("@cursor\\s+review"; "i"))
    | (.created_at // .submitted_at // "")
    | select(. != "")]
@@ -1099,49 +1141,8 @@ CR_RETRY_WINDOW_CAP_SECONDS=3600
 # has a value (0 when absent) while the ts may be empty, so putting the window
 # first makes the only possible empty field a TRAILING one, which `read` does
 # preserve.
-read -r CR_BANNER_WINDOW_S CR_BANNER_TS < <(jq -r --argjson cap "$CR_RETRY_WINDOW_CAP_SECONDS" '
-  def window_seconds:
-    # `capture` emits an EMPTY GENERATOR on no-match, not null — so binding it
-    # directly with `as` yields zero outputs and silently deletes the whole
-    # enclosing object, making any null-branch below unreachable. Collecting into
-    # an array first turns "no match" into a real null this code can act on.
-    # KEYED ON THE STABLE ANCHORS, NOT THE SENTENCE (issue #1364). CodeRabbit has
-    # already reworded this line twice: `Next review available in: 12 minutes`
-    # became `Next included review available in 27 minutes.` — an inserted word
-    # AND a dropped colon. The colon was already optional; the inserted word is
-    # what silently zeroed the window and escalated PRs mid-allowance. What does
-    # not drift is `next` … `review available in` … number + unit, so that is all
-    # this matches, with a BOUNDED 0-2 word allowance for the next insertion.
-    # Bounded, not `.*`: the banner is selected before this runs, but an
-    # unbounded bridge could still reach across a paragraph and time the PR off
-    # an unrelated number. `\\b` keeps `next` a word, not a suffix. The internal
-    # separators are `\\s+` rather than literal spaces because THIS FUNCTION
-    # creates the variation it has to survive: stripping the markdown emphasis
-    # off `**review**  **available in**` leaves a double space behind.
-    #
-    # THE COPULA SLOT, and why it is a literal rather than a second `{0,2}`
-    # (CodeAnt review of this PR). CodeRabbit also ships the sentence in the
-    # future tense — `Your next review will be available in 22 minutes.`,
-    # captured verbatim on PR #554 (2026-07-16) and tolerated by
-    # `lib/pr-state-classify.jq` since #557. That insertion sits between `review`
-    # and `available`, so the 0-2 allowance above — which is on the other side of
-    # `review` — could never reach it, and this parser read a zero window from a
-    # phrasing its sibling had already been reading for six weeks. Both are now
-    # keyed on ONE anchor shape; keep them identical (`cr-rate-limits.md`).
-    # Literal `will be`, not a generic bridge, because the same shape is used by
-    # the classifier, which has NO author gate: `available in <number>` is
-    # ordinary prose, and a generic slot there would let a real finding saying
-    # "the next review is available in the dashboard" classify as a rate-limit
-    # ack. Slot one guards an adjective position ahead of a noun, where the next
-    # insertion is unguessable; this one guards a copula with two observed forms.
-    # An unrecognised third form degrades to escalation, not to a stalled PR.
-    ([ ascii_downcase | gsub("\\*"; "")
-       | capture("\\bnext(?:\\s+\\w+){0,2}\\s+review\\s+(?:will\\s+be\\s+)?available\\s+in:?\\s*(?<n>[0-9]+)\\s*(?<unit>second|minute|hour)") ]
-     | first) as $m
-    | if $m == null then 0
-      else ($m.n | tonumber)
-           * (if $m.unit == "hour" then 3600 elif $m.unit == "minute" then 60 else 1 end)
-      end;
+read -r CR_BANNER_WINDOW_S CR_BANNER_TS < <(jq -L "$SCRIPT_DIR/lib" -r --argjson cap "$CR_RETRY_WINDOW_CAP_SECONDS" '
+  include "cr-retry-window";
   # NEWEST banner first, THEN read its window — never the reverse (CodeRabbit
   # review, PR #1203). "Newest" is by the edit-aware ts built below, so it means
   # MOST RECENTLY STATED, not most recently born (issue #1440): between a banner
@@ -1218,7 +1219,7 @@ read -r CR_BANNER_WINDOW_S CR_BANNER_TS < <(jq -r --argjson cap "$CR_RETRY_WINDO
                | strings
                | select(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}")) ]
              | max // ""),
-        w: ((.body // "") | window_seconds) }
+        w: ((.body // "") | cr_retry_window_seconds) }
     | select(.ts != "") ]
   | sort_by(.ts) | last // {ts: "", w: 0}
   | [ (if .w > $cap then $cap else .w end), .ts ] | @tsv

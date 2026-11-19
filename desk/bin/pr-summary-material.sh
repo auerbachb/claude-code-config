@@ -2,7 +2,7 @@
 # pr-summary-material.sh — prints the raw material for summarizing one merged
 # PR or filed issue at the depth the operator asked for (issue #1756). The desk
 # writes the summary from it; this script only reads GitHub. Design:
-# desk/DESIGN.md 2.5 and 2.7; contract: desk/README.md "Reviews".
+# desk/DESIGN.md 2.5 and 2.7; contract: desk/docs/reviews.md.
 # catalog: utilities — Human-queue Reviews material (`desk/bin/pr-summary-material.sh`): prints a PR's or issue's raw material for a level 1, 2, or 3 summary (title, labels, closing issue; body, commits, files, tests; the bounded diff, narrowed by --path); read-only
 #
 # USAGE

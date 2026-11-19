@@ -21,6 +21,8 @@
 #                    [--now ISO8601]
 #   overrun-check.sh --readout-cells [--pr N] --bound-min M --started-at ISO8601 \
 #                    [--now ISO8601]
+#   overrun-check.sh --actual-cell --bound-min M --started-at ISO8601 \
+#                    --ended-at ISO8601
 #   overrun-check.sh --help
 #
 #   --pr is REQUIRED for the breach path (it keys the session-state record read
@@ -73,6 +75,18 @@
 #     is in the future — identical to --readout, so both modes share one
 #     degradation contract and the caller renders `—`.
 #
+# ACTUAL CELL MODE (--actual-cell)
+#   The finished-row counterpart of cell mode: how long a delivered issue actually
+#   took against its planning bound. Same ISO-8601 parse and the same minute
+#   arithmetic as the modes above. ONE line, always exits 0:
+#     {minutes} min vs plan {bound}     (finished within the bound, floored minutes)
+#     +{over} min over plan              (past the bound; "+<1 min over plan" under a minute)
+#   Prints NOTHING (exit 0) when either timestamp will not parse, when the end
+#   precedes the start, so the caller renders an em dash rather than a guess.
+#   Measured from --started-at, which /board reads from the recorded launch
+#   (pipelines[N].started_at / prs[N].pipeline_started_at). It is NOT the
+#   estimate-log start, which runs from the issue claim.
+#
 # ALERT LINE FORMAT (stdout, only on exit 1)
 #   ⚠ PR #N overrun: {elapsed} h elapsed vs {bound} min plan · revised finish ~HH:MM ET
 #   (when window blown): · drop #M to still land the rest by HH:MM ET
@@ -103,6 +117,8 @@ REPO=""
 NOW_OVERRIDE=""
 READOUT_MODE=false      # --readout: print progress readout, skip breach/state logic
 CELLS_MODE=false        # --readout-cells: print table cells, skip breach/state logic
+ACTUAL_MODE=false       # --actual-cell: finished-row actual against bound, skip breach/state logic
+ENDED_AT=""             # --actual-cell only: the delivered instant (merge time)
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -122,6 +138,9 @@ while [[ $# -gt 0 ]]; do
     --now=*)            NOW_OVERRIDE="${1#--now=}"; shift ;;
     --readout)          READOUT_MODE=true; shift ;;
     --readout-cells)    CELLS_MODE=true; shift ;;
+    --actual-cell)      ACTUAL_MODE=true; shift ;;
+    --ended-at)         shift; ENDED_AT="${1:-}"; [[ $# -gt 0 ]] && shift ;;
+    --ended-at=*)       ENDED_AT="${1#--ended-at=}"; shift ;;
     --help|-h)
       awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
         { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
@@ -136,6 +155,10 @@ if [[ "$READOUT_MODE" == "true" && "$CELLS_MODE" == "true" ]]; then
   printf 'overrun-check.sh: --readout and --readout-cells are mutually exclusive\n' >&2
   exit 3
 fi
+if [[ "$ACTUAL_MODE" == "true" && ( "$READOUT_MODE" == "true" || "$CELLS_MODE" == "true" ) ]]; then
+  printf 'overrun-check.sh: --actual-cell is mutually exclusive with --readout and --readout-cells\n' >&2
+  exit 3
+fi
 
 # --pr identifies the session-state record the breach path reads and writes, so
 # it is required there. Readout and cell modes are pure computation over
@@ -144,9 +167,13 @@ fi
 # during Phase A no PR exists yet, while started_at DOES (issue-keyed). Demanding
 # one made a launch table that showed real clocks decay to em dashes on the next
 # heartbeat tick. A PR number is still accepted, and still validated when given.
-if [[ "$READOUT_MODE" == "true" || "$CELLS_MODE" == "true" ]]; then
+if [[ "$READOUT_MODE" == "true" || "$CELLS_MODE" == "true" || "$ACTUAL_MODE" == "true" ]]; then
   if [[ -z "$BOUND_MIN" || -z "$STARTED_AT" ]]; then
     printf 'overrun-check.sh: --bound-min and --started-at are required\n' >&2
+    exit 3
+  fi
+  if [[ "$ACTUAL_MODE" == "true" && -z "$ENDED_AT" ]]; then
+    printf 'overrun-check.sh: --ended-at is required with --actual-cell\n' >&2
     exit 3
   fi
 elif [[ -z "$PR_NUMBER" || -z "$BOUND_MIN" || -z "$STARTED_AT" ]]; then
@@ -263,6 +290,31 @@ format_et_clock() {
     format_utc_clock "$epoch"
   fi
 }
+
+# ---------------------------------------------------------------------------
+# Actual-cell mode — a delivered row's duration against its planning bound.
+# Reuses the same ISO parse, the same floored-minute arithmetic and the same
+# over-plan wording as cell mode; exits before any session-state I/O.
+# ---------------------------------------------------------------------------
+if [[ "$ACTUAL_MODE" == "true" ]]; then
+  ACTUAL_START=$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%SZ' "$STARTED_AT" '+%s' 2>/dev/null \
+    || date -d "$STARTED_AT" '+%s' 2>/dev/null) || exit 0
+  ACTUAL_END=$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%SZ' "$ENDED_AT" '+%s' 2>/dev/null \
+    || date -d "$ENDED_AT" '+%s' 2>/dev/null) || exit 0
+  ACTUAL_SECS=$(( ACTUAL_END - ACTUAL_START ))
+  (( ACTUAL_SECS < 0 )) && exit 0
+  if (( ACTUAL_SECS <= BOUND_MIN * 60 )); then
+    printf '%d min vs plan %d\n' "$(( ACTUAL_SECS / 60 ))" "$BOUND_MIN"
+  else
+    ACTUAL_OVER_SECS=$(( ACTUAL_SECS - BOUND_MIN * 60 ))
+    if (( ACTUAL_OVER_SECS < 60 )); then
+      printf '+<1 min over plan\n'
+    else
+      printf '+%d min over plan\n' "$(( ACTUAL_OVER_SECS / 60 ))"
+    fi
+  fi
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Readout / cell mode — compute and print the progress readout or the table

@@ -173,8 +173,20 @@ missing_payload=$(python3 -c 'import json; print(json.dumps({"session_id":"sess-
 run_subagent "$missing_payload" >/dev/null
 missing_row=$(grep $'\tsubagent_stop\t' "$LOG" | tail -n 1)
 [[ "$(cut -f10 <<<"$missing_row")" != "" ]] || fail "missing-transcript event needs a stable dedup key"
-[[ "$(cut -f26 <<<"$missing_row")" == "unsupported:agent_transcript_path_missing" ]] || fail "missing transcript path was not recorded explicitly"
+[[ "$(cut -f26 <<<"$missing_row")" == "unsupported:agent_transcript_file_missing" ]] || fail "missing transcript file was not recorded explicitly"
 ok "missing transcript paths retain an explicit, deduplicable source-status row"
+
+# A path that the payload supplies but that does not exist is a different cause
+# from a payload that omits the path entirely; each must name its own reason.
+absent_file_payload=$(python3 -c 'import json; print(json.dumps({"session_id":"sess-main","agent_id":"agent-absent-file","agent_type":"general-purpose","cwd":"/tmp/telemetry-repo","agent_transcript_path":"/missing/sanitized-child-transcript.jsonl"}))')
+run_subagent "$absent_file_payload" >/dev/null
+absent_file_row=$(grep $'\tagent-absent-file\t' "$LOG" | tail -n 1)
+[[ "$(cut -f26 <<<"$absent_file_row")" == "unsupported:agent_transcript_file_missing" ]] || fail "present-but-absent transcript file must name the file cause"
+no_path_payload=$(python3 -c 'import json; print(json.dumps({"session_id":"sess-main","agent_id":"agent-no-path","agent_type":"general-purpose","cwd":"/tmp/telemetry-repo"}))')
+run_subagent "$no_path_payload" >/dev/null
+no_path_row=$(grep $'\tagent-no-path\t' "$LOG" | tail -n 1)
+[[ "$(cut -f26 <<<"$no_path_row")" == "unsupported:agent_transcript_path_missing" ]] || fail "payload without a transcript path must name the payload cause"
+ok "missing transcript causes are distinguished by reason"
 
 echo "--- task lifecycle metadata ---"
 created=$(json_payload '{"hook_event_name":"TaskCreated","session_id":"sess-main","cwd":"/tmp/telemetry-repo","agent_id":"agent-custom","task_id":"task-1","task_subject":"DO_NOT_LOG_SUBJECT","task_description":"DO_NOT_LOG_DESCRIPTION"}')

@@ -9,6 +9,7 @@
 #   merge-gate-ci-dedup.test.sh           — CI check-run dedup + CodeAnt supplemental gate (issue #675)
 #   merge-gate-codeant-run-marker.test.sh — CodeAnt pre-run approval stubs (issues #1432, #1476)
 #   merge-gate-required-contexts.test.sh  — branch-protection required contexts (issue #1361)
+#   merge-gate-required-cancelled.test.sh — cancelled/unknown required conclusions (issue #1846)
 #
 # Source from repo root or any worktree — REPO_ROOT is resolved via git.
 #
@@ -70,7 +71,11 @@ check_eq() { # expected actual label
   if [[ "$1" == "$2" ]]; then ok "$3"; else bad "$3 (expected: $1, got: $2)"; fi
 }
 
-HEAD_SHA="deadbeefcafedeadbeefcafedeadbeefcafedead"
+# FAKE_HEAD_SHA lets a suite replay a real incident at its exact HEAD (issue
+# #1846). It is read once, here, because the stub below bakes the value in when
+# it is written. A distinct name rather than HEAD_SHA, so an ambient HEAD_SHA in
+# a developer's shell can never change what every other suite asserts against.
+HEAD_SHA="${FAKE_HEAD_SHA:-deadbeefcafedeadbeefcafedeadbeefcafedead}"
 
 # --- Fake gh: only the endpoints merge-gate.sh actually calls. ---------------
 BIN="$TMP/bin"; mkdir -p "$BIN"
@@ -85,15 +90,32 @@ case "\$ARGS" in
     # so authorship == "mine" and the merge is not blocked.
     echo "solouser"; exit 0 ;;
   *"pr view "*headRefOid*)
-    jq -cn '{number:1, state:"OPEN", headRefOid:"$HEAD_SHA", baseRefName:"main",
-             mergeStateStatus:"CLEAN", mergeable:"MERGEABLE", reviewDecision:"APPROVED",
+    # mergeStateStatus is CLEAN unless a suite sets FAKE_MERGE_STATE (issue
+    # #1846: replaying a PR GitHub reported BLOCKED). Every pre-existing suite
+    # leaves it unset, so none of their expectations move.
+    jq -cn --arg ms "\${FAKE_MERGE_STATE:-CLEAN}" --argjson draft "\${FAKE_DRAFT:-false}" \
+           '{number:1, state:"OPEN", headRefOid:"$HEAD_SHA", baseRefName:"main",
+             mergeStateStatus:\$ms, isDraft:\$draft, mergeable:"MERGEABLE", reviewDecision:"APPROVED",
              author:{login:"solouser", type:"User"}}'
     exit 0 ;;
   *check-runs*)
-    printf '%s' "\$FAKE_CHECK_RUNS"; exit 0 ;;
+    printf '%s' "\$FAKE_CHECK_RUNS" | jq '. + {total_count:(.check_runs | length)}'; exit 0 ;;
+  *actions/runs*)
+    if [[ -n "\${FAKE_WORKFLOW_RUNS:-}" ]]; then printf '%s' "\$FAKE_WORKFLOW_RUNS"; exit 0; fi
+    # Existing concern tests use synthetic app gha; only explicit Actions
+    # fixtures need authoritative workflow identity for the snapshot join.
+    printf '%s' "\$FAKE_CHECK_RUNS" | jq -sc --arg head "$HEAD_SHA" '
+      [.[].check_runs[] | select(.app.slug == "github-actions")]
+      | group_by(.check_suite.id) | map(.[0].check_suite.id as \$suite |
+        {id:\$suite, workflow_id:\$suite, run_attempt:1, event:"push", head_branch:"fixture", head_sha:\$head,
+         pull_requests:[], check_suite_id:\$suite, html_url:("https://github.com/solo/repo/actions/runs/" + (\$suite|tostring)),
+         path:".github/workflows/fixture.yml", status:"completed", conclusion:"success"})
+      | {total_count:length,workflow_runs:.}'
+    exit 0 ;;
   *commits/*/statuses*)
     # Legacy commit statuses (issue #1361) — a required context can be satisfied
     # by one of these instead of a check-run. Empty unless a test supplies them.
+    [[ "\${FAKE_COMMIT_STATUS_ERROR:-false}" == false ]] || exit 1
     printf '%s' "\${FAKE_COMMIT_STATUSES:-[]}"; exit 0 ;;
   *pulls/*/reviews*)
     printf '%s' "\${FAKE_REVIEWS:-[]}"; exit 0 ;;

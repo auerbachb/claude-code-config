@@ -22,7 +22,9 @@ run --json
 check_eq "$(printf '%s' "$DOC" | jq -r 'has("last_scheduled_snapshot_at") | tostring')" "true" \
   "the no-accounts document has the same shape — nothing for a consumer to special-case"
 
-# --- 17g. the compact table fits five accounts in 100 columns ----------------
+# --- 17g. the compact table fits five accounts in 140 columns ----------------
+# The limit moved from 100 to 140 when the FETCHED, paid-usage, resets and top-tier
+# columns arrived (#2409); ai-quotas-columns.test.sh measures the six-account table.
 
 # One claude and four codex accounts, each reporting its OWN address, so no row
 # carries a `registered as` note that a real five-account registry would not
@@ -63,10 +65,10 @@ check_eq "$(printf '%s\n' "$FIVE_TABLE" | grep -c '7-day' || true)" "5" \
 check_not_contains "$FIVE_TABLE" "registered as" \
   "control(-): no row is decorated with a mislabelled-account note"
 FIVE_WIDTH="$(widest_line "$FIVE_TABLE")"
-if [[ "$FIVE_WIDTH" -le 100 && "$FIVE_WIDTH" -gt 0 ]]; then
-  ok "the five-account table fits in 100 columns (widest line: ${FIVE_WIDTH})"
+if [[ "$FIVE_WIDTH" -le 140 && "$FIVE_WIDTH" -gt 0 ]]; then
+  ok "the five-account table fits in 140 columns (widest line: ${FIVE_WIDTH})"
 else
-  bad "the five-account table does not fit in 100 columns (widest line: ${FIVE_WIDTH})"
+  bad "the five-account table does not fit in 140 columns (widest line: ${FIVE_WIDTH})"
 fi
 check_eq "$(history_count)" "5" "and every one of the five rows was recorded"
 

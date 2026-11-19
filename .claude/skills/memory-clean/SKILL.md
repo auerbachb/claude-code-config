@@ -32,7 +32,7 @@ Parse `$ARGUMENTS`: pass through an explicit `--dir PATH` (for a non-current pro
 python3 "$SCRIPT" --check --json [--dir PATH] [--budget-bytes N]
 ```
 
-Exit `0` = scanned (a clean store is a valid result). Exit `3` = memory dir not found — tell the user and offer to re-run with `--dir PATH`. The JSON has `memory_dir`, `index` (`bytes`, `entry_count`, `file_count`, `budget_bytes`, `over_budget`), `orphans`, `dangling`, and `advisory` (`duplicate_names`, `superseded`). Read `memory_dir` back to the user so they know exactly which store is in scope.
+Exit `0` = scanned (a clean store is a valid result). Exit `3` = memory dir not found — tell the user and offer to re-run with `--dir PATH`. The JSON has `memory_dir`, `index` (`bytes`, `entry_count`, `file_count`, `budget_bytes`, `over_budget`), `orphans`, `dangling`, `stale_index` (issue #2283), and `advisory` (`duplicate_names`, `superseded`). Read `memory_dir` back to the user so they know exactly which store is in scope.
 
 ## Step 2: Present recommendations
 
@@ -57,6 +57,13 @@ On disk but not referenced by MEMORY.md. Some orphans are intentionally unindexe
 |------|------|------|
 | foo.md | 1.2 KB | Unindexed — review before deleting |
 
+### Stale index lines (K) — recommend rewriting the line
+The note says the decision was superseded; its MEMORY.md line still reads as current. The index loads every session and the note does not, so rewrite each line to state the current decision first (an index edit, not a delete; do it on the user's yes in Step 3).
+
+| File | MEMORY.md line | Index line now |
+|------|----------------|----------------|
+| sms-provider.md | 12 | all SMS on Amazon (no Twilio) |
+
 ### Index size
 {Only when over budget:} Index is {bytes} > {budget_bytes}. The index loads every session; trimming entries reduces per-session token cost.
 
@@ -75,6 +82,7 @@ After presenting, stop and present the choice via **`AskUserQuestion`** when ava
 
 - `"Drop dangling index pointers — safe (Recommended)"` (only when dangling pointers found; skip-wins if selected with others)
 - `"Delete orphaned files"` (only when orphans found; user may name specific files via "Other")
+- `"Rewrite stale index lines"` (only when stale index lines found — edit each MEMORY.md line to the note's current decision; no file is deleted)
 - `"Act on advisory items"` (only when advisory findings found)
 - `"Skip — leave the store untouched"` (mark `(Recommended)` and list first when only advisory or orphan-only findings remain; skip-wins)
 
@@ -86,7 +94,8 @@ To prune, tell me which to remove. I can:
 1. Drop all dangling index pointers (safe — they point at nothing)
 2. Delete specific orphaned files (list names)
 3. Act on a specific advisory item (I'll re-confirm the exact file)
-4. Skip — leave the store untouched
+4. Rewrite stale index lines (each MEMORY.md line is reworded to the note's current decision; no note is deleted)
+5. Skip — leave the store untouched
 
 Which items should I prune?
 ```
@@ -104,6 +113,8 @@ python3 "$SCRIPT" --apply [--dir PATH] \
 ```
 
 The script validates every target (bare `.md` basename, direct child of the memory dir, never `MEMORY.md`), deletes files, rewrites `MEMORY.md` atomically, and verifies integrity. Exit `4` = a safety refusal or an integrity failure — surface the message verbatim and do not retry blindly. On success, report the JSON's before/after `entry_count` and `bytes`, the deleted files, and the integrity result (`ok`, any `remaining_dangling`, any `remaining_orphans` kept by choice).
+
+**Stale index lines** are not part of the `--apply` call (it deletes files and drops pointers; it does not reword lines). For each one the user confirmed: read the note, then edit that one `MEMORY.md` line with the Edit tool so it states the note's current decision first and says the earlier one was superseded; keep the link and the one-line shape. Do this after the `--apply` call when both were chosen (the prune rewrites `MEMORY.md`), then re-run `--check --strict` and report its actual exit code and any stale lines that remain (lines the user did not select still exit `1`).
 
 ## Rules
 

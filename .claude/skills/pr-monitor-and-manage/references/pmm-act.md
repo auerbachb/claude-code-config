@@ -11,7 +11,7 @@ recovery, parallel fixer dispatch (including subagent prompt template), sequenti
 
 An `active_agents` row with `phase == "A"` and `status` not in `{complete, failed}` blocks rebase, `/wrap`, and fix-dispatch gates unless drained. **PMM-owned** entries (`id` starts with `pmm-fix-`) are blocking until Step 2.5/5e drains them via exit report. **Foreign** entries (any other `id`) are blocking only while NOT stale: apply `PMM_LOCK_STALE_SECS` (default 3600s) to `last_seen_at` (or `launched`), and when the window is exceeded **and** there is no live progress evidence on that PR (HEAD SHA unchanged, no new bot/CI activity since the timestamp), treat the entry as **non-blocking** — PMM never mutates it, but stops deferring on it. All gate checks below use this idiom consistently.
 
-**Track actions this tick** for idle detection (Step 6). Initialize `TICK_HAD_ACTION=false` and `MERGED_THIS_TICK='[]'` at the start of Step 5; set `TICK_HAD_ACTION=true` whenever any of the following fire for any PR: rebase + force-push (Step 5a), stale-bot dismissal (Step 5b or 5b′), explicit owning-bot re-trigger from Step 5b′ (or post-subagent Step 2.5/5e), `phase-a-fixer` spawn (Step 5c), `/wrap` dispatch (Step 5d), or a reviewer trigger from `pr-preflight.sh` that actually posts (non-no-op output). Append PR numbers to `MERGED_THIS_TICK` when `/wrap` successfully merges a PR (Step 5d). Waiting, gone, error, `BLOCKED:*`, and no-op pre-flight do **not** set the flag.
+**Track actions this tick** for idle detection (Step 6). Initialize `TICK_HAD_ACTION=false`, `TICK_HAS_PENDING_CI_RETRY=false`, and `MERGED_THIS_TICK='[]'` at the start of Step 5; set `TICK_HAD_ACTION=true` whenever any of the following fire for any PR: rebase + force-push (Step 5a), stale-bot dismissal (Step 5b or 5b′), explicit owning-bot re-trigger from Step 5b′ (or post-subagent Step 2.5/5e), `phase-a-fixer` spawn (Step 5c), `/wrap` dispatch (Step 5d), a reviewer trigger from `pr-preflight.sh` that actually posts (non-no-op output), or an accepted required CI rerun. Set `TICK_HAS_PENDING_CI_RETRY=true` whenever the required CI helper reports `wait_for_ci=true`, including when another caller owns the request. Append PR numbers to `MERGED_THIS_TICK` when `/wrap` successfully merges a PR (Step 5d). Waiting, gone, error, `BLOCKED:*`, and no-op pre-flight do **not** set the flag.
 
 ---
 
@@ -77,12 +77,11 @@ if [ -n "$DISMISS" ] && [ -n "$BASH4" ]; then
 else
   # Inline REST fallback (POSIX-safe, no mapfile) — same allowlist + semantics
   # as the script: dismiss only Bot-authored CHANGES_REQUESTED whose commit_id
-  # != current HEAD. NEVER touches human reviews. graphite-app[bot]: retired
-  # 2026-11-03; kept so a leftover stale review still dismisses.
+  # != current HEAD. The automatic recovery considers active reviewer bots.
   HEAD_SHA=$(gh pr view "$N" --json headRefOid --jq .headRefOid)
   gh api --paginate "repos/$OWNER/$REPO/pulls/$N/reviews?per_page=100" | jq -s 'add // []' \
    | jq -r --arg sha "$HEAD_SHA" '
-       ["coderabbitai[bot]","cursor[bot]","greptile-apps[bot]","codeant-ai[bot]","graphite-app[bot]"] as $allow
+       ["coderabbitai[bot]","cursor[bot]","greptile-apps[bot]","codeant-ai[bot]"] as $allow
        | .[] | select(.state=="CHANGES_REQUESTED")
        | select((.commit_id//"")!="" and .commit_id!=$sha)
        | select((.user.type//"")=="Bot")
@@ -236,10 +235,11 @@ CR_BUDGET_OK=1
 
 If `$CR_BUDGET_OK == 0`, still spawn subagents but include `SKIP_CR_TRIGGER=1` in each prompt. Do **not** block spawn entirely when the cap is exhausted.
 
-**Cost-first preflight.** For each allocated task, resolve `model-route.sh`
+**Model preflight.** For each allocated task, resolve `model-route.sh`
 through the shared-script candidate order and run `task-model-routing.md`'s
 `task-model-route-dispatch` block using refreshed eligibility and its existing
-scoped session/handoff routing record. Persist request/decision before dispatch;
+scoped session/handoff routing record. Set the request's `mode` from
+`run-mode.sh get` and its `tier` per `task-model-routing.md` §Run mode and issue tier (an unresolved tier is sent unset and routes as Standard). Persist request/decision before dispatch;
 only `start`, `retry`, or `escalate` selects `ROUTED_MODEL`. Block on other
 results or failed writes. Preserve attempt evidence on successors and all
 existing permission, cap, budget and review controls.
@@ -272,6 +272,7 @@ run_in_background: true
 - `SKIP_CR_TRIGGER=1` when `$CR_BUDGET_OK == 0`
 - The verbatim `SAFETY:` block from `.claude/rules/safety.md`
 - The verbatim `MINDSET:` block from `.claude/rules/safety.md`
+- The verbatim `QUESTIONS:` block from `.claude/rules/human-queue.md`
 - The verbatim `SKILLS:` block from `.claude/rules/skill-first.md`
 
 **Record all of this tick's spawns in ONE single write, after every Agent call has been issued.** `.active_agents` is a map keyed by agent id (issue #1631), so each spawn writes only its own key — a sibling thread's entries are structurally untouchable, and the old `--get` → append → `--set`-the-whole-array idiom that lost them is gone. Batching is still the rule: one call per tick is one atomic write and one lock acquisition instead of N. Build every entry first, then issue exactly one `session-state.sh` call for the whole batch:

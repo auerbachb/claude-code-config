@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Lint verbatim SAFETY/MINDSET/SKILLS block conformance across declared copies (issue #767).
+# Lint verbatim SAFETY/MINDSET/SKILLS/QUESTIONS block conformance across declared copies (issue #767).
 #
 # Validates that every declared verbatim copy of a canonical block is byte-identical
 # to the canonical block extracted from its rule file.
@@ -8,6 +8,7 @@
 #   SAFETY:  → .claude/rules/safety.md
 #   MINDSET: → .claude/rules/safety.md
 #   SKILLS:  → .claude/rules/skill-first.md
+#   QUESTIONS: → .claude/rules/human-queue.md (issue #2283)
 #
 # Verbatim-copy surfaces (byte-compared):
 #   .claude/reference/subagent-phase-guardrails.md  (subagent skill; extracted from SKILL.md #805)
@@ -43,7 +44,7 @@ usage() {
   cat <<'EOF'
 Usage: .github/scripts/verbatim-block-lint.sh
 
-  Verifies SAFETY/MINDSET/SKILLS verbatim blocks have not drifted from canonical.
+  Verifies SAFETY/MINDSET/SKILLS/QUESTIONS verbatim blocks have not drifted from canonical.
   No options. Run from the repo root. Exits 1 on any error.
 EOF
 }
@@ -72,6 +73,7 @@ canonical_src() {
   case "$block" in
     SAFETY|MINDSET) printf '%s\n' ".claude/rules/safety.md" ;;
     SKILLS)         printf '%s\n' ".claude/rules/skill-first.md" ;;
+    QUESTIONS)      printf '%s\n' ".claude/rules/human-queue.md" ;;
     *) printf '::error::Internal error: no canonical source registered for block %s\n' "$block" >&2
        return 1 ;;
   esac
@@ -81,6 +83,7 @@ canonical_src() {
 CANONICAL_FILES=(
   ".claude/rules/safety.md"
   ".claude/rules/skill-first.md"
+  ".claude/rules/human-queue.md"
 )
 
 # ---------------------------------------------------------------------------
@@ -91,9 +94,11 @@ VERBATIM_COPIES=(
   "SAFETY|.claude/reference/subagent-phase-guardrails.md"
   "MINDSET|.claude/reference/subagent-phase-guardrails.md"
   "SKILLS|.claude/reference/subagent-phase-guardrails.md"
+  "QUESTIONS|.claude/reference/subagent-phase-guardrails.md"
   "SAFETY|.claude/skills/pr-monitor-and-manage/SKILL.md"
   "MINDSET|.claude/skills/pr-monitor-and-manage/SKILL.md"
   "SKILLS|.claude/skills/pr-monitor-and-manage/SKILL.md"
+  "QUESTIONS|.claude/skills/pr-monitor-and-manage/SKILL.md"
 )
 
 # ---------------------------------------------------------------------------

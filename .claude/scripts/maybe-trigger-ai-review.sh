@@ -258,6 +258,269 @@ elif [[ -n "$LAST_FIRED_ROUND" && "$LAST_FIRED_ROUND" =~ ^[0-9]+$ ]]; then
   fi
 fi
 
+# When the agent asks (issue #2195). The tier's REVIEW_REQUEST setting and this
+# HEAD's checks decide the CodeAnt request; review-request-gate.sh owns the
+# rules. A held request is not a skip of the tick: a tiered run defers the
+# CodeAnt step, a legacy run skips before any state write. The first request
+# for a HEAD (REQ_FIRST=1) may post in the legacy path even while the complexity
+# cadence (#362) is below its gate; a tiered run keeps the complexity skip. Once
+# a HEAD is recorded, this block asks nothing more for it.
+REVIEW_TIER_SH="${SCRIPT_DIR}/review-tier.sh"
+REQUEST_SH="${SCRIPT_DIR}/review-request-gate.sh"
+REQ_BLOCK=""
+# The availability skip decided by availability_gate, recorded only by settle_pending_skip
+# on a path that would otherwise have posted the request (CodeAnt #4546742951).
+REQ_PENDING_SKIP=""
+REQ_FIRST=0
+# Which free reviewer this HEAD's request asks (issue #2257): CodeAnt unless
+# review-availability.sh choose picks CodeRabbit. REQ_BODY is the exact comment posted.
+REQ_REVIEWER="codeant"
+REQ_BODY="@codeant-ai review"
+REQ_CHOICE_JSON="{}"
+REQ_CHOICE_REASON=""
+REQ_WINDOW_S=""
+REQ_CAN_SKIP=0
+REQ_POSTED_REVIEWER=""
+REQ_SETTING="after-ci"
+REQ_CHECKS=""
+REQ_HEAD_DONE="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].review_request_head_sha // empty" 2>/dev/null || true)"
+record_request_head() {
+  "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].review_request_head_sha=\"$HEAD_SHA\"" >/dev/null 2>&1 \
+    || echo "maybe-trigger-ai-review.sh: posted the review request but could not record its HEAD — it may be requested again" >&2
+}
+# Claim this HEAD before posting, so two concurrent ticks cannot both post (#2195).
+# session-state --cas: exactly one winner (exit 0); a loser (exit 7) posts nothing.
+claim_request_head() { # expects the value this tick read (an older HEAD, or null)
+  local expect="null"
+  [[ -n "$REQ_HEAD_DONE" ]] && expect="\"$REQ_HEAD_DONE\""
+  "$STATE_HELPER" --cas ".prs[\"${PR_KEY}\"].review_request_head_sha=\"$HEAD_SHA\"" --expect "$expect" >/dev/null 2>&1
+}
+# A post that failed gives the claim back, so the next tick asks again. Compare-and-set:
+# only this HEAD's own claim is cleared, never a newer push's claim (#2274 review).
+release_request_head() {
+  "$STATE_HELPER" --cas ".prs[\"${PR_KEY}\"].review_request_head_sha=null" --expect "\"$HEAD_SHA\"" >/dev/null 2>&1 || true
+}
+# First-request guard (safety.md authorship; the same open, non-draft PR the
+# other paths require). Runs only when a first request would post.
+first_request_guard() {
+  local auth="${SCRIPT_DIR}/pr-authorship.sh" pr_state
+  if [[ ! -x "$auth" ]]; then REQ_BLOCK="authorship_unverified"; return 0; fi
+  if ! "$auth" "$PR_NUM" >/dev/null 2>&1; then REQ_BLOCK="not_author"; return 0; fi
+  pr_state="$(gh pr view "$PR_NUM" --json state,isDraft 2>/dev/null)" || { REQ_BLOCK="pr_unreadable"; return 0; }
+  jq -e '.state == "OPEN" and ((.isDraft // false) == false)' <<<"$pr_state" >/dev/null 2>&1 \
+    || REQ_BLOCK="pr_not_open_or_draft"
+}
+# Request skip when no free reviewer can answer inside the no-review window (issue
+# #2256). review-availability.sh decides from the account-wide record. Any unusable
+# answer, or a missing helper or window, keeps the request (fail toward asking). A skip
+# is recorded on the PR so the no-review override can apply at once for this HEAD.
+availability_gate() {
+  local av="${SCRIPT_DIR}/review-availability.sh" nro_min win dec
+  [[ -x "$av" ]] || return 0
+  nro_min="$(jq -r '.no_review_override_minutes // empty' <<<"$REQ_TIER_JSON" 2>/dev/null)" || nro_min=""
+  # Override off (no window): still pick the free reviewer, judged against the default
+  # 10-minute window, but never skip, since no override would follow a skip.
+  local can_skip=1
+  if [[ "$nro_min" =~ ^[0-9]+$ ]]; then win=$(( nro_min * 60 )); else win=600; can_skip=0; fi
+  REQ_CAN_SKIP="$can_skip"
+  REQ_WINDOW_S="$win"
+  # Refresh observations before choosing for a new eligible HEAD. A refusal on the
+  # previous HEAD must survive even if no merge-gate tick ran between requests.
+  # Fetch failures retain stored evidence. Processing failures disable every skip
+  # for this tick, including the later hourly-budget fallback, so stale limits cannot suppress asking.
+  if (( ! DRY_RUN )); then
+    local repo_name notices reviews
+    repo_name="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || repo_name=""
+    if [[ "$repo_name" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]]; then
+      if notices="$(gh api --paginate "repos/$repo_name/issues/$PR_NUM/comments?per_page=100" 2>/dev/null)"; then
+        printf '%s' "$notices" | jq -se 'if length > 0 and all(.[]; type == "array") then add else error("invalid metadata pages") end' 2>/dev/null | "$av" record --repo "$repo_name" --pr "$PR_NUM" >/dev/null 2>&1 || { can_skip=0; REQ_CAN_SKIP=0; }
+      fi
+      if reviews="$(gh api --paginate "repos/$repo_name/pulls/$PR_NUM/reviews?per_page=100" 2>/dev/null)"; then
+        printf '%s' "$reviews" | jq -se 'if length > 0 and all(.[]; type == "array") then add else error("invalid metadata pages") end' 2>/dev/null | "$av" observe --repo "$repo_name" >/dev/null 2>&1 || { can_skip=0; REQ_CAN_SKIP=0; }
+      fi
+    fi
+  fi
+  # choose (issue #2257) answers both questions: skip when no free reviewer can answer in
+  # the window (the same verdict decide gives), else the reviewer to ask for this HEAD.
+  dec="$("$av" choose --window-s "$win" 2>/dev/null)" || return 0
+  jq -e 'type == "object"' <<<"$dec" >/dev/null 2>&1 || return 0
+  if [[ "$(jq -r '.skip // false' <<<"$dec" 2>/dev/null)" != true ]]; then
+    REQ_CHOICE_JSON="$dec"
+    REQ_CHOICE_REASON="$(jq -r '.choice_reason // "request"' <<<"$dec")"
+    REQ_REVIEWER="$(jq -r '.reviewer // "codeant"' <<<"$dec")"
+    # on-push keeps today's request: only the after-ci request takes the choice.
+    if [[ "$REQ_SETTING" != "after-ci" ]]; then REQ_REVIEWER="codeant"; fi
+    REQ_BODY="@${REQ_REVIEWER}-ai review"
+    [[ "$REQ_REVIEWER" == coderabbit ]] && REQ_BODY="@coderabbitai review"
+    return 0
+  fi
+  # No window, no override: keep today's CodeAnt request instead of skipping.
+  [[ "$can_skip" == 1 ]] || return 0
+  # Held, not yet recorded: settle_pending_skip writes it only where this tick would post.
+  REQ_PENDING_SKIP="$(jq -r '.reason' <<<"$dec")"
+  REQ_BLOCK="$REQ_PENDING_SKIP"
+  REQ_FIRST=0
+}
+
+# Checks the chosen reviewer just before posting (issue #2257). CodeRabbit's hourly budget is
+# read here (cr-review-hourly.sh --check, exit 1 = spent) and counted only AFTER a request is
+# actually posted (record_request_choice), so a failed post or a lost claim spends nothing.
+# When the budget is spent, the other free reviewer is re-judged (choose --no-coderabbit).
+# Returns 1 when no free reviewer can answer any more, so the caller releases its claim.
+reserve_request_reviewer() {
+  local av="${SCRIPT_DIR}/review-availability.sh" ch="${SCRIPT_DIR}/cr-review-hourly.sh" dec rc=0
+  if [[ "$REQ_REVIEWER" == coderabbit ]]; then
+    if [[ -x "$ch" ]]; then "$ch" --check >/dev/null 2>&1 || rc=$?; fi
+    if (( rc != 1 )); then
+      REQ_BODY="@coderabbitai review"
+      return 0
+    fi
+    # CodeRabbit is out: CodeAnt is the only other free reviewer. Hold the request only on
+    # a real skip verdict while a no-review override can follow it; any unusable answer, or
+    # the override off, still asks CodeAnt (fail toward asking).
+    dec=""
+    [[ -x "$av" ]] && dec="$("$av" choose --window-s "${REQ_WINDOW_S:-600}" --no-coderabbit 2>/dev/null)" || dec=""
+    # Test the value itself: jq `//` treats false like null, so `.skip // true` reads a
+    # successful `skip: false` as true and the fallback to CodeAnt could never happen.
+    if jq -e '.skip == true' <<<"$dec" >/dev/null 2>&1 && [[ "$REQ_CAN_SKIP" == 1 ]]; then
+      # Record the skip for this HEAD now, so the no-review override applies at once (#2274
+      # review). A failed record asks CodeAnt instead (settle_pending_skip clears REQ_BLOCK).
+      REQ_PENDING_SKIP="$(jq -r '.reason' <<<"$dec")"
+      REQ_BLOCK="$REQ_PENDING_SKIP"
+      settle_pending_skip
+      [[ -n "$REQ_BLOCK" ]] && return 1
+    fi
+    if jq -e '.skip == false' <<<"$dec" >/dev/null 2>&1; then REQ_CHOICE_JSON="$dec"; fi
+    REQ_CHOICE_REASON="coderabbit_budget_refused_$(jq -r '.choice_reason // "request"' <<<"$dec" 2>/dev/null || echo request)"
+    REQ_REVIEWER="codeant"
+  fi
+  if [[ "$REQ_REVIEWER" == coderabbit ]]; then REQ_BODY="@coderabbitai review"; else REQ_BODY="@codeant-ai review"; fi
+  return 0
+}
+# Records the request just posted: the account-wide log and the PR's choice (issue #2257).
+# Called only after the post succeeded; a failed record never re-posts (warning only).
+record_request_choice() {
+  local av="${SCRIPT_DIR}/review-availability.sh" ch="${SCRIPT_DIR}/cr-review-hourly.sh" repo_name detail
+  (( DRY_RUN )) && return 0
+  REQ_POSTED_REVIEWER="$REQ_REVIEWER"
+  # The CodeRabbit hourly budget counts the request now that it is posted (#2257).
+  if [[ "$REQ_REVIEWER" == coderabbit && -x "$ch" ]]; then
+    "$ch" --consume >/dev/null 2>&1 \
+      || echo "maybe-trigger-ai-review.sh: posted $REQ_BODY over the CodeRabbit hourly budget (a race with another tick) (#2257)" >&2
+  fi
+  [[ -x "$av" ]] || return 0
+  [[ -n "$REQ_CHOICE_JSON" ]] || REQ_CHOICE_JSON="{}"
+  detail="$(jq -c '{expected_s: (.expected_s // null), reviewers: (.reviewers // null)}' <<<"$REQ_CHOICE_JSON" 2>/dev/null)" || detail="{}"
+  [[ -n "$detail" ]] || detail="{}"
+  repo_name="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || repo_name=""
+  if [[ "$repo_name" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]]; then
+    rr_err="$("$av" record-request --repo "$repo_name" --pr "$PR_NUM" --head "$HEAD_SHA" --reviewer "$REQ_REVIEWER" \
+      --reason "${REQ_CHOICE_REASON:-request}" --detail "$detail" 2>&1 >/dev/null)" \
+      || echo "maybe-trigger-ai-review.sh: posted $REQ_BODY but could not record the reviewer choice (#2257): $rr_err" >&2
+  else
+    echo "maybe-trigger-ai-review.sh: posted $REQ_BODY but could not resolve the repo to record the reviewer choice (#2257)" >&2
+  fi
+}
+
+# Writes the pending availability skip for this HEAD, but only on a path that would
+# otherwise have posted the request (CodeAnt #4546742951). A tiered PR whose cadence or
+# tier posts nothing records nothing, so no override can be waived by it. The skip is
+# written under the PR's own owner/name, the scope check-skip reads back. An unresolved
+# repo or a failed write restores the request path (fail toward asking).
+settle_pending_skip() {
+  local av="${SCRIPT_DIR}/review-availability.sh" repo_name
+  [[ -n "$REQ_PENDING_SKIP" && "$REQ_BLOCK" == "$REQ_PENDING_SKIP" ]] || return 0
+  if (( DRY_RUN )); then return 0; fi
+  repo_name="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || repo_name=""
+  if [[ ! "$repo_name" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] \
+      || ! "$av" mark-skip --repo "$repo_name" --pr "$PR_NUM" --head "$HEAD_SHA" --reason "$REQ_PENDING_SKIP" >/dev/null 2>&1; then
+    echo "maybe-trigger-ai-review.sh: could not record the skipped review request (issue #2256) — requesting review as before" >&2
+    REQ_BLOCK=""
+    REQ_FIRST=1
+  fi
+  REQ_PENDING_SKIP=""
+}
+REQ_TIER_JSON="$("$REVIEW_TIER_SH" "$PR_NUM" --json 2>/dev/null)" || REQ_TIER_JSON=""
+REQ_GATE_NAME="$(jq -r '.gate // ""' <<<"$REQ_TIER_JSON" 2>/dev/null)" || REQ_GATE_NAME=""
+# An unreadable tier keeps the default setting (after-ci), so the CI gate
+# still applies; the tier path's own fail-closed rules are unchanged.
+if [[ -n "$REQ_TIER_JSON" && -n "$REQ_GATE_NAME" ]]; then
+  REQ_SETTING="$(jq -r '.review_request // "after-ci"' <<<"$REQ_TIER_JSON")"
+  REQ_CHECKS="$(jq -r '(.review_request_checks // []) | join(",")' <<<"$REQ_TIER_JSON")"
+fi
+if [[ "$REQ_HEAD_DONE" != "$HEAD_SHA" && "$REQ_GATE_NAME" != "ci-only" ]]; then
+  if [[ "$REQ_SETTING" == "never" ]]; then
+    REQ_BLOCK="never"
+  elif [[ "$REQ_SETTING" == "after-ci" ]]; then
+    REQ_HEAD_EPOCH=""
+    REQ_COMMIT_DATE="$(gh api "repos/{owner}/{repo}/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null)" || REQ_COMMIT_DATE=""
+    if [[ -n "$REQ_COMMIT_DATE" ]]; then
+      REQ_HEAD_EPOCH="$(jq -rn --arg d "$REQ_COMMIT_DATE" '$d | fromdateiso8601' 2>/dev/null)" || REQ_HEAD_EPOCH=""
+    fi
+    # The grace runs from the later of the commit time and the first poll that
+    # saw this HEAD: an old commit pushed now still gets its full wait for CI.
+    REQ_SEEN_SHA="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].review_request_seen_sha // empty" 2>/dev/null || true)"
+    REQ_SEEN_EPOCH="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].review_request_seen_epoch // empty" 2>/dev/null || true)"
+    if [[ "$REQ_SEEN_SHA" != "$HEAD_SHA" || ! "$REQ_SEEN_EPOCH" =~ ^[0-9]+$ ]]; then
+      REQ_SEEN_EPOCH="$(date +%s)"
+      # A dry run evaluates with this clock but never persists it.
+      if (( DRY_RUN == 0 )); then
+        "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].review_request_seen_sha=\"$HEAD_SHA\"" \
+          --set ".prs[\"${PR_KEY}\"].review_request_seen_epoch=$REQ_SEEN_EPOCH" >/dev/null 2>&1 \
+          || { REQ_BLOCK="ci_unreadable"; REQ_SEEN_EPOCH=""; }
+      fi
+    fi
+    if [[ -n "$REQ_SEEN_EPOCH" && ( -z "$REQ_HEAD_EPOCH" || "$REQ_SEEN_EPOCH" -gt "$REQ_HEAD_EPOCH" ) ]]; then
+      REQ_HEAD_EPOCH="$REQ_SEEN_EPOCH"
+    fi
+    # Every page and exact-HEAD workflow scope, shared with the merge gate (#2316).
+    REQ_RUNS="$("${SCRIPT_DIR}/check-runs-snapshot.sh" --head "$HEAD_SHA" 2>/dev/null)" || REQ_RUNS=""
+    # Required aggregate gates may not exist yet. Unlike optional named review
+    # checks, a missing required context never expires into a green decision.
+    if [[ -n "$REQ_RUNS" && -z "$REQ_BLOCK" ]]; then
+      REQ_BASE="$(gh pr view "$PR_NUM" --json baseRefName --jq '.baseRefName' 2>/dev/null)" || REQ_BASE=""
+      REQ_REQUIRED="$("${SCRIPT_DIR}/required-checks.sh" --base "$REQ_BASE" 2>/dev/null)" || REQ_REQUIRED=""
+      if [[ -z "$REQ_REQUIRED" ]] || ! jq -e '.source != "unavailable" and (.contexts | type == "array") and (.apps | type == "object")' >/dev/null 2>&1 <<<"$REQ_REQUIRED"; then
+        REQ_BLOCK="required_checks_unreadable"
+      elif [[ "$(jq '.contexts | length' <<<"$REQ_REQUIRED")" -gt 0 ]]; then
+        REQ_STATUSES="$(gh api --paginate "repos/{owner}/{repo}/commits/$HEAD_SHA/statuses?per_page=100" 2>/dev/null | jq -sec 'if length > 0 and all(.[]; type == "array" and all(.[]; type == "object" and (.context | type) == "string")) then add else error("invalid status pages") end')" || REQ_STATUSES=""
+        if [[ -z "$REQ_STATUSES" ]]; then
+          REQ_BLOCK="required_checks_unreadable"
+        else
+          REQ_REQUIRED_STATE="$(jq -cen -L "${SCRIPT_DIR}/lib" \
+            --argjson req "$(jq -c '.contexts' <<<"$REQ_REQUIRED")" \
+            --argjson apps "$(jq -c '.apps' <<<"$REQ_REQUIRED")" \
+            --argjson runs "$(jq -c '{check_runs:.}' <<<"$REQ_RUNS")" \
+            --argjson statuses "$REQ_STATUSES" -f "${SCRIPT_DIR}/lib/required-context-state.jq")" || REQ_REQUIRED_STATE=""
+          if [[ -z "$REQ_REQUIRED_STATE" ]] || ! jq -e --argjson contexts "$(jq -c '.contexts' <<<"$REQ_REQUIRED")" 'type == "array" and ((map(.context) | sort) == ($contexts | sort)) and all(.[]; .satisfied == true)' >/dev/null 2>&1 <<<"$REQ_REQUIRED_STATE"; then
+            REQ_BLOCK="required_checks_unsatisfied"
+          fi
+        fi
+      fi
+    fi
+    if [[ ! -x "$REQUEST_SH" ]]; then
+      echo "maybe-trigger-ai-review.sh: ERROR: review-request-gate.sh not found — the CodeAnt request is held this tick" >&2
+      REQ_BLOCK="gate_missing"
+    elif [[ -z "$REQ_RUNS" ]]; then
+      REQ_BLOCK="ci_unreadable"
+    elif [[ -z "$REQ_BLOCK" ]]; then
+      REQ_OUT="$(printf '%s' "$REQ_RUNS" | "$REQUEST_SH" --setting "$REQ_SETTING" --head "$HEAD_SHA" \
+        --checks "$REQ_CHECKS" --requested-head "$REQ_HEAD_DONE" --head-epoch "$REQ_HEAD_EPOCH")" || REQ_OUT=""
+      if [[ -z "$REQ_OUT" ]]; then
+        REQ_BLOCK="ci_unreadable"
+      elif [[ "$(jq -r '.decision' <<<"$REQ_OUT")" == "request" ]]; then
+        REQ_FIRST=1
+        first_request_guard
+        if [[ -z "$REQ_BLOCK" ]]; then
+          availability_gate
+        fi
+      else
+        REQ_BLOCK="$(jq -r '.reason' <<<"$REQ_OUT")"
+      fi
+    fi
+  fi
+fi
+
 emit_json_skip() {
   jq -n \
     --arg status skipped \
@@ -269,7 +532,9 @@ emit_json_skip() {
     '{status: $status, reason: $reason, cr_rounds: $cr_rounds, score: $score, threshold: $threshold, head_sha: $head}'
 }
 
-if [[ -n "$SKIP_REASON" ]]; then
+# The first request only overrides the not-due complexity skips. A completed or
+# superseded cadence for this HEAD (duplicate/state reasons) still stops the tick.
+if [[ -n "$SKIP_REASON" ]] && { [[ "$REQ_FIRST" != 1 ]] || [[ "$SKIP_REASON" == "duplicate_poll_tick" || "$SKIP_REASON" == "state_behind_current_rounds" ]]; }; then
   if (( JSON_OUT )); then
     emit_json_skip
   else
@@ -326,6 +591,71 @@ else
   echo "maybe-trigger-ai-review.sh: DEGRADED: review-triggers-allowed.sh not found beside this script — tier-aware triggers unavailable, continuing with the legacy path" >&2
 fi
 
+# First review request for this HEAD while the complexity cadence is not due (#2195).
+# Legacy only: the post is the request itself, guarded above, and it is recorded
+# so the cadence never asks again for this HEAD. Tiered runs keep the complexity skip.
+legacy_first_request() {
+  if (( DRY_RUN )); then
+    if (( JSON_OUT )); then
+      jq -n --arg h "$HEAD_SHA" --arg rr "$REQ_REVIEWER" '{status: "dry_run", reason: "review_request_first", head_sha: $h, request_reviewer: $rr}'
+    else
+      echo "[DRY-RUN] would post 1 comment ($REQ_REVIEWER; first review request for this HEAD, complexity cadence not due)"
+    fi
+    exit 0
+  fi
+  if ! claim_request_head; then
+    echo "maybe-trigger-ai-review.sh: this HEAD is already claimed by another tick (#2195) — not posting" >&2
+    exit 0
+  fi
+  if ! reserve_request_reviewer; then
+    release_request_head
+    echo "maybe-trigger-ai-review.sh: no free reviewer can answer inside the window — not posting a request (#2257)" >&2
+    exit 0
+  fi
+  if ! gh pr comment "$PR_NUM" --body "$REQ_BODY"; then
+    release_request_head
+    echo "maybe-trigger-ai-review.sh: failed posting $REQ_BODY" >&2
+    exit 5
+  fi
+  record_request_choice
+  if (( JSON_OUT )); then
+    jq -n --arg h "$HEAD_SHA" --arg rr "$REQ_POSTED_REVIEWER" '{status: "triggered", reason: "review_request_first", head_sha: $h, trigger_mode: "legacy", request_reviewer: $rr}'
+  else
+    echo "triggered: posted the first review request for this HEAD (complexity cadence not due)"
+  fi
+  exit 0
+}
+if [[ "$REQ_FIRST" == 1 && -n "$SKIP_REASON" ]]; then
+  if [[ "$TRIGGER_MODE" == "legacy" ]]; then
+    settle_pending_skip
+    if [[ -n "$REQ_BLOCK" ]]; then
+      SKIP_REASON="review_request_${REQ_BLOCK}"
+    else
+      legacy_first_request
+    fi
+  fi
+  # Tiered, or a held legacy request: the complexity skip still governs the tick.
+  if (( JSON_OUT )); then
+    emit_json_skip
+  else
+    echo "skipped: $SKIP_REASON (cr_rounds=$CR_ROUNDS score=$SCORE threshold=$THRESHOLD_SCORE)"
+  fi
+  exit 0
+fi
+
+# Legacy: a held request ends the tick before any state write, so the next tick
+# asks again (issue #2195). The tiered path defers its CodeAnt step below.
+if [[ "$TRIGGER_MODE" == "legacy" ]]; then settle_pending_skip; fi
+if [[ "$TRIGGER_MODE" == "legacy" && -n "$REQ_BLOCK" ]]; then
+  SKIP_REASON="review_request_${REQ_BLOCK}"
+  if (( JSON_OUT )); then
+    emit_json_skip
+  else
+    echo "skipped: $SKIP_REASON (review request held this tick)"
+  fi
+  exit 0
+fi
+
 if [[ "$TRIGGER_MODE" != "legacy" ]]; then
   TIER_GATE_TXT="$(jq -r '.gate // "unresolved"' <<<"$TRIGGER_JSON")"
   # The reviewers this script invites; CodeRabbit is never one of them.
@@ -363,11 +693,19 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
       --argjson cr_rounds "$CR_ROUNDS" --argjson score "$SCORE" --arg head "$HEAD_SHA" \
       --arg mode "$TRIGGER_MODE" --argjson skips "$TRIGGER_SKIPS_JSON" --argjson deferred "$DEFERRED_JSON" \
       --argjson bugbot_skipped "$BUGBOT_SKIPPED_JSON" --argjson bugbot_daily_cap "$BUGBOT_CAP_JSON" \
-      '{status: $status} + (if $reason == "" then {} else {reason: $reason} end)
+      --arg rr "$REQ_POSTED_REVIEWER" \
+      '{status: $status} + (if $reason == "" then {} else {reason: $reason} end) + {request_reviewer: ($rr | if . == "" then null else . end)}
        + {cr_rounds: $cr_rounds, score: $score, head_sha: $head, trigger_mode: $mode,
           trigger_skips: $skips, deferred: $deferred,
           bugbot_skipped: $bugbot_skipped, bugbot_daily_cap: $bugbot_daily_cap}'
   }
+
+  # A held request shows in the dry run as deferred, not as a planned post (#2195).
+  if [[ -n "$REQ_BLOCK" ]] && step_allowed codeant; then
+    TRIGGER_SKIPS_JSON="$(jq -c --arg why "review_request_${REQ_BLOCK}" '.codeant = {kind: "deferred", reason: $why}' <<<"$TRIGGER_SKIPS_JSON")"
+    DEFERRED_JSON="$(jq -c '. + ["codeant"] | unique' <<<"$DEFERRED_JSON")"
+    ALLOWED_LIST="$(jq -r '[ .allowed[]? | select(. == "cursor") ] | join(", ")' <<<"$TRIGGER_JSON")"
+  fi
 
   if (( DRY_RUN )); then
     # Evaluated, never claimed: a dry run posts nothing and records nothing.
@@ -399,9 +737,15 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
   T_POSTED=0
   ANY_DEFERRED=0
   [[ "$DEFERRED_JSON" != "[]" ]] && ANY_DEFERRED=1
+  # A review tier decides which reviewers this PR gets, and its codeant step is CodeAnt's
+  # own claim and lifetime cap, so the tiered path always asks CodeAnt. The free-reviewer
+  # choice (issue #2257) applies to the legacy path only.
+  if [[ "$REQ_REVIEWER" != codeant ]]; then
+    REQ_REVIEWER="codeant"; REQ_BODY="@codeant-ai review"; REQ_CHOICE_REASON="tier_requests_codeant"
+  fi
   for step in codeant cursor; do
     case "$step" in
-      codeant) body="@codeant-ai review" ;;
+      codeant) body="$REQ_BODY" ;;
       cursor) body="@cursor review" ;;
     esac
     done_already="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].ai_review_trigger_steps[\"$step\"] // empty" 2>/dev/null || true)"
@@ -427,6 +771,37 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
       fi
       continue
     fi
+    # The CodeAnt request waits for CI (issue #2195). Held = deferred: the step
+    # stays open, so the next tick asks again. Not claimed, so no cap is spent.
+    if [[ "$step" == "codeant" && -n "$REQ_BLOCK" ]]; then
+      # This step would post the request: only now does an availability skip get recorded.
+      settle_pending_skip
+    fi
+    if [[ "$step" == "codeant" && -n "$REQ_BLOCK" ]]; then
+      echo "maybe-trigger-ai-review.sh: holding $body — review request $REQ_BLOCK (#2195)" >&2
+      TRIGGER_SKIPS_JSON="$(jq -c --arg why "review_request_${REQ_BLOCK}" '.codeant = {kind: "deferred", reason: $why}' <<<"$TRIGGER_SKIPS_JSON")"
+      ANY_DEFERRED=1
+      DEFERRED_JSON="$(jq -c '. + ["codeant"] | unique' <<<"$DEFERRED_JSON")"
+      continue
+    fi
+    # A first request for this HEAD is claimed on the HEAD before anything posts (#2257), so
+    # the CAS covers CodeRabbit and CodeAnt alike; the chosen reviewer is reserved after it.
+    if [[ "$step" == "codeant" && "$REQ_FIRST" == 1 ]]; then
+      if ! claim_request_head; then
+        echo "maybe-trigger-ai-review.sh: $body already claimed by another tick for this HEAD (#2195/#2257) — not posting" >&2
+        ANY_DEFERRED=1
+        DEFERRED_JSON="$(jq -c '. + ["codeant"] | unique' <<<"$DEFERRED_JSON")"
+        continue
+      fi
+      if ! reserve_request_reviewer; then
+        release_request_head
+        echo "maybe-trigger-ai-review.sh: no free reviewer can answer inside the window — holding the request (#2257)" >&2
+        ANY_DEFERRED=1
+        DEFERRED_JSON="$(jq -c '. + ["codeant"] | unique' <<<"$DEFERRED_JSON")"
+        continue
+      fi
+      body="$REQ_BODY"
+    fi
     # Claim BEFORE posting: the ledger bounds the lifetime caps across racing
     # runs and the seconds before GitHub lists the new comment.
     CLAIM_RC=0
@@ -437,6 +812,7 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
       [[ -n "$creason" ]] || creason="claim_failed"
       [[ "$ckind" == "excluded" ]] || ckind="deferred"
       echo "maybe-trigger-ai-review.sh: skipping $body — claim denied ($creason, rc=$CLAIM_RC)" >&2
+      if [[ "$step" == "codeant" && "$REQ_FIRST" == 1 ]]; then release_request_head; fi
       TRIGGER_SKIPS_JSON="$(jq -c --arg r "$step" --arg k "$ckind" --arg why "$creason" '.[$r] = {kind: $k, reason: $why}' <<<"$TRIGGER_SKIPS_JSON")"
       if [[ "$step" == "cursor" ]]; then
         PRIOR_CAP_JSON="$BUGBOT_CAP_JSON"
@@ -453,11 +829,13 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
     if ! gh pr comment "$PR_NUM" --body "$body"; then
       "$TRIGGERS_SH" "$PR_NUM" --release "$step" >/dev/null 2>&1 \
         || echo "maybe-trigger-ai-review.sh: could not release the $step claim — its lifetime count may over-read by one" >&2
+      if [[ "$step" == "codeant" && "$REQ_FIRST" == 1 ]]; then release_request_head; fi
       echo "maybe-trigger-ai-review.sh: failed posting $body" >&2
       exit 5
     fi
     "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps[\"$step\"]=true" >/dev/null 2>&1 \
       || echo "maybe-trigger-ai-review.sh: comment posted but state update failed — the claim ledger still bounds a re-post" >&2
+    if [[ "$step" == "codeant" ]]; then record_request_head; record_request_choice; fi
     T_POSTED=$((T_POSTED + 1))
   done
 
@@ -686,18 +1064,41 @@ post_one() {
   local step_key="$1"
   local body="$2"
   local posted
+  POST_ONE_POSTED=0
   posted="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].ai_review_trigger_steps[\"$step_key\"] // empty" 2>/dev/null || true)"
   if [[ "$posted" == "true" ]]; then
     return 0
   fi
   gh pr comment "$PR_NUM" --body "$body" || return 1
+  POST_ONE_POSTED=1
   if ! "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps[\"$step_key\"]=true"; then
     echo "maybe-trigger-ai-review.sh: comment posted but state update failed — may re-post on retry" >&2
   fi
 }
 
 
-if ! post_one codeant "@codeant-ai review"; then echo "maybe-trigger-ai-review.sh: failed posting @codeant-ai review" >&2; exit 5; fi
+# Once this HEAD carries a recorded request, the cadence posts no second one (#2195).
+# on-push keeps the complexity cadence as it was.
+if [[ "$REQ_SETTING" == "after-ci" && "$REQ_HEAD_DONE" == "$HEAD_SHA" ]]; then
+  echo "maybe-trigger-ai-review.sh: @codeant-ai review already requested for this HEAD (#2195) — not posting it again" >&2
+elif [[ "$REQ_FIRST" == 1 ]] && ! claim_request_head; then
+  echo "maybe-trigger-ai-review.sh: this HEAD is already claimed by another tick (#2195) — not posting" >&2
+else
+  if [[ "$REQ_FIRST" == 1 ]] && ! reserve_request_reviewer; then
+    release_request_head
+    echo "maybe-trigger-ai-review.sh: no free reviewer can answer inside the window — not posting a request (#2257)" >&2
+    exit 0
+  fi
+  if ! post_one codeant "$REQ_BODY"; then
+    [[ "$REQ_FIRST" == 1 ]] && release_request_head
+    echo "maybe-trigger-ai-review.sh: failed posting $REQ_BODY" >&2
+    exit 5
+  fi
+  record_request_head
+  # Log the choice only for a request this run actually posted: a resumed run whose step
+  # was already done posts nothing and must not count as another request (#2257).
+  if [[ "${POST_ONE_POSTED:-0}" == 1 ]]; then record_request_choice; fi
+fi
 if [[ -n "$BUGBOT_TIER_GATE" ]]; then
   # Deliberately NOT recorded as handled, unlike the refusal branch below. A
   # refusal is fixed for this HEAD, but a tier can change without a push (a
@@ -756,7 +1157,8 @@ if (( JSON_OUT )); then
     --arg head "$HEAD_SHA" \
     --argjson bugbot_skipped "$BUGBOT_SKIPPED_JSON" \
     --argjson bugbot_daily_cap "$BUGBOT_CAP_JSON" \
-    '{status: $status, cr_rounds: $cr_rounds, score: $score, head_sha: $head, bugbot_skipped: $bugbot_skipped, bugbot_daily_cap: $bugbot_daily_cap}'
+    --arg rr "$REQ_POSTED_REVIEWER" \
+    '{status: $status, cr_rounds: $cr_rounds, score: $score, head_sha: $head, bugbot_skipped: $bugbot_skipped, bugbot_daily_cap: $bugbot_daily_cap, request_reviewer: ($rr | if . == "" then null else . end)}'
 elif [[ "$BUGBOT_TIER_REASON" == "escalation_off" && -n "$BUGBOT_TIER_GATE" ]]; then
   echo "triggered: posted AI reviewer comments (cr_rounds=$CR_ROUNDS score=$SCORE; @cursor review skipped — REVIEW_ESCALATION=off; gate $BUGBOT_TIER_GATE)"
 elif [[ -n "$BUGBOT_TIER_GATE" ]]; then

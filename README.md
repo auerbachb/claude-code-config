@@ -115,14 +115,11 @@ All 36 commands are invoked as `/command` in a Claude Code session. They are def
 
 | Command | Category | Description |
 |---------|----------|-------------|
-| `/pm` | PM | Active PM orchestrator — rank the backlog by business-goal impact (OKR-aware), track threads, suggest next work |
-| `/pm-handoff` | PM | Generate a self-contained handoff prompt for a new PM thread; bootstraps or re-scans `pm-config.md`, preserving user-edited sections |
+| `/pm` | PM | Rank the backlog by business-goal impact, dispatch work and track threads. Loads the procedure for the current phase. |
 | `/pm-clean` | PM | Detect stale issues and suggest closures; sole home for the stale worktree/branch sweep |
-| `/pm-forgotten-pr` | PM | One-shot triage of open PRs idle above a threshold — classify as close or merge, render a Forgotten PRs block, dispatch confirmed merges |
 | `/subagent` | PM | Run Quick/Light issues as Phase A/B/C subagents from a PM thread |
 | `/wave` | PM | Offer the largest dependency- and overlap-free set of backlog issues as click-to-launch chips, capped at the concurrent-pipeline ceiling |
 | `/board` | PM | Render the canonical "Running now" table on demand in any orchestration thread — the current round's phases, recorded starts, projected ends, and remaining time, recomputed live from durable state. Complete from the dispatching thread; any other thread renders no queued rows at all and labels the delivered count approximate, since round membership is not yet durable. Changes no pipeline, writing only the shared table-render timestamp |
-| `/prompt` | Planning | Classify issue complexity, recommend a Claude 4.7/4.6 model tier, generate copy-paste prompt without the removed `effort` field |
 | `/start-issue` | Planning | End-to-end issue-to-coding setup — plan polling, plan merge, worktree, branch |
 | `/issue-maker` | Planning | Capture-only thread mode — drafts and opens well-structured issues, reflects before writing, no implementation |
 | `/fixpr` | Review | Single-pass PR cleanup — fixes review findings and CI failures, replies to findings, resolves threads |
@@ -132,10 +129,10 @@ All 36 commands are invoked as `/command` in a Claude Code session. They are def
 | `/pr-monitor-and-manage-stop` | Review | Clean-cancel companion to `/pr-monitor-and-manage` — tears down the fleet Monitor and its state |
 | `/pr-monitor-and-manage-wake` | Review | Resume companion to `/pr-monitor-and-manage` — wakes a paused fleet monitor and re-arms it |
 | `/receiving-code-review` | Review | Judgment layer for evaluating bot review findings before implementing — six-step READ→UNDERSTAND→VERIFY→EVALUATE→RESPOND→IMPLEMENT pattern with rationalization table and decline discipline |
-| `/recap` | Workflow | Functional summary of a single PR or issue — nested bullets or table |
+| `/tldr` | Workflow | Plain-English summary of what the thread changed and what it means for you, with a needs-you line first; `/tldr all` covers the whole thread |
+| `/why-stopped` | Workflow | Answers "why weren't you working?" from the thread's stoppage entry in the desk database and saves the operator's correction against it |
 | `/standup` | Workflow | Daily standup summary (single contributor) |
-| `/status` | Workflow | Dashboard of open PRs with review state |
-| `/harness-audit` | Workflow | Monthly check of whether the harness now does natively what our rules, skills, scripts, and hooks do by hand — verdicts each artifact against live harness behavior and files issues; advisory only, never edits |
+| `/pr-status` | Workflow | Dashboard of open PRs with review state |
 | `/review-stack-audit` | Workflow | Monthly re-measure of the AI review stack — each tool's billed state, observed caps, throughput, and unique value, compared against the recorded baseline; files one issue per drift finding, advisory only, never edits |
 | `/memory-clean` | Workflow | Audit the durable memory store — report orphaned files, dangling index pointers, index size, advisory stale entries; prune only on confirmation |
 | `/quotas` | Workflow | How much of each registered account's weekly cap is gone and when it resets — one row per account per window (used %, remaining %, reset in Eastern, countdown) for `claude` and `codex`; display only, never a dispatch or spend gate |
@@ -149,8 +146,11 @@ All 36 commands are invoked as `/command` in a Claude Code session. They are def
 | `/end-resume` | Workflow | Explicitly reopen work stopped by `/end`; optionally clear the independent refill pause with `--resume-refill` |
 | `/pause` | Workflow | Short-break or laptop-close pause with a 15-minute default runway: land safe work, park recovery state, and hard-stop every owned background task |
 | `/pause-resume` | Workflow | Restore the paused board, explicitly reopen launches, and re-arm selected stopped work without duplicating live tasks |
+| `/safe-close` | Workflow | Checks whether this thread can be closed: a verdict line (safe, or not yet with a count), then everything the thread still owns — running tasks, unlanded PRs and worktrees, open questions, held claims, leftover state — each tagged lost, keeps running, orphaned or harmless; unverifiable items count as unknown and force not-yet. `--check` only looks; bare `/safe-close` then asks once and stops this thread's own background tasks, subagents, Monitors, wake-ups and ceiling watch (mid-flight work is finished, parked for `/go-on`, or dropped only if you say so), re-checks that each is gone, then tidies what the thread left behind — finished worktrees and branches (through the finished-work sweep), claims with no open PR, handoffs of merged PRs, its own session-state entries and scratch files, while keeping and naming anything that still holds work and asking once before clearing a park record, launch gate or leave marker — and re-runs the check: a clean re-run offers to archive the thread (only on your yes), a not-clean one lists what remains and archives nothing |
 | `/desk` | Workflow | The human queue's control session — one place to answer every question agent threads ask: waiting Decisions as clickable menus in numbered sets of up to four, long-form ones as one text prompt at a time (multipart ones part by part, the typed reply stored word for word — outer whitespace trimmed, a lone option letter stored as that option), `discuss <n\|D-id>` to talk an item through before answering, menu clicks or typed replies (`2: B`, `D-43: B`) written to the store, and each asking thread woken with a pointer. Ticks on a persistent Monitor; while it is live, worker threads stop rendering their own menus. Lives in `desk/skill/` (symlinked as `.claude/skills/desk`) |
+| `/inbox` | Workflow | `import <scan.pdf>` previews marked answers and comments from a numbered desk export for confirmation |
 | `/leave-by` | Workflow | Say once when you have to stop ("I need to leave at 7 PM") — arms that time as the repo's planning deadline so dispatch declines pipelines that cannot finish before it, then checks in unprompted at a configurable lead (default 30 min, `--lead Nm`) and winds down through `/pause`, so everything is merged or resumable by the time you go |
+| `/presence` | Workflow | Say where you are and for how long ("here for 2 hours", "away overnight", "closing the laptop at 7") — one global here-or-away state every thread reads with one call, asked through a single dialog that only one thread opens; away also arms unattended mode, and closing the laptop goes through `/leave-by` |
 
 Run `/pm` first to bootstrap the PM config, then use the other PM skills as needed. Workflow commands (`/merge`, `/wrap`, `/go-on`, etc.) work independently.
 
@@ -291,9 +291,9 @@ find . -name "settings.json" -path "*/.claude/*" -not -path "*/.git/*" -delete
 
 Related: [anthropics/claude-code#17017](https://github.com/anthropics/claude-code/issues/17017), [#13340](https://github.com/anthropics/claude-code/issues/13340), [#27139](https://github.com/anthropics/claude-code/issues/27139).
 
-**Cause 2: Trust dialog flags reset on new worktrees.**
+**Cause 2: Trust dialog flags on new worktrees.**
 
-Every worktree creates a new project entry in `~/.claude.json` with trust flags set to `false`.
+Each worktree path gets its own project entry in `~/.claude.json`. The docs say worktrees use the main checkout's trust root, but a live fresh-worktree check is still unverified; see `.claude/rules/trust-dialog-fix.md`.
 
 **Fix:** The `trust-flag-repair.sh` hook auto-repairs flags after every response. For manual repair:
 

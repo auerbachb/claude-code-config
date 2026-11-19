@@ -19,10 +19,18 @@
 #     bare URL (a list marker at most), a line with no words. Quoted or bracketed questions (`?"`, `?)`) and questions answered
 #     on the same line do not end in `?`, so they never match;
 #   - a RECEIPT line names `question D-<n>` or `questions D-<n>, D-<m>`
-#     followed by `sent to human queue` (any case, anywhere in the line),
+#     followed by `sent to human queue`, or says `question [U-<n>] recorded
+#     for the operator's return` (unattended mode, issue #2283) (any case,
+#     anywhere in the line),
 #     outside fenced code blocks and blockquotes (there it is an example);
 #   - warn when some question line has no receipt line after it, quoting the
 #     first such line.
+#
+# Unattended mode (issue #2283): when unattended.sh is-active, the warning
+# never points at the question tool (a menu would block the night); it says
+# to record the question with unattended.sh and print the unattended receipt.
+# unattended.sh is found next to this repo's scripts, through the
+# .claude/hooks symlink. Not found or not active: the attended warning.
 #
 # Output: one hookSpecificOutput.additionalContext object (the
 # dirty-main-warn.sh convention), never decision: block. Stop context
@@ -48,7 +56,9 @@
 
 # The receipt the capture hook's denial names, singular or plural, matched
 # against the lowercased line. Change it here if the receipt wording changes.
-QLW_RECEIPT_RE='questions? d-[0-9]+(, *d-[0-9]+)* sent to human queue'
+# The unattended-mode receipt (issue #2283) counts the same:
+# `question U-<n> recorded for the operator's return`, the id optional.
+QLW_RECEIPT_RE='questions? d-[0-9]+(, *d-[0-9]+)* sent to human queue|questions? (u-[0-9]+(, *u-[0-9]+)* )?recorded for the operator[^ ]* return'
 # Longest stretch of the leaked line quoted back in the warning.
 QLW_QUOTE_MAX=120
 # How much of the transcript tail the fallback reads.
@@ -219,11 +229,17 @@ qlw_warning_jq() {
 | {
     hookSpecificOutput: {
       hookEventName: "Stop",
-      additionalContext: ("PROSE QUESTION WARNING (human-queue.md): your final message asks in prose: \"" + $quote + "\". A prose question never reaches the human queue, so no desk sees it. "
+      additionalContext: (if $mode == "unattended" then
+        ("PROSE QUESTION WARNING (human-queue.md, Unattended): your final message asks in prose: \"" + $quote + "\". The operator is away (unattended mode), so do not open a menu and do not wait. "
+        + "Fix: record it with '" + $script + "' record --question '...' --recommended '...' --did '...', print the receipt it names (question U-<n> recorded for the operator's return), take the recommended option only if the step is reversible and no rule requires confirmation, else park only that step, and keep working. "
+        + "If that line is not a question for the operator, end your turn without repeating it.")
+      else
+        ("PROSE QUESTION WARNING (human-queue.md): your final message asks in prose: \"" + $quote + "\". A prose question never reaches the human queue, so no desk sees it. "
         + "Fix: ask it through the question tool (AskUserQuestion), recommended option first. "
         + "While a live desk exists the capture hook queues it and denies the menu; print the receipt the denial names, exactly (question D-<n> sent to human queue), then proceed on the recommended default or park. "
         + "With no live desk the menu renders here as usual. With no question tool (headless): proceed on the default or park, recorded in the handoff or exit report. "
         + "If that line is not a question for the operator, end your turn without repeating it.")
+      end)
     }
   }
 JQ
@@ -258,6 +274,23 @@ elif [ -n "$qlw_marker" ]; then
   mkdir "$qlw_marker" 2>/dev/null || :
 fi
 
-"$qlw_jq" -c -n --arg q "$qlw_q" --argjson max "$QLW_QUOTE_MAX" "$(qlw_warning_jq)" 2>/dev/null
+# Unattended? Resolve this file through its symlinks to find the repo's
+# .claude/scripts/unattended.sh (desk/hooks/../../.claude/scripts).
+qlw_mode_name=attended
+qlw_self="${BASH_SOURCE[0]}"
+qlw_n=0
+while [ -L "$qlw_self" ] && [ "$qlw_n" -lt 10 ]; do
+  qlw_n=$((qlw_n + 1))
+  qlw_d=$(cd -P "$(dirname "$qlw_self")" 2>/dev/null && pwd) || break
+  qlw_self=$(readlink "$qlw_self") || break
+  case "$qlw_self" in /*) ;; *) qlw_self="$qlw_d/$qlw_self" ;; esac
+done
+qlw_here=$(cd -P "$(dirname "$qlw_self")" 2>/dev/null && pwd) || qlw_here=""
+qlw_unattended="${qlw_here%/desk/hooks}/.claude/scripts/unattended.sh"
+if [ -n "$qlw_here" ] && [ -x "$qlw_unattended" ] && "$qlw_unattended" is-active >/dev/null 2>&1; then
+  qlw_mode_name=unattended
+fi
+
+"$qlw_jq" -c -n --arg q "$qlw_q" --argjson max "$QLW_QUOTE_MAX" --arg mode "$qlw_mode_name" --arg script "$qlw_unattended" "$(qlw_warning_jq)" 2>/dev/null
 
 exit 0

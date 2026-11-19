@@ -36,6 +36,7 @@ resolve_script() {
 ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
 CANDIDATE_OWNERSHIP=$(resolve_script candidate-ownership.sh || true)
 PM_CONFIG_GET=$(resolve_script pm-config-get.sh || true)
+ISSUE_AREA=$(resolve_script issue-area.py || true)
 ACTIVE_WORK_CAP_SH=$(resolve_script active-work-cap.sh || true)
 ```
 
@@ -44,12 +45,12 @@ Read `chip-launching.md` the same way — `$HOME/.claude/skills-worktree/.claude
 **When something does not resolve, say so in one line; never skip the contract silently.**
 
 - `chip-launching.md` unreadable → **required**. Print `ERROR: chip-launching.md not found (checked all three paths) — PM-context inline gate unavailable`, and stop before offering any chip. A `/wave` that cannot read its own routing gate is exactly the run that fans out one thread per issue (#1189); refusing is the safe failure.
-- `ISSUE_CLAIM` empty → **optional**. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim filter skipped, in-flight detection is PR-only` and continue with Step 2's other filters.
+- `ISSUE_CLAIM` empty → **optional**. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — ownership unverified for every candidate` and keep listing candidates, each marked `ownership unverified` rather than presented as free. `/wave` launches nothing, so this is display-only; continue with Step 2's other filters.
 - `CANDIDATE_OWNERSHIP` empty → **optional**. Print `DEGRADED: candidate-ownership.sh not found (checked all three paths) — ownership sweep skipped; a candidate paused in another thread may be re-offered here` and fall back to claim-gate-only behavior in Step 2 item 4. **Never block a wave on this** — the sweep exists to stop duplicate work, and a sweep that cannot run must not also stop the work it was meant to protect. `/wave` launches nothing either way, so the cost of the fallback is a re-offer the user can decline, not a duplicate implementation.
 - `PM_CONFIG_GET` empty → **optional**. Print `DEGRADED: pm-config-get.sh not found (checked all three paths) — repo Wave override unavailable` and use `CEILING` as computed. An *absent* `.claude/pm-config.md` in a repo that has the script is a normal state, not a degradation — say nothing.
-- `ACTIVE_WORK_CAP_SH` empty → **optional, but say so**. Print `DEGRADED: active-work-cap.sh not found (checked all three paths) — repo-wide cap unenforced, sizing on the per-thread ceiling only` and drop `FREE` from the `SLOTS` formula; `CEILING` falls back to its default of 4, since the repo's `PIPELINE_CEILING` is read through the same script. A **non-zero exit from `--ceiling`** on a script that did resolve (a usage error — a bad config value warns and prints the default instead) is handled like an unreadable census: defer the wave rather than sizing it on an empty `CEILING`. `/wave` still has `EFFECTIVE - IN_FLIGHT`, so the wave stays bounded; what is lost is only the cross-thread term, and a run that silently dropped it would look identical to one where the repo genuinely had headroom. A **non-zero exit** from the script is different from a missing script: it means a count source could not be read, so treat it as `FREE = 0` and defer, rather than sizing as if nothing were in flight (`active-work-cap.md` "Resolution order and failure behavior").
+- `ACTIVE_WORK_CAP_SH` empty → **optional, but say so**. Print `DEGRADED: active-work-cap.sh not found (checked all three paths) — repo-wide cap unenforced, sizing on the per-thread ceiling only` and drop `FREE` from the `SLOTS` formula; `CEILING` falls back to its default of 4, since the repo's `PIPELINE_CEILING` is read through the same script. A **non-zero exit from `--width`** on a script that did resolve (a usage error — a bad config value warns and prints the default instead) is handled like an unreadable census: defer the wave rather than sizing it on an empty `CEILING`. `/wave` still has `EFFECTIVE - IN_FLIGHT`, so the wave stays bounded; what is lost is only the cross-thread term, and a run that silently dropped it would look identical to one where the repo genuinely had headroom. A **non-zero exit** from the script is different from a missing script: it means a count source could not be read, so treat it as `FREE = 0` and defer, rather than sizing as if nothing were in flight (`active-work-cap.md` "Resolution order and failure behavior").
 
-The pipeline ceiling's default needs no fallback: `.claude/rules/subagent-orchestration.md` auto-loads at user scope in every project, so the default of 4 is already in context wherever `/wave` runs. Only a repo's own `PIPELINE_CEILING` override needs the script.
+The width's defaults need no fallback: `.claude/rules/subagent-orchestration.md` auto-loads at user scope in every project, so the default of 4 (the cheap-mode `PIPELINE_CEILING`) is already in context wherever `/wave` runs. Only a repo's own width override needs the script.
 
 ---
 
@@ -199,11 +200,16 @@ Record `IN_FLIGHT` = the number of **distinct in-flight pipelines of yours**: ea
 
 For every candidate, produce a footprint (a set of paths) using the **first** source that yields anything:
 
-1. **CR implementation plan file list** — parse the issue's comments exactly as `/prompt` Step 2 does: headings containing "Files", "Files likely touched", "File list", or "Touched files" (case-insensitive), then the following bullet/numbered list or fenced block, plus inline backticked paths.
+1. **Implementation plan file list** — use the CodeRabbit implementation plan when the issue has one (the same plan `/subagent` Step 2 selects); otherwise the most structured human-authored plan in the issue's comments, never a bot comment other than CodeRabbit's. Take its file list from headings containing "Files", "Files likely touched", "File list", or "Touched files" (case-insensitive), then the following bullet/numbered list or fenced block, plus inline backticked paths.
 2. **`## Related Files` section** of the issue body — one path per bullet.
 3. **Backticked paths anywhere in the body or acceptance criteria** — strings containing `/` or ending in a known extension (`.md`, `.sh`, `.py`, `.json`, `.yml`, `.yaml`, `.ts`), excluding anything starting with `http://` or `https://`.
 4. **Subject inference** — the issue names a component without a path (e.g. "the `/pm` skill", "the merge gate rule", "the polling script"). Map it to the obvious file(s). Mark the footprint `inferred`.
-5. **Nothing at all** → footprint is `undeclared`. Step 5 has a specific rule for these; do not guess a footprint for them.
+5. **Configured area** — if the repository has active [Independent areas](../../reference/independent-areas.md), assign `area:<name>` only for a unique match.
+6. **Nothing at all** → footprint is `undeclared`. Step 5.4 allows one such candidate.
+
+Resolve the target repository root and use its `.claude/pm-config.md` as `--file` on both area calls. Run `"$ISSUE_AREA" --config-only --file "$AREA_CONFIG"` before collecting extra hints. With no active section, skip source 5. If the helper is unavailable and a config could declare areas, or if validation fails, report the diagnostic once and keep the existing conservative footprint checks.
+
+For an active section, reuse the ranking's issue number, labels, title and body. Fetch missing hints for a pathless candidate with `gh issue view N --json number,title,body,labels`. If that read fails, keep the candidate undeclared. Pass a JSON object on stdin to `"$ISSUE_AREA" --file "$AREA_CONFIG"`. Its `issues` array holds normalized `paths` for path candidates and complete `labels` (strings), `title`, and `body` for pathless candidates. An explicit null body means the issue has no description. Include the `paths_by_surface` map from Step 4. Use the helper's `issues` map by issue number when its response has `enabled: true`. Use `area` and its `source` only when no path evidence exists. If the batch fails, apply no area placements or path tags from that batch.
 
 Normalize before comparing: trim, strip leading `./`, drop trailing slashes, deduplicate.
 
@@ -219,6 +225,10 @@ Two issues collide when they touch the same **surface**, which is usually the sa
 | `global-settings.json` | `global-settings` |
 | `.claude/settings.json` | `project-settings` |
 | Anything else | the exact normalized path |
+
+For area footprints, add `area:<name>` and any shared surfaces the configured globs cover. For the area pass in Step 3, build `paths_by_surface` from the shared-surface rules in this step. For each named surface, include its explicit members, candidate paths mapped to it, and tracked paths under any wildcard member such as `.claude/rules/*.md`. Apply repository-declared couplings to this map as well. Copy the matched `areas[NAME].shared_surfaces` into the area footprint before Step 5.2. The same response includes the configured globs. Include a shared wildcard surface when those globs can cover it and the known path list cannot rule it out.
+
+Keep the helper's `path_areas` tags separate from exact path surfaces. Compare those tags only against an area footprint. Two paths in one area still use the existing exact-path and declared-coupling checks.
 
 **Why the rule corpus is one surface:** `rule-lint.sh` fails when the corpus exceeds the committed ratchet cap in `.claude/rules/.budget-soft-cap`, so two branches that each add words to *different* rule files still collide — the second to merge inherits a cap the first already consumed. Same mechanical collision for shared settings files, where two branches append different keys to one JSON object.
 
@@ -245,13 +255,32 @@ The canonical reading of those markers is `issue-deps.sh` (resolved like `/pm`'s
 
 **5.3 — Inferred overlap (conservative).** Exclude when the two issues plainly work on the same thing even though only one declared a path — same skill, same rule file, same script, same hook, same workflow file. An issue whose footprint is `inferred` (Step 3 source 4) is compared on exactly the same terms as a declared one; a guess in favor of collision is the correct guess here.
 
-**5.4 — Undeclared footprints: at most one per wave.** With zero footprint information you cannot establish that two such issues are independent, so:
+**5.4 — Area and undeclared footprints.** After dependency, shared-surface and subject checks:
 
-- the **first** `undeclared` candidate in rank order may be admitted;
-- every later `undeclared` candidate is excluded — "footprint undeclared; can't rule out overlap with #N";
-- an `undeclared` candidate is not assumed to collide with *declared* candidates unless 5.3's subject match fires.
+- Two area footprints in the same area overlap. Exclude the later issue with "same area billing as #N; chains behind it at launch". Different areas do not add a collision.
+- An area footprint overlaps a path footprint when any path is tagged with that area. Two path footprints are still compared by the existing surface rules.
+- Admit at most one candidate that remains `undeclared`. Exclude the next such candidate with "footprint undeclared; can't rule out overlap with #N", naming the admitted undeclared issue. A resolved area neither uses this allowance nor automatically collides with an undeclared footprint.
 
-This keeps under-specified issues eligible (they are often the top of the backlog) without ever admitting two blind ones together.
+Use this comparison for each eligible pair after 5.1–5.3. Pass the helper's `area` and `path_areas` fields with `undeclared: true` only for a footprint still unresolved after Step 3. For a missing or inactive area configuration, both area fields are empty. An empty result adds no exclusion.
+
+<!-- test-anchor: wave-area-pair -->
+```bash
+compare_wave_areas() {
+  jq -nr --argjson candidate "$1" --argjson admitted "$2" '
+    def shared_area($left; $right):
+      $left.area as $area
+      | if $area != null and ($area == $right.area or
+           (($right.path_areas // []) | index($area)) != null)
+        then $area else null end;
+    (shared_area($candidate; $admitted) // shared_area($admitted; $candidate)) as $area
+    | if $area != null then "same area \($area) as #\($admitted.number); chains behind it at launch"
+      elif $candidate.undeclared and $admitted.undeclared
+      then "footprint undeclared; can\u0027t rule out overlap with #\($admitted.number)"
+      else empty end'
+}
+```
+
+The dependency, declared shared-surface and inferred-subject checks still take precedence. Show the area and match source alongside each admitted area footprint.
 
 **5.5 — Tie-breaking is rank, always.** When two candidates overlap, the higher-ranked one keeps the slot and the lower-ranked one is excluded. Never swap in a lower-ranked issue because it "fits better" — that is re-ranking, which Step 1 forbids.
 
@@ -262,7 +291,7 @@ Record the exclusion reason for every candidate that fails a check — Step 9 pr
 ## Step 6: Cap the wave
 
 ```
-CEILING    = "$ACTIVE_WORK_CAP_SH" --ceiling   # PIPELINE_CEILING; 4 if unset or script absent
+CEILING    = "$ACTIVE_WORK_CAP_SH" --width     # per-mode width (run mode via run-mode.sh get): default/speed 15 unless configured, cheap CHEAP_MODE_WIDTH (defaults to PIPELINE_CEILING); 4 if script absent
 CONFIG     = MAX_WAVE from pm-config  # optional; clamped to [1, CEILING]
 EFFECTIVE  = min(CEILING, CONFIG?)    # total concurrent work allowed
 FREE       = "$ACTIVE_WORK_CAP_SH"         # default line: CAP=n ACTIVE=n FREE=n
@@ -271,7 +300,7 @@ SLOTS      = min(REQUESTED?, EFFECTIVE - IN_FLIGHT, FREE)
 
 `REQUESTED` caps *new* chips; `EFFECTIVE - IN_FLIGHT` caps *total* concurrent work. Applying them separately means `/wave 2` with one issue already in flight still offers 2 (total 3, under the ceiling) rather than being penalized twice.
 
-- **`CEILING`** is the per-thread pipeline ceiling from `.claude/rules/subagent-orchestration.md`, resolved by `"$ACTIVE_WORK_CAP_SH" --ceiling` (Step 0; no network call, same checkout as the census). It is the repo's `PIPELINE_CEILING` from `.claude/pm-config.md` `## Active work`, **default 4** when the repo sets none — so an unconfigured repo sizes exactly as before. It binds chip-launched threads too: the scarce resource is **reviewer throughput** — CodeRabbit serves 5 PR reviews per developer per hour, shared across every open PR you own (`.claude/reference/cr-rate-limits.md`) — not subagent slots. Four threads started at once become four PRs competing for that same hourly budget; a repo on a review plan without that limit opts into a wider `CEILING` explicitly.
+- **`CEILING`** is the per-thread launch width from `.claude/rules/subagent-orchestration.md` (the run mode's width, not the raw `PIPELINE_CEILING`), resolved by `"$ACTIVE_WORK_CAP_SH" --width` (Step 0; no network call, same checkout as the census). It is the per-mode width: default and speed read 15 unless configured (`DEFAULT_MODE_WIDTH` / `SPEED_MODE_WIDTH` in `.claude/pm-config.md` `## Active work`, each 1–20), and cheap is `CHEAP_MODE_WIDTH`, which defaults to the repo's `PIPELINE_CEILING` and may be set lower. Every mode is clamped to `ACTIVE_WORK_CAP`; an unconfigured repo gets **default 4** for cheap, so it sizes exactly as before. It binds chip-launched threads too: the scarce resource is **reviewer throughput** — CodeRabbit serves 5 PR reviews per developer per hour, shared across every open PR you own (`.claude/reference/cr-rate-limits.md`) — not subagent slots. Four threads started at once become four PRs competing for that same hourly budget; a repo on a review plan without that limit opts into a wider `CEILING` explicitly.
 - **`FREE`** is the repo-wide headroom from `"$ACTIVE_WORK_CAP_SH"` (Step 0). Read its **default output**, not `--free`: the one line carries `CAP`, `ACTIVE`, and `FREE`, and the cap-bound message below quotes `{ACTIVE}/{CAP}`, which `--free` cannot supply (`chip-launching.md` "Repo-wide active-work cap"). `CEILING` bounds *this thread*; `FREE` bounds **every thread on the repo at once**, counting your open PRs, live chips offered from any capture thread, and pipelines not yet at a PR. It is the term that stops a fresh `/wave` in a new tab from re-filling a board that other tabs already filled. Never read the cap's number into this file — the script owns it, and its derivation is `active-work-cap.md`.
 - **`CONFIG`** is an optional `MAX_WAVE=N` line in a `## Wave` section of `.claude/pm-config.md`:
 
@@ -279,7 +308,7 @@ SLOTS      = min(REQUESTED?, EFFECTIVE - IN_FLIGHT, FREE)
   "$PM_CONFIG_GET" --section Wave 2>/dev/null | sed -n 's/^ *MAX_WAVE *= *\([0-9][0-9]*\).*/\1/p' | head -1
   ```
 
-  Absent, unparseable, or out of range → ignore it and use `CEILING`. A config value **may lower the cap and may never raise it** past `CEILING`; clamp rather than error. Widening the ceiling itself is the repo's `PIPELINE_CEILING` knob, never `MAX_WAVE`. (`## Wave` is a non-canonical section, so `/pm-handoff`'s config refresh preserves it verbatim.)
+  Absent, unparseable, or out of range → ignore it and use `CEILING`. A config value **may lower the cap and may never raise it** past `CEILING`; clamp rather than error. Widening a width is done by its mode setting (`DEFAULT_MODE_WIDTH`, `SPEED_MODE_WIDTH`, or `CHEAP_MODE_WIDTH`, the last capped by `PIPELINE_CEILING`), and `ACTIVE_WORK_CAP` still binds. Never `MAX_WAVE`. (`## Wave` is a non-canonical section, so `/pm`'s config refresh (`shared:config`) preserves it verbatim.)
 - **`IN_FLIGHT`** is the count from Step 2 — issues already offered or already running consume the same reviewer budget.
 
 If `SLOTS <= 0`, print one line naming what is already in flight and **whose** — the count is your own PRs only ("your {IN_FLIGHT} open pipelines fill the {EFFECTIVE}-slot ceiling — merge or park one before starting more."). Never phrase it as a bare "N open PRs": a collaborator's PRs are not in this count, and naming the scope is what makes a wrong count visible at a glance (issue #732, AC4). Then, **in every thread** — `/wave` is always execution-capable, so there is no PM-context branch to take (#1229; `chip-launching.md` "Precedence when the ceiling is full", case 1) — name the subagent-fit issues as **queued inline** behind the running pipelines, bootstrapping the `## Active Work` table if this thread has none, and list any **too-big** ones as *deferred*: they need a thread, and opening one now would spend the same reviewer budget the ceiling exists to protect, so they wait for a slot too. "Stop" means no new work starts, not that issues go unnamed. A full ceiling **never** produces a chip — slot state schedules, it never routes work to a thread (#776 AC4) — and **nothing is silently dropped**: every excluded issue is named with its reason. The repo-wide cap binding is the same shape: an issue it holds back is **deferred and named**, never given a chip and never quietly omitted, so every issue in the independent set ends as running, queued, or deferred.
@@ -310,7 +339,7 @@ For each issue still offered as a chip:
 - **`title`** — ≤60 chars, starts with a verb, includes the issue number.
 - **`tldr`** — 1–2 plain sentences, no paths, no jargon.
 - **`cwd`** — repo root.
-- **Model and effort lines** (`**Model:** {MODEL} — {REASON}` then `**Effort:** {LEVEL} — {REASON}`) — take both recommendations from `/prompt`'s tier classification if it ran in this thread; otherwise infer them from the issue's signals with the same Heavy/Standard/Light mapping (`/prompt` Steps 4–5). Both lines appear **both** inside the chip prompt and in the visible summary, because chips preset neither picker control.
+- **Model and effort lines** (`**Model:** {MODEL} — {REASON}` then `**Effort:** {LEVEL} — {REASON}`) — infer both from the issue's signals with the Heavy/Standard/Light mapping in `issue-maker/references/tier-inference.md`. Both lines appear **both** inside the chip prompt and in the visible summary, because chips preset neither picker control.
 
 Print only the short summary per issue. A failed `spawn_task` falls back to a printed block **for that issue alone**; the rest of the wave keeps its chips. Every issue in the wave ends with exactly one of: a chip, or a printed block — never both, never neither.
 

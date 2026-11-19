@@ -111,17 +111,42 @@ Exceeding the cap does **not** deadlock merges. `CodeAnt` is on an unlimited pla
 
 What degrades is **review coverage**: CodeRabbit blocks, BugBot is cap-exhausted and refusing a majority of PRs, and PRs merge with progressively thinner review. The measured end state is the one number that matters here — **36% of blocked PRs merged unreviewed**. The cap exists to keep the reviewers that find things actually participating, which is why it is worth enforcing even though nothing visibly stalls without it.
 
+## Per-mode width — `--width` and `--poll-interval` (#2430)
+
+The run mode (`run-modes.md`, read only through `run-mode.sh get`) sets how wide a thread runs. `active-work-cap.sh --width` is the one read `/pm`, `/subagent` and `/wave` use for it:
+
+```
+governing width = min(mode width, ACTIVE_WORK_CAP)
+```
+
+| Mode | Mode width | Config key (`## Active work`) | Env override |
+|------|------------|-------------------------------|--------------|
+| default | 15 | `DEFAULT_MODE_WIDTH` | `CLAUDE_DEFAULT_MODE_WIDTH` |
+| speed | 15 | `SPEED_MODE_WIDTH` | `CLAUDE_SPEED_MODE_WIDTH` |
+| cheap | `PIPELINE_CEILING` (default 4) | `CHEAP_MODE_WIDTH` | `CLAUDE_CHEAP_MODE_WIDTH` |
+
+- Each key is an integer in [1, 20] and follows the ceiling's cascade (env → config → default). An out-of-range or unparseable value warns on stderr naming the key and falls back to that mode's default.
+- Cheap is the ceiling **or lower**: a `CHEAP_MODE_WIDTH` above `PIPELINE_CEILING` warns once and clamps to the ceiling.
+- A repo whose cap is below 15 runs default and speed at the cap. `--width` returns the cap in that case; the one-line note that the mode would have gone wider is the caller's to print once.
+- A mode never raises the repo-wide cap. A mode change never stops a running pipeline: a narrower mode only holds refilling until the count falls under the new width.
+- The read is network-free and fails open. An absent, non-enum or unreadable run mode reads as `default`.
+
+**Why default's upper limit is 15 when the cap was derived from 5 reviews/hour.** The cap's 5-per-hour derivation (Term 1 above) assumed every PR waits for a bot review. Since #1899 a PR that gets no bot verdict ten minutes after its first request merges on CI and acceptance checks alone (`cr-merge-gate.md`). The width above the review rate therefore costs merges without a bot review, not stalls. At width 15 roughly two thirds of PRs in a busy hour merge without one; the thread states that once, in one line, when it runs wider than the reviewer can keep up with. No paid review is ever triggered to cover the gap.
+
+**Review-poll cadence (`--poll-interval N`).** `N` is the count of concurrent pipelines. It prints `120` above 8 and `60` at or below 8. Above 8, ten 60-second pollers exceeded the shared GitHub request allowance; the wider cadence keeps the count under it. A rate-limited response is treated as no data, never as a clean result.
+
 ## Subordination — `min()`, never `max()`
 
 The repo-wide cap and the per-thread pipeline ceiling are separate limits and the tighter one governs:
 
 ```
-effective limit = min(PIPELINE_CEILING, ACTIVE_WORK_CAP)
+effective limit = min(mode width, ACTIVE_WORK_CAP)
+mode width      = PIPELINE_CEILING in cheap run mode; DEFAULT_MODE_WIDTH / SPEED_MODE_WIDTH otherwise (#2430)
 ```
 
-**The cap never raises the per-thread ceiling.** A repo configured `ACTIVE_WORK_CAP=10` still runs 4 pipelines per thread (the ceiling's default); the 10 bounds the cross-thread total, nothing else.
+**The cap never raises the per-thread width.** A repo configured `ACTIVE_WORK_CAP=10` in cheap mode still runs 4 pipelines per thread (the ceiling's default); in default mode the same repo runs up to 10, and the 10 bounds the cross-thread total, nothing else.
 
-**A repo widens its own per-thread band with `PIPELINE_CEILING`** (#1729) — an integer in [1, 20] in the same `## Active work` section of its own `.claude/pm-config.md`, resolved by `active-work-cap.sh --ceiling` (env `CLAUDE_PIPELINE_CEILING` overrides; absent → 4 silently; out of range or non-integer → one stderr warning and 4). It is a config change in the repo that needs it, not a global rule edit, and it cannot outrun the cap either: running wider than the cap means raising **both** knobs, so `ACTIVE_WORK_CAP` stays the repo-wide backstop. Consumers — `/subagent` Step 7, `/pm`'s slot math, `/wave` Step 6, `/pm-forgotten-pr`'s merge dispatch — read the resolved value; `/wave`'s `MAX_WAVE` still only lowers it.
+**A repo widens its own per-thread band with `PIPELINE_CEILING`** (#1729) — an integer in [1, 20] in the same `## Active work` section of its own `.claude/pm-config.md`, resolved by `active-work-cap.sh --ceiling` (env `CLAUDE_PIPELINE_CEILING` overrides; absent → 4 silently; out of range or non-integer → one stderr warning and 4). It is a config change in the repo that needs it, not a global rule edit, and it cannot outrun the cap either: running wider than the cap means raising **both** knobs, so `ACTIVE_WORK_CAP` stays the repo-wide backstop. Consumers — `/subagent` Step 7, `/pm`'s slot math, `/wave` Step 6 — read the resolved value; `/wave`'s `MAX_WAVE` still only lowers it.
 
 **Why the default stays 4.** The CodeRabbit-rate derivation above still holds for any repo that relies on CodeRabbit: past ~5 concurrent PRs each one loses its hourly review round. A repo on a review plan without that throughput limit (e.g. CodeAnt's unlimited tier) opts in explicitly. Changing the default itself — for every repo — is still a reviewed change to this script and `subagent-orchestration.md`.
 
@@ -163,7 +188,7 @@ This is a narrowing *within* the sources the script already reads. The one remai
 
 ## Portability
 
-The cap and the count resolve from the **target** repo, not the orchestrator's checkout (#1189): `repo-root.sh` resolves the root, and the cap is read with `pm-config-get.sh --section "Active work" --file <resolved-path>`. A `/pm` thread running in one repo and a chip-spawned thread running in another therefore see that repo's own cap. The `/pm-handoff` bootstrap emits the `## Active work` section, so a newly bootstrapped repo has the knob without anyone adding it.
+The cap and the count resolve from the **target** repo, not the orchestrator's checkout (#1189): `repo-root.sh` resolves the root, and the cap is read with `pm-config-get.sh --section "Active work" --file <resolved-path>`. A `/pm` thread running in one repo and a chip-spawned thread running in another therefore see that repo's own cap. The `/pm` config bootstrap (`shared:config`) emits the `## Active work` section, so a newly bootstrapped repo has the knob without anyone adding it.
 
 Repos whose primary reviewer is BugBot or Greptile have a different budget — BugBot's is a monthly spend cap and Greptile's a monthly credit pool, neither of which is an hourly burst limit. The knob is per-repo for exactly this reason; the default derived here is a CodeRabbit-primary default.
 
@@ -214,5 +239,5 @@ Every **other** `gh` failure — rate limit, auth, network, a different missing 
 - **A count, not a scheduler.** The helper reports `CAP`/`ACTIVE`/`FREE`. It does not queue, prioritize, or re-offer; deferral and re-offer are the emitters' behavior, defined once in `chip-launching.md`.
 - **The per-developer assumption.** Term 1 divides one developer's 5/hr allowance. A repo where several seat-holders open PRs concurrently has a larger aggregate budget, and this default is conservative there. The knob is the escape hatch.
 - **`r = 2` productive rounds is an estimate.** The rebase term `k(k−1)/2` is exact arithmetic; the `2k` it is added to is a modelling assumption. Changing `r` moves the churn-share percentages but not the parity point, which depends only on `k` relative to the allowance.
-- **`/pm` and `/prompt` undercount.** These emitters create chips without writing to the issue-maker legacy log. They use the registry (source 2), so their offers are visible to the cap. Work claimed before a PR opens but after the chip is dismissed may transiently not appear in any source; this window is short and bounded by the pipeline ceiling.
+- **`/pm` undercounts.** It creates chips without writing to the issue-maker legacy log. It uses the registry (source 2), so its offers are visible to the cap. Work claimed before a PR opens but after the chip is dismissed may transiently not appear in any source; this window is short and bounded by the pipeline ceiling.
 - **Cross-session task-id stability.** Registry `task_id`s generated automatically use timestamp + PID + random; they are unique with high probability but not guaranteed globally. A caller-supplied `--task-id` should be stable and unique if used for durable cross-session tracking (#1238 §Deferral 3).

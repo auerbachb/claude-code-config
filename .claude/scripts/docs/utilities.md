@@ -13,6 +13,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [desk-cli.sh](../../../desk/bin/desk-cli.sh) | Human-queue CLI for the desk (`desk/bin/desk-cli.sh`): runs human-queue.sh with the store URL found the way the capture hook finds it |
 | [desk-policy.sh](../../../desk/bin/desk-policy.sh) | Human-queue desk policy (`desk/bin/desk-policy.sh`): prints desk/policy.json's effective values (tick cadence, interrupt rule, end of day, set size, live-desk bound) as JSON; an invalid file is the defaults with one warning |
 | [desk-tick.sh](../../../desk/bin/desk-tick.sh) | Human-queue desk tick loop (`desk/bin/desk-tick.sh`): the /desk Monitor command; ticks the store and prints a line only when the desk has something to do |
+| [exit-report-extract.sh](../exit-report-extract.sh) | Extract the compact field set from the last EXIT_REPORT block in a worker's output; fails closed on a missing or malformed report |
 | [hhg-state.sh](../hhg-state.sh) | Extract a 2-letter USPS state code from HHG-formatted text |
 | [human-queue.sh](../../../desk/bin/human-queue.sh) | Human-queue store CLI (`desk/bin/human-queue.sh`): auto-discovers subcommands in `desk/bin/cmd/`, applies `desk/schema/` migrations, and exits 7 within two seconds when the database is unset or unreachable so callers can fail open |
 | [idea-target.sh](../../../desk/bin/idea-target.sh) | Human-queue idea target (`desk/bin/idea-target.sh`): reads a desk `idea:` / `file:` / `repo:` message on stdin and resolves the repo the idea is filed in: named in the text, else the desk session's default, else a suggestion to ask about once |
@@ -23,7 +24,8 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [pr-outline.sh](../../../desk/bin/pr-outline.sh) | Human-queue PR drill-down (`desk/bin/pr-outline.sh`): prints a PR's numbered outline (files, hunks, the tests touching each, with line counts) or opens nodes of it (a hunk with twenty lines of context, a whole file's patch); read-only, rebuilt on every call |
 | [pr-summary-material.sh](../../../desk/bin/pr-summary-material.sh) | Human-queue Reviews material (`desk/bin/pr-summary-material.sh`): prints a PR's or issue's raw material for a level 1, 2, or 3 summary (title, labels, closing issue; body, commits, files, tests; the bounded diff, narrowed by --path); read-only |
 | [reference-catalog-lint.sh](../reference-catalog-lint.sh) | Lint the `.claude/reference/` catalog against the directory contents (index/disk parity, no phantoms, no duplicates) |
-| [report-path.sh](../report-path.sh) | Return a collision-free monthly report path for `/review-stack-audit` and `/harness-audit`, so a second same-month audit cannot overwrite the first |
+| [report-path.sh](../report-path.sh) | Return a collision-free monthly report path for `/review-stack-audit`, so a second same-month audit cannot overwrite the first |
+| [stoppage-note.sh](../../../desk/bin/stoppage-note.sh) | Records the stoppage causes only an orchestrator knows (`out_of_work`, `blocked_by_error`) in the desk's private database (`desk/bin/stoppage-note.sh`) |
 | [verify-exit-report-block.sh](../verify-exit-report-block.sh) | Verify stdin contains a parseable EXIT_REPORT with all required fields |
 | [wake-target.sh](../../../desk/bin/wake-target.sh) | Human-queue wake-up address (`desk/bin/wake-target.sh`): maps a Decision's return address to the running session's messaging address; read-only |
 <!-- catalog:rows:end -->
@@ -36,7 +38,9 @@ Called by other scripts; run `python3 .claude/scripts/<name>.py --help` for usag
 |--------|---------|
 <!-- catalog:rows:begin kind=py -->
 | [cr-plan-filter.py](../cr-plan-filter.py) | Substantive-plan filter for CodeRabbit issue comments (called by `cr-plan.sh`) |
+| [issue-area.py](../issue-area.py) | Resolve configured issue areas and tag declared paths for launch overlap. |
 | [memory-audit.py](../memory-audit.py) | Memory-store audit engine behind `/memory-clean` |
+| [pm-split-verbatim-check.py](../pm-split-verbatim-check.py) | Verify that PM entry and module text preserves its committed baseline. |
 <!-- catalog:rows:end -->
 
 ---

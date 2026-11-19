@@ -142,9 +142,8 @@ fi
 # ---------------------------------------------------------------------------
 # Write jq filter to a temp file (avoids shell quoting issues with single quotes)
 # ---------------------------------------------------------------------------
-JQ_FILTER_FILE=$(mktemp /tmp/makespan-XXXXXX.jq)
-# shellcheck disable=SC2064
-trap "rm -f '$JQ_FILTER_FILE'" EXIT
+JQ_FILTER_FILE=$(mktemp "${TMPDIR:-/tmp}/makespan.XXXXXX")
+trap 'rm -f "$JQ_FILTER_FILE"' EXIT
 
 # NOTE: reduce EXPR as $var (INIT; UPDATE) as $result requires parens around
 # the whole reduce expression when binding the result: (reduce ...) as $result

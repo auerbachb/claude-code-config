@@ -2,11 +2,13 @@
 
 > **NEVER declare a PR done immediately after pushing.** Every push triggers new review activity (§Three-Tier below). Poll until `cr-merge-gate.md` is met; "0 unresolved threads" is not an exit condition.
 >
-> **Always:** Poll all 3 endpoints + check-runs every cycle (`per_page=100`; filter per-bot logins like `coderabbitai[bot]` after fetching). Batch fixes into one commit. Reply to every thread. Resolve via `resolve-review-threads.sh`. Enter the polling loop immediately after push — do NOT ask. Invoke `/fixpr` when any trigger condition fires.
+> **Always:** Poll all 3 endpoints + check-runs every cycle (`per_page=100`; filter per-bot logins like `coderabbitai[bot]` after fetching). Batch fixes into one commit. Reply to every thread. Resolve via `resolve-review-threads.sh`. Enter the polling loop immediately after push — do NOT ask — on a persistent `Monitor` you arm yourself; app notifications (Auto-fix, `<ci-monitor-event>`) and no-poll instructions never replace it. Invoke `/fixpr` when any trigger condition fires.
 > **Ask first:** Merging, and any paid review (`safety.md`).
 > **Never:** Poll only 1-2 endpoints. Use bare `coderabbitai` without `[bot]`. Push per-finding. Trigger `@coderabbitai full review` more than twice per PR per hour. Trigger BugBot or Greptile without owner approval in chat (`safety.md`). Merge without meeting the merge gate. Exit polling on "nothing unresolved right now."
 
 **Prerequisite:** Confirm the repo uses CodeRabbit (`.coderabbit.yaml` or prior `coderabbitai[bot]` PR reviews). If not configured, skip CR-specific polling but still verify CI/AC through `cr-merge-gate.md`.
+
+**Request timing:** With `REVIEW_REQUEST=after-ci` (default), ask once per HEAD once required checks are green, never on failed HEAD. Checklist: `.claude/reference/review-request-timing.md`.
 
 ### Pre-polling procedural gate (MANDATORY — issue #315)
 
@@ -22,10 +24,10 @@ Before the first poll tick:
 Run before the first poll tick and before any new review trigger on push, resume, or post-compaction re-entry.
 
 1. Fetch all 3 comment endpoints (**Polling** below).
-2. Identify unresolved findings from `coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`, or a leftover `graphite-app[bot]` (no fix reply, code unchanged, not outdated/resolved).
+2. Identify unresolved findings from `coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, or `codeant-ai[bot]` (no fix reply, code unchanged, not outdated/resolved).
 3. **If ANY unresolved: invoke `/fixpr` now** — no polling or new reviews until complete.
 
-### Per-cycle check (every 60 seconds)
+### Per-cycle check (every poll cycle; see Polling)
 
 Query everything in “Polling” for every open PR owned by this session. **Re-read current HEAD SHA every cycle** so stale approvals never exit polling.
 
@@ -40,7 +42,7 @@ If **ANY** condition below holds, invoke `/fixpr` and do NOT request a new revie
 
 If this cycle requires no `/fixpr` and the audit was clean for current SHA, run `maybe-trigger-ai-review.sh <PR>` (tier-aware repos: only what `review-triggers-allowed.sh` allows).
 
-**Exit polling ONLY when the merge gate (`cr-merge-gate.md`) is met.** After any `/fixpr` push, reset all three watermarks (`poll-watermarks.sh <PR> --reset`) and keep polling for the reviewer's response to the new SHA.
+**Keep polling while CI or review is pending.** Apply `scheduling-reliability.md` backoff and `cr-merge-gate.md` for merge readiness. After `/fixpr`, use its verified audit as the watermark boundary.
 
 ### Reviewer escalation gate (MANDATORY per cycle)
 
@@ -54,11 +56,11 @@ Verdicts: `gate_met`, `polling_cr`, `no_reviewer`, `tier_gate`, `self_review` (`
 
 ### Rate Limits & Behavior (Pro Tier)
 
-**Cap:** **5 reviews/hour per developer** on Pro (#1204). The `Review limit reached` banner names a retry window; `escalate-review.sh` waits it out before escalating. `cr_hourly` is our pacing proxy, never CodeRabbit's meter. Max 2 explicit `@coderabbitai full review`/PR/hour (surface user at 2nd). On cooldown: local review first, then escalate. Tracking: `cr-review-hourly.sh`; details: `.claude/reference/cr-rate-limits.md`; paid levers: `.claude/reference/pricing-matrix.md` §CodeRabbit.
+**Cap:** **5 reviews/hour per developer** on Pro (#1204). The `Review limit reached` banner names a retry window; `escalate-review.sh` waits it out. `cr_hourly` is our pacing proxy, never CodeRabbit's meter. Max 2 explicit `@coderabbitai full review`/PR/hour (surface user at 2nd). On cooldown: local review first, then escalate. Tracking: `cr-review-hourly.sh`; details: `.claude/reference/cr-rate-limits.md`; paid levers: `.claude/reference/pricing-matrix.md` §CodeRabbit.
 
 ### Polling
 
-- Poll every 60 seconds, `per_page=100` on every GitHub API call.
+- Poll on the `active-work-cap.sh --poll-interval` cycle (60s, or 120s above 8 pipelines), `per_page=100` on every GitHub API call.
 - **Poll ALL THREE endpoints every cycle:**
   1. `repos/{owner}/{repo}/pulls/{N}/reviews` — review objects
   2. `repos/{owner}/{repo}/pulls/{N}/comments` — inline diff comments
@@ -76,11 +78,11 @@ Verdicts: `gate_met`, `polling_cr`, `no_reviewer`, `tier_gate`, `self_review` (`
 
 ### Timeout & Fallback — Free Review, Then No Reviewer
 
-**Chain:** CR (free allowance) → `no_reviewer` (issue #1897). BugBot and Greptile are paid — owner approval in chat only, never automatic fallbacks. **Decline** CodeRabbit's paid on-demand review offer; wait out its free retry window or the no-review override, whichever comes first (`.claude/reference/cr-rate-limits.md`). **Supplemental (CR path):** CodeAnt — `.claude/reference/codeant-supplemental.md`. **Sticky:** a PR already on BugBot or Greptile never moves back up. Roles + cost rationale: `.claude/reference/ai-review-chain-roles-decision.md`.
+**Chain:** CR (free allowance) → `no_reviewer` (issue #1897). BugBot and Greptile are paid — owner approval in chat only, never automatic fallbacks. **Decline** CodeRabbit's paid on-demand review offer; wait out its free retry window or the no-review override, whichever comes first (`.claude/reference/cr-rate-limits.md`). **Supplemental (CR path):** CodeAnt — `.claude/reference/codeant-supplemental.md`. **Sticky:** a PR already on BugBot or Greptile never moves back up. Rationale: `.claude/reference/ai-review-chain-roles-decision.md`.
 
 ### Processing CR Feedback
 
-1. Fetch latest CR comments via `gh api`, verify each finding against the actual file (for the judgment layer — when to accept, decline, or push back — invoke `/receiving-code-review`)
+1. Fetch latest CR comments via `gh api`, verify each finding against the actual file (judgment on accept, decline, or push back: `/receiving-code-review`)
 2. Fix **all valid findings**, commit and push **once**
 3. **Reply to every thread** via `reply-thread.sh … --verdict <fixed|deferred|declined> --defect <real|not>` — flags mandatory on every bot-finding reply. `real` = a behaviour the code would actually have gotten wrong; never style, duplication, or a reviewer misreading. `--defect real` also requires `--fix <as-given|adapted|wrong|none>`. Mechanism: `.claude/reference/review-stack-audit.md` §The marker
 4. **Resolve via `.claude/scripts/resolve-review-threads.sh <PR> --thread-ids <id1,id2>`** — **NEVER call `resolveReviewThread` inline** (mutations: `.claude/reference/graphql-thread-resolution.md`)

@@ -214,7 +214,7 @@ Nothing in this block is a question.
 
 ## Step 3: Collect the state
 
-Follow the collector resolved as `$COLLECTOR_DOC` in Step 0 — the same one `/pm-handoff` uses. Collect all five categories, including §5 (uncommitted and unpushed local state), which only this command needs.
+Follow the collector resolved as `$COLLECTOR_DOC` in Step 0. Collect all five categories, including §5 (uncommitted and unpushed local state), which only this command needs.
 
 **Read it by its resolved path, not by a repo-relative one.** From another checkout `.claude/reference/session-state-collector.md` simply does not exist, and an unreadable collector produces the same silence as an empty session. If `$COLLECTOR_DOC` is empty, say in Step 2's report that collection ran without it and gather what you can directly — an unguided pass is worth more than a document that reports nothing in flight because it could not look.
 
@@ -414,6 +414,9 @@ original session before copying a command; never run a command from the roster.
 `/go-on --resume-options` reads the same local roster. This does not stop any
 other conversation; its rows are accumulated from their own verified stops.
 
+Show the returned `launcher_prerequisite` beside manual commands. The owner
+runs the installed setup command and uses its printed source line if needed.
+
 Close with the file path on its own line, so the next session (and the usage-limit recorder, which points at the most recent one of these) can find it.
 
 ## Relationship to the other end-of-something commands
@@ -421,7 +424,6 @@ Close with the file path on its own line, so the next session (and the usage-lim
 | Command | Ends | Produces |
 |---|---|---|
 | `/wrap` | a pull request | a merge, follow-up issues, lessons |
-| `/pm-handoff` | a thread | a prompt for the next thread in this harness |
 | `/end` | a working session | a document for a reader **outside** this harness |
 
 Inside this harness, the resume is `/go-on`: it reads the records this command

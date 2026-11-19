@@ -52,7 +52,7 @@ the live agent handle it is holding (Step 3).
 each one — never a bare `.claude/scripts/…` path
 (`.claude/reference/portable-skill-resolution.md`).
 
-**Scope boundary.** `/status` is the PR-fleet dashboard — every open PR with its
+**Scope boundary.** `/pr-status` is the PR-fleet dashboard — every open PR with its
 review state, whether or not this session dispatched it. `/subagent` is the
 dispatcher that owns this same table at launch and on heartbeats. `/board` neither
 dispatches nor reviews nor merges: it reads state and prints one table. Its **only**
@@ -80,6 +80,8 @@ ESTIMATE_RESOLVE_SH=$(resolve_script estimate-resolve.sh || true)
 OVERRUN_CHECK_SH=$(resolve_script overrun-check.sh || true)
 TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh || true)
 ROUND_MEMBERSHIP_SH=$(resolve_script round-membership.sh || true)
+HANDOFF_STATE_SH=$(resolve_script handoff-state.sh || true)
+RUN_MODE_SH=$(resolve_script run-mode.sh || true)
 ```
 
 Read `time-estimates.md` through the matching `.claude/reference/` candidate order.
@@ -91,6 +93,8 @@ silently.**
 - `ROUND_MEMBERSHIP_SH` empty → **optional**. Print `DEGRADED: round-membership.sh not found — queued/completed membership uses the no-record fallbacks` and continue; never substitute another session's singleton as this session's own round.
 - `ESTIMATE_RESOLVE_SH` empty → **optional**. Print `DEGRADED: estimate-resolve.sh not found (checked all three paths) — Est column renders as unestimated` and continue.
 - `OVERRUN_CHECK_SH` empty → **optional**. Print `DEGRADED: overrun-check.sh not found (checked all three paths) — clock columns render as —` and continue. Still print the table: it carries the round's shape and run order even with three empty columns, and the line above already said why they are empty.
+- `RUN_MODE_SH` empty → **optional**. Print nothing extra; the `Mode:` label reads `default`, the fail-open value, and the board renders unchanged.
+- `HANDOFF_STATE_SH` empty → **optional**. Print `DEGRADED: handoff-state.sh not found (checked all three paths) — PR-backed rows render the Model cell as —; pre-PR rows read the session routing record` and continue.
 - `TABLE_FRESHNESS_SH` empty → **optional**. Print `DEGRADED: table-freshness.sh not found (checked all three paths) — this render is not recorded against the hourly table-freshness floor` and continue. The board is still correct; only the clock in Step 5 is lost.
 
 ---
@@ -172,14 +176,19 @@ read_round_membership() {
   local repo="$1" result
   ROUND_READ_MEMBERS=""
   ROUND_READ_SCOPE=none
+  ROUND_READ_PLANNED='[]'
   if [[ -z "$ROUND_MEMBERSHIP_SH" ]]; then return 0; fi
-  if ! result=$("$ROUND_MEMBERSHIP_SH" --repo "$repo" --session "$TF_SESSION" --state-helper "$SESSION_STATE_SH"); then
+  if ! result=$("$ROUND_MEMBERSHIP_SH" --repo "$repo" --session "$TF_SESSION" --state-helper "$SESSION_STATE_SH" --include-pm-queue); then
     echo 'DEGRADED: round membership unavailable — using labelled no-record fallbacks'
     return 0
   fi
   ROUND_READ_MEMBERS=$(printf '%s' "$result" | jq -c '.members')
   ROUND_READ_SCOPE=$(printf '%s' "$result" | jq -r '.scope')
   [[ "$ROUND_READ_MEMBERS" != null ]] || ROUND_READ_MEMBERS=""
+  if ! ROUND_READ_PLANNED=$(printf '%s' "$result" | jq -ce '.planned | select(type == "array")'); then
+    echo 'DEGRADED: standing queue unavailable'
+    ROUND_READ_PLANNED='[]'
+  fi
 }
 if [[ -n "$EFFECTIVE_REPO" ]]; then
   PIPELINES=$(sget ".repos[\"$EFFECTIVE_REPO\"].pipelines")
@@ -188,6 +197,7 @@ if [[ -n "$EFFECTIVE_REPO" ]]; then
   read_round_membership "$EFFECTIVE_REPO"
   ROUND_MEMBERS="$ROUND_READ_MEMBERS"
   ROUND_SCOPE="$ROUND_READ_SCOPE"
+  ROUND_PLANNED="$ROUND_READ_PLANNED"
 fi
 ```
 
@@ -207,7 +217,8 @@ for RK in $BOARD_REPOS; do
   read_round_membership "$RK"
   RK_ROUND_MEMBERS="$ROUND_READ_MEMBERS"
   RK_ROUND_SCOPE="$ROUND_READ_SCOPE"
-  # Accumulate (RK, RK_PIPELINES, RK_ROUND_MEMBERS, RK_ROUND_SCOPE); `_unknown` carries no
+  RK_ROUND_PLANNED="$ROUND_READ_PLANNED"
+  # Accumulate (RK, RK_PIPELINES, RK_ROUND_MEMBERS, RK_ROUND_SCOPE, RK_ROUND_PLANNED); `_unknown` carries no
   # usable repo for the `gh` and estimate lookups below, so skip it rather than
   # guessing one.
 done
@@ -331,6 +342,10 @@ against the working directory's repo, so the one path that exists to recover a
 missing start is also the one most able to invent a wrong one. Re-deriving a start
 moves the Start column on every rebuild after a compaction, which is precisely what
 the recorded value prevents (`time-estimates.md` §"Start times come from state").
+`RECORDED_START` is the start **only** when it was read from state (either field above);
+it is empty when the start came from the `createdAt` fallback. A fallback start feeds the
+Start column alone, labelled approximate, and never the Remaining cell: the actual is a
+duration from a recorded launch, so an empty `RECORDED_START` renders `—`.
 
 ---
 
@@ -404,20 +419,26 @@ board. Three row classes make up the round:
 - **Queued** — issues accepted for this round that have not launched. **Read them
   from the durable round record** (`ROUND_MEMBERS`, Step 2): a member with **no
   recorded `started_at`** in that repo's `pipelines` has not launched, and is a
-  queued row. Nothing else marks a queued issue — a queued issue has no `pipelines`
-  entry at all until its turn, which is precisely why membership had to be written
-  down separately.
+  queued row. Append the selected dispatcher's unclaimed PM standing plan from
+  the same repo snapshot, in its saved rank order. Bind `ROW_ROUND_PLANNED`
+  to this repo’s `ROUND_PLANNED` or `RK_ROUND_PLANNED` from Step 2.
+  Use this repo's already rendered running and evidenced pre-PR issue IDs as
+  `ROW_RUNNING_IDS`, a JSON array of issue-number strings. A verified running
+  row takes precedence over a plan entry for the same issue. Only the launched
+  round membership feeds completed counts.
 
   <!-- test-anchor: board-step3-queued-from-round -->
 
   ```bash
-  # ROW_PIPELINES and ROW_ROUND_MEMBERS are that repo's own pair (Step 2). Queue
-  # order is the recorded order — `members` is written in Step 6.0b's execution
-  # order, so it is read back as-is and never re-sorted.
+  # Claimed successors lead in execution order, then standing plans in rank order.
   QUEUED_ISSUES=$(jq -rn \
     --argjson m "$ROW_ROUND_MEMBERS" \
     --argjson p "${ROW_PIPELINES:-null}" \
-    '$m[] | select((($p // {})[.] // {}) | has("started_at") | not)' 2>/dev/null)
+    --argjson planned "${ROW_ROUND_PLANNED:-[]}" \
+    --argjson running "${ROW_RUNNING_IDS:-[]}" \
+    '([$m[] | select((($p // {})[.] // {}) | has("started_at") | not)] + ($planned - $running))
+     | reduce .[] as $issue ([]; if index($issue) == null then . + [$issue] else . end)
+     | .[]' 2>/dev/null)
   ```
 
   **This path is exact for any thread**, not only the dispatcher: the record is on
@@ -587,9 +608,14 @@ qualified line when **any** repo that reached this path lacked a record.
 
 ### The board
 
-Print the ET render timestamp, then the canonical table — the same columns and the
-same cell semantics as every other surface, per `time-estimates.md`
-§"Running now Table". Do not invent columns and do not reshape it into a list.
+Print the ET render timestamp, then one line `Mode: <mode>` (the repo's PM run mode,
+read with `run-mode.sh get --repo "$repo"`; a missing helper or failed read shows
+`default`, per `.claude/reference/run-modes.md`), then the canonical table — the same
+columns and the same cell semantics as every other surface, per `time-estimates.md`
+§"Running now Table". Do not invent columns and do not reshape it into a list. The mode
+line is a label only: it changes no row, column, order, freshness, floor arming or
+read-only status. On the no-active-round single line, append the mode to that same line
+without implying a round exists.
 
 ```bash
 # Same guard as the clock cells, for the same reason: `TZ='America/New_York' date`
@@ -613,12 +639,12 @@ the mislabelling this guard exists to prevent.
 ```markdown
 **Running now**
 
-| Issue | Scope | Status | Est | Start (ET) | Projected end (ET) | Remaining |
-|-------|-------|--------|-----|-----------|--------------------|-----------|
-| #1512 | Universal dispatch + progress table | Phase B | Est: 90–180 min · plan on 180 | 12:18 PM | 3:18 PM | 1.4 h |
-| #1489 | Rebuild the escalation retry window | Phase A | Est: 45–90 min · plan on 90 | 12:41 PM | 2:03 PM | +22 min over plan |
-| #1480 | Key catalog entries on normalized path | merged | Est: 15–30 min · plan on 30 | 12:18 PM | 12:44 PM | — |
-| #1504 | Re-anchor the scripts README gate | queued | Est: 15–30 min · plan on 30 | — | — | — |
+| Issue | Scope | Status | Model | Est | Start (ET) | Projected end (ET) | Remaining |
+|-------|-------|--------|-------|-----|-----------|--------------------|-----------|
+| #1512 | Universal dispatch + progress table | Phase B | Sonnet | Est: 90–180 min · plan on 180 | 12:18 PM | 3:18 PM | 1.4 h |
+| #1489 | Rebuild the escalation retry window | Phase A | Opus | Est: 45–90 min · plan on 90 | 12:41 PM | 2:03 PM | +22 min over plan |
+| #1480 | Key catalog entries on normalized path | merged | Haiku | Est: 15–30 min · plan on 30 | 12:18 PM | 12:44 PM | 24 min vs plan 30 |
+| #1504 | Re-anchor the scripts README gate | queued | — | Est: 15–30 min · plan on 30 | — | — | — |
 ```
 
 Per row:
@@ -656,9 +682,15 @@ Per row:
   --started-at ISO`, using the start read in Step 2. Never re-implement the time math.
   An **unestimated** started row has no `M`, so it gets no projection — but it keeps
   its recorded Start, which is a fact rather than a forecast.
+- **Model** — the family name from the routing record, computed by the block below.
+  A queued row is `—` with no lookup; so is a missing or unreadable record.
 - **Queued rows** — `—` in all three clock columns.
 - **Completed rows** — `merged`, with the delivered clock time in `Projected end` and
-  `—` in `Remaining` (`time-estimates.md` §"Running now Table"). They never reach
+  the actual against the plan in `Remaining` (`74 min vs plan 90`, or `+22 min over
+  plan`; `—` when the start or the bound cannot be read). Initialise `DELIVERED_CELLS=()`,
+  `DELIVERED_REPOS=()` and `DELIVERED_APPROX=()` once before the rows, so each merged row
+  appends its cell, its repo key and its approximate flag for the roll-up
+  (`time-estimates.md` §"Running now Table"). They never reach
   `overrun-check.sh`'s **projection** cells; the branch below is what keeps them out.
   Both of their clocks are still **formatted** by that script, because it is the only
   ET formatter in this repo that is safe to call (below).
@@ -697,6 +729,8 @@ will not parse, which is exactly the empty the guards below already handle.
 
 ```bash
 BOUND_MIN=$(printf '%s' "$EST_STR" | sed 's/.*plan on \([0-9]*\).*/\1/' | grep -E '^[0-9]+$' || true)
+# EST_STR is the row's Est cell source: the estimate-resolve.sh output. Empty or
+# unparseable leaves BOUND_MIN empty, and every bound-dependent cell then renders —.
 CELLS=""
 if [[ "$ROW_STATUS" != merged && -n "$OVERRUN_CHECK_SH" && -n "$BOUND_MIN" && -n "$STARTED_AT" ]]; then
   # --pr is optional in cell mode and omitted here: a Phase A row has a start but no
@@ -713,12 +747,21 @@ if [[ "$ROW_STATUS" == merged ]]; then
   # STARTED_AT directly also keeps the recorded Start on an UNESTIMATED merged row:
   # routing it through the helper would drop Start whenever BOUND_MIN is empty,
   # losing a value that is right there in state.
-  # Guarded, not assigned outright: a pipeline that predates the start record has
-  # no STARTED_AT_ET, and an unguarded assignment would blank the cell instead of
-  # leaving the `—` that every other unknown clock renders.
+  # Guarded, not assigned outright: a pipeline with no start at all (no recorded start
+  # and no createdAt fallback) has no STARTED_AT_ET, and an unguarded assignment would
+  # blank the cell instead of leaving the `—` that every other unknown clock renders.
+  # A pipeline that predates the start record may still have one from the createdAt
+  # fallback: its Start column shows that value, labelled approximate. The Remaining
+  # cell never uses it (RECORDED_START only).
   [[ -n "$STARTED_AT_ET" ]] && CELL_START="$STARTED_AT_ET"  # et_clock "$STARTED_AT"
   [[ -n "$MERGED_AT_ET" ]] && CELL_END="$MERGED_AT_ET"      # et_clock "$MERGED_AT"
-  CELL_REMAINING="—"
+  # Remaining carries the actual against the plan: a fact, measured from the recorded
+  # launch to mergedAt (time-estimates.md §"Completed rows"). "—" when the start or
+  # the bound cannot be read.
+  CELL_REMAINING=$(actual_cell "$BOUND_MIN" "$RECORDED_START" "$MERGED_AT")
+  DELIVERED_CELLS+=("$CELL_REMAINING")
+  DELIVERED_REPOS+=("$ROW_REPO")
+  DELIVERED_APPROX+=("${DELIVERED_APPROX_FLAG:-false}")  # Step 4's per-repo approximate qualifier
 elif [[ -n "$CELLS" ]]; then
   CELL_START=$(printf '%s' "$CELLS" | cut -f1)
   CELL_END=$(printf '%s' "$CELLS" | cut -f2)
@@ -731,6 +774,98 @@ elif [[ -n "$STARTED_AT_ET" ]]; then
   # branch does: an unestimated row loses its forecast, not its history.
   CELL_START="$STARTED_AT_ET"
 fi
+```
+
+**Actual cell (finished rows).** `actual_cell` is the one place a delivered row's
+duration is computed. It calls `overrun-check.sh --actual-cell`, so the minute
+arithmetic is the same as every other clock here, and it measures from the **recorded
+launch** (`RECORDED_START`, Step 2; a `createdAt` fallback never qualifies) to `MERGED_AT` (Step 3's live `mergedAt`). The rule is
+the same as the clock cells: an empty result renders `—`, never a guess.
+
+```bash
+actual_cell() {  # actual_cell <bound-min> <started-at> <merged-at> -> "74 min vs plan 90", "+22 min over plan", or —
+  local out=""
+  if [[ -n "$OVERRUN_CHECK_SH" && -n "$1" && -n "$2" && -n "$3" ]]; then
+    out=$("$OVERRUN_CHECK_SH" --actual-cell --bound-min "$1" --started-at "$2" --ended-at "$3" 2>/dev/null) || out=""
+  fi
+  printf '%s' "${out:-—}"
+}
+rollup_line() {  # rollup_line <cell>... -> "3 delivered: 2 under plan, 1 over by 22 min", or nothing
+  local n=0 under=0 over=0 sub=0 over_min=0 unknown=0 c m
+  for c in "$@"; do
+    n=$((n + 1))
+    case "$c" in
+      *" vs plan "*) under=$((under + 1)) ;;
+      "+<1 min over plan") over=$((over + 1)); sub=$((sub + 1)) ;;
+      +*" min over plan") m=${c#+}; m=${m% min over plan}; over=$((over + 1)); over_min=$((over_min + m)) ;;
+      *) unknown=$((unknown + 1)) ;;
+    esac
+  done
+  (( n == 0 )) && return 0
+  printf '%d delivered: %d under plan, ' "$n" "$under"
+  if (( over == 0 )); then
+    printf '0 over'
+  elif (( sub == over )); then
+    # Every overrun is under a minute: the cells carry no seconds, so never sum them.
+    printf '%d over, each by <1 min' "$over"
+  elif (( sub == 0 )); then
+    printf '%d over by %d min' "$over" "$over_min"
+  else
+    # Whole-minute overruns are summed; sub-minute ones are counted, never added to the total.
+    printf '%d over by %d min plus %d under a minute each' "$over" "$over_min" "$sub"
+  fi
+  (( unknown > 0 )) && printf ', %d without a readable plan or start' "$unknown"
+  printf '\n'
+}
+```
+
+**Model cell.** Read the saved routing record for the phase the row shows, pre-PR from
+session state and post-PR from the handoff (`time-estimates.md` §"Model cell"). A
+merged row takes the latest phase with a readable record. Anything other than the four
+known aliases renders `—`, never a guess.
+
+```bash
+model_raw() {  # model_raw <A|B|C> -> stored alias, "unrecognised" for a record that is not an
+  # object with a non-empty string model (a string, a null decision, ...), or empty when
+  # the phase has no record. A PR-backed row reads its handoff only; the session record is
+  # the source only before a PR exists (its Phase A record never describes a later route)
+  local phase="$1" raw="" hf rec=""
+  if [[ -n "$ROW_PR" ]]; then
+    if [[ -n "$HANDOFF_STATE_SH" ]]; then
+      hf=$("$HANDOFF_STATE_SH" --owner-repo "$ROW_REPO" --path "$ROW_PR" 2>/dev/null) \
+        && [[ -r "$hf" ]] \
+        && raw=$(jq -r --arg t "issue-$ROW_ISSUE" --arg p "$phase" \
+          '(.model_routing | if type == "object" then . else {} end) | (.[$t] | if type == "object" then . else {} end) | .[$p]
+           | if . == null then empty
+             elif type != "object" or (.decision | type) != "object" or (.decision.model | type) != "string" or .decision.model == "" then "unrecognised"
+             else .decision.model end' "$hf" 2>/dev/null)
+    fi
+  else
+    rec=$(sget ".repos[\"$ROW_REPO\"].tasks[\"issue-$ROW_ISSUE\"].model_routing[\"$phase\"]")
+    [[ -n "$rec" ]] && raw=$(printf '%s' "$rec" | jq -r 'if type != "object" or (.decision | type) != "object" or (.decision.model | type) != "string" or .decision.model == "" then "unrecognised" else .decision.model end' 2>/dev/null)
+  fi
+  printf '%s' "$raw"
+}
+model_family() {  # model_family <stored alias> -> Opus|Sonnet|Haiku|Fable, or —
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    haiku) printf 'Haiku' ;; sonnet) printf 'Sonnet' ;; opus) printf 'Opus' ;; fable) printf 'Fable' ;;
+    *) printf '—' ;;   # includes "unrecognised": a record with no usable model
+  esac
+}
+CELL_MODEL="—"
+case "$ROW_STATUS" in
+  queued) ;;
+  merged)
+    # The latest phase that HAS a record decides, read from the handoff: after the merge
+    # the handoff is deleted, so no record is left and the cell is —. A record that is
+    # unusable (malformed, or an unknown model) still stops the walk and renders —; it
+    # never falls back to an earlier phase's model.
+    for MP in C B A; do
+      MRAW=$(model_raw "$MP")
+      if [[ -n "$MRAW" ]]; then CELL_MODEL=$(model_family "$MRAW"); break; fi
+    done ;;
+  Phase?*) CELL_MODEL=$(model_family "$(model_raw "${ROW_STATUS:6:1}")") ;;   # "Phase A", "Phase A (unconfirmed)"
+esac
 ```
 
 ### One summary line after the table
@@ -769,6 +904,71 @@ an exact count must never be hedged into either.
 
 ```text
 2 running, 1 queued, 1 delivered. #1489 is over plan by 22 min; nothing blocked.
+```
+
+**Round roll-up.** One line per repo, printed only for a repo with at least one delivered
+row. It tallies that repo's entries of `DELIVERED_CELLS`, selected by `DELIVERED_REPOS`,
+so its count is the same delivered count the summary line states for that repo: under
+plan + over plan + unreadable always equals that repo's delivered rows. A single-repo
+board has one repo key and so one line. Under `--all-repos` each line is prefixed with
+its repo's key, and each repo's delivered count is qualified on its own terms. A
+repo whose delivered count is approximate (the timestamp fallback in Step 3) gets the
+word `approximately` in front, the same qualifier the summary uses.
+
+```bash
+# DELIVERED_APPROX_FLAG (set by Step 4 per repo) is "true" where that repo's delivered
+# count came from the timestamp fallback. BOARD_ALL_REPOS is the mode flag from Step 2.
+ROLLUP_KEYS=()
+for k in "${DELIVERED_REPOS[@]+"${DELIVERED_REPOS[@]}"}"; do
+  case " ${ROLLUP_KEYS[*]+"${ROLLUP_KEYS[*]}"} " in *" $k "*) ;; *) ROLLUP_KEYS+=("$k") ;; esac
+done
+for k in "${ROLLUP_KEYS[@]+"${ROLLUP_KEYS[@]}"}"; do
+  REPO_CELLS=(); REPO_APPROX=false
+  for i in "${!DELIVERED_REPOS[@]}"; do
+    if [[ "${DELIVERED_REPOS[$i]}" == "$k" ]]; then
+      REPO_CELLS+=("${DELIVERED_CELLS[$i]}")
+      [[ "${DELIVERED_APPROX[$i]}" == true ]] && REPO_APPROX=true
+    fi
+  done
+  ROLLUP_PREFIX=""
+  [[ "$BOARD_ALL_REPOS" == true ]] && ROLLUP_PREFIX="$k: "
+  [[ "$REPO_APPROX" == true ]] && ROLLUP_PREFIX="${ROLLUP_PREFIX}approximately "
+  ROLLUP=$(rollup_line "${REPO_CELLS[@]+"${REPO_CELLS[@]}"}")
+  [[ -n "$ROLLUP" ]] && printf '%s%s\n' "$ROLLUP_PREFIX" "$ROLLUP"
+done
+```
+
+```text
+3 delivered: 2 under plan, 1 over by 22 min
+```
+
+### Refill slot census
+
+Print the latest recorded census below the table, or after the no-round line. Read the exact repo and prefer this session’s record. The helper labels an observed session when the current thread has no census. Set `BOARD_ALL_REPOS=true` for the explicit `--all-repos` mode, otherwise `false`. Under `--all-repos`, label each line with its own repo. An absent or full-board record adds no line. Do not re-evaluate refill or mark a census notified during a board render.
+
+<!-- test-anchor: board-slot-census -->
+```bash
+CENSUS_TOOL="${SESSION_STATE_SH%/*}/lib/pm-slot-census.py"
+CENSUS_REPOS="${EFFECTIVE_REPO:-}"
+if [ "${BOARD_ALL_REPOS:-false}" = true ]; then
+  CENSUS_REPOS="${BOARD_REPOS:-}"
+fi
+if [ -r "$CENSUS_TOOL" ]; then
+  while IFS= read -r CENSUS_REPO; do
+    case "$CENSUS_REPO" in */*) ;; *) continue ;; esac
+    CENSUS_ARGS=(--render --repo "$CENSUS_REPO" --state-helper "$SESSION_STATE_SH")
+    if [ -n "${CLAUDE_SESSION_ID:-}" ]; then
+      CENSUS_ARGS+=(--session "$CLAUDE_SESSION_ID")
+    fi
+    if CENSUS_LINE=$(python3 "$CENSUS_TOOL" "${CENSUS_ARGS[@]}") && [ -n "$CENSUS_LINE" ]; then
+      if [ "${BOARD_ALL_REPOS:-false}" = true ]; then
+        printf '%s · %s\n' "$CENSUS_REPO" "$CENSUS_LINE"
+      else
+        printf '%s\n' "$CENSUS_LINE"
+      fi
+    fi
+  done <<< "$CENSUS_REPOS"
+fi
 ```
 
 ---

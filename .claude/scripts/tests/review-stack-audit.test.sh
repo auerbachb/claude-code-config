@@ -12,11 +12,9 @@
 #                  study window
 # catalog: tests — Tests `/review-stack-audit`'s measurement, drift, and scorecard engines offline through their fixture path
 #
-# The third engine, report-path.sh, moved to .claude/scripts/ when /harness-audit
-# turned out to need it too (#1519), and its cases moved with it to
-# .claude/scripts/tests/report-path.test.sh — including the doc assertions that
-# THIS skill's Step 7 still ships the claim/retry/trap recipe, now checked for
-# both callers in one place rather than once per skill.
+# The third engine, report-path.sh, lives in .claude/scripts/ as a shared helper
+# (#1519), and its cases are in .claude/scripts/tests/report-path.test.sh — which
+# also checks that THIS skill's Step 7 still ships the claim/retry/trap recipe.
 #
 # Every case is OFFLINE. measure.sh is driven through --fixture, which feeds the
 # SAME code path live gh data takes, so these exercise the real classifier
@@ -27,6 +25,7 @@
 # telemetry line to $HOME/.claude/script-usage.log on every invocation, so
 # without this the suite would write into the developer's own log — and this
 # header used to claim otherwise.
+# covers: .claude/reference/ai-review-vendor-claims.md .claude/reference/pricing-matrix.md .claude/skills/review-stack-audit/SKILL.md
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

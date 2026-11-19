@@ -79,12 +79,11 @@ STALE_CLEANUP="$REPO_ROOT/.claude/scripts/stale-cleanup.sh"
 CHIP_REGISTRY="$REPO_ROOT/.claude/scripts/chip-offer-registry.sh"
 ISSUE_CLAIM_TEST="$REPO_ROOT/.claude/scripts/tests/issue-claim.test.sh"
 PR_PREFLIGHT_TEST="$REPO_ROOT/.claude/scripts/tests/pr-preflight.test.sh"
-USAGE_HORIZON_TEST="$REPO_ROOT/.claude/scripts/tests/usage-horizon.test.sh"
 USAGE_LIMIT_TEST="$REPO_ROOT/.claude/hooks/tests/usage-limit-record-handoff-pointer.test.sh"
 LIMIT_CLASSIFY="$REPO_ROOT/.claude/scripts/lib/usage-limit-classify.sh"
 
 for f in "$RELEASE_DECIDE" "$STALE_CLEANUP" "$CHIP_REGISTRY" "$ISSUE_CLAIM_TEST" \
-         "$PR_PREFLIGHT_TEST" "$USAGE_HORIZON_TEST" "$USAGE_LIMIT_TEST" \
+         "$PR_PREFLIGHT_TEST" "$USAGE_LIMIT_TEST" \
          "$LIMIT_CLASSIFY"; do
   [[ -f "$f" ]] || { echo "missing source under test: $f" >&2; exit 1; }
 done
@@ -311,19 +310,6 @@ require_snippet "chip-offer-registry.sh EXPIRES_AT" "$CHIP_EXPIRES" \
 ISO_FROM_NOW="$(sed -n '/^iso_from_now() {/,/^}$/p' "$PR_PREFLIGHT_TEST")"
 require_snippet "pr-preflight.test.sh iso_from_now" "$ISO_FROM_NOW" \
   && check_gnu_first "pr-preflight.test.sh iso_from_now" "$ISO_FROM_NOW"
-
-# usage-horizon.test.sh deliberately uses an ISOLATED-try, regex-validated form
-# rather than a naive `||` chain — the GNU arm must still come first, and the
-# validation gate is what stops a decoy render being trusted even so.
-BACKDATE_READING="$(sed -n '/^backdate_reading() {/,/^}$/p' "$USAGE_HORIZON_TEST")"
-if require_snippet "usage-horizon.test.sh backdate_reading" "$BACKDATE_READING"; then
-  check_gnu_first "usage-horizon.test.sh backdate_reading" "$BACKDATE_READING"
-  if [[ "$BACKDATE_READING" == *'[0-9]{4}-[0-9]{2}-[0-9]{2}T'* ]]; then
-    PASS=$((PASS + 1)); echo "ok   — usage-horizon.test.sh backdate_reading keeps its result-shape gate"
-  else
-    FAIL=$((FAIL + 1)); echo "FAIL — usage-horizon.test.sh backdate_reading lost its result-shape gate"
-  fi
-fi
 
 # lib/usage-limit-classify.sh (issue #1633) — written GNU-first from the start.
 # Pinned here because it is a LIBRARY: two callers depend on its epoch->text

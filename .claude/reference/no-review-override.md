@@ -22,7 +22,7 @@ The auto-loaded rule is the short paragraph in `cr-merge-gate.md` Step 1; this f
 
 Never waived (they sit before the mark): authorship, `BEHIND` / `CONFLICTING` / `DIRTY` / `UNKNOWN` merge state, failing or incomplete build CI, branch-protection required contexts, unresolved threads, human `CHANGES_REQUESTED` (on HEAD or stale), the CODEOWNERS `reviewDecision` note, and an unresolved review tier. Test Plan / AC verification is `/wrap` Step 2.2 and runs unchanged.
 
-**CI.** A pending reviewer check-run (CodeRabbit, CodeAnt, BugBot, Greptile, Graphite — matched by exact app slug, as `ci-status.sh --exclude-reviewers` does) would otherwise hold "CI incomplete" forever and extend the window without limit. When the override applies, the CI reasons are re-derived with `--exclude-reviewers`; the dropped runs are listed in `excluded_reviewer_checks`. A *completed* reviewer check is a verdict, so the override never applies with one present — unless that run is a refusal (rate limit, usage limit, no subscription), which is not a review; see "What counts as a verdict on HEAD" below. A pending reviewer check that branch protection **requires** still blocks through the required-context gate.
+**CI.** A pending reviewer check-run (CodeRabbit, CodeAnt, BugBot, Greptile — matched by exact app slug, as `ci-status.sh --exclude-reviewers` does) would otherwise hold "CI incomplete" forever and extend the window without limit. When the override applies, the CI reasons are re-derived with `--exclude-reviewers`; the dropped runs are listed in `excluded_reviewer_checks`. A *completed* reviewer check is a verdict, so the override never applies with one present — unless that run is a refusal (rate limit, usage limit, no subscription), which is not a review; see "What counts as a verdict on HEAD" below. A pending reviewer check that branch protection **requires** still blocks through the required-context gate. Retired Graphite checks are excluded from both CI views and the verdict inventory. The separate required-context gate still enforces any configured Graphite context. GitHub’s aggregate branch-protection review decision remains authoritative for repositories with a tracked reviewer in CODEOWNERS. If a retired review is still affecting that decision, inspect the review history and use `dismiss-stale-bot-changes.sh --include-retired-graphite` only for a confirmed stale request.
 
 ## What counts as a verdict on HEAD
 
@@ -51,9 +51,29 @@ GitHub records no event for an ordinary push, and a committer date can be days o
 - the PR's `created_at`;
 - the newest `ready_for_review`, `reopened`, or `head_ref_force_pushed` timeline event;
 - the **earliest** `created_at` of a `pull_request`/`pull_request_target` workflow run for HEAD on the PR's own head repo and ref — **required**: those runs exist only once this PR points at HEAD, whereas check-runs on a SHA can predate the PR adopting it (an ordinary push of a SHA already built on another branch leaves no timeline event);
-- the **earliest** `started_at` of the raw (undeduped) HEAD check-runs.
+- the **earliest** `started_at` of the raw (undeduped) HEAD check-runs, excluding the retired Graphite app.
 
 The latest lower bound never understates the push time, so the window can expire late, never early. Ineligible (override off for this evaluation, gate exactly as before): a draft PR, unreadable PR metadata, timeline, or workflow-run list, no such `pull_request` run (so a repo without a `pull_request` workflow never takes the override), a malformed timestamp, no HEAD check-run start time. "Now" is the real clock — deliberately no flag or environment override, so ambient state cannot expire a merge-authorizing window. The anchor is reported as `head_anchor_ts` + `anchor_source`, never as an exact push time.
+
+## Review-request anchor (issue #2194)
+
+The window is counted from the **first review request on HEAD** when one exists, because a reviewer requested after slow CI would otherwise have its wait already spent before anyone asked. The anchor order is:
+
+1. **Review request** — the first comment on HEAD by the PR author whose body has a line that is exactly `@codeant-ai review`, `@coderabbitai review`, or `@coderabbitai full review` (surrounding spaces allowed), posted at or after the push anchor above. `anchor_source` is `review_request`; `request_ts` carries the request time and `push_anchor_ts` the push anchor.
+2. **Push anchor** — otherwise, the HEAD anchor above, unchanged (`anchor_source` is the candidate that won, e.g. `earliest_head_check_start`).
+
+Rules:
+
+- **First request wins.** A later request on the same HEAD never restarts or extends the window.
+- **Old HEAD ignored.** A request posted before the push anchor belongs to an earlier commit and never counts.
+- **Edits count at the edit.** A request is timed at the later of `created_at` and `updated_at`, so an edit that adds a trigger line can only start the window later, never earlier.
+- **Author only.** A request by anyone other than the PR author is ignored. So is trigger text inside a bot comment, and trigger text inside prose or a quote (only a whole line counts). The harness's own trigger scripts post as the author, so their requests count.
+- **Read comments at decision time.** The request anchor uses a fresh paginated read after the HEAD-anchor reads. The original gate snapshot still determines normal verdict coverage. A fresh exact-HEAD verdict also holds the waiver. The next evaluation can observe requests or verdicts posted after the fresh read.
+- **Fail closed.** An unreadable comment page, comment author or body, unknown PR author, or malformed timestamp on a matching request makes the override ineligible (`anchor_unavailable` or `anchor_malformed`).
+
+A request does not make a review happen. Whether or when reviews are requested is a separate concern (increment 2 of #2194). A refused review (rate or usage limit) is still "no verdict", and the clock still runs from the request.
+
+Tests: `.claude/scripts/tests/no-review-override-request-anchor.test.sh` (direct helper cases) and `.claude/scripts/tests/merge-gate-no-review-override.test.sh` (gate-level cases).
 
 ## Configuration
 
@@ -87,7 +107,7 @@ In the base branch's `.claude/pm-config.md` `## Review policy` section, inside a
 - `BEHIND` → never the clean-`BEHIND` admin path. `admin-merge.sh` refuses (`AUTO_PLAIN_REFUSED: reason=no-review-override`, exit 1); rebase via `/fixpr`, re-enter Step 2.1 — the rebased HEAD gets its own window. An unreviewed merge never also takes an admin bypass.
 - A head-pin refusal re-enters Step 2.1.
 
-Then `unreviewed-merge-ledger.sh record --pr N --gate-json -` with the authorizing gate JSON, and the report line becomes `merged PR #N (no AI review — logged)` (or `… — ledger write failed)`).
+Run the merge through `unreviewed-merge-ledger.sh merge --pr N --repo OWNER/REPO --gate-json -`. It checks the repository, PR number, and HEAD in the gate and rechecks the live merge state, then holds the repo/PR snapshot lock through the head-pinned merge. Reviewed squash merges use `merge --sha HEAD` under the same lock. After GitHub confirms the merge, run `unreviewed-merge-ledger.sh record --pr N --repo OWNER/REPO --from-snapshot`. The report line becomes `merged PR #N (no AI review — logged)` (or `… — ledger write failed)`).
 
 **Paid escalation.** `escalate-review.sh` asks `merge-gate.sh` at the two points that would spend on a paid reviewer (formerly `switch_bugbot`, `trigger_greptile`; since issue #1897 both answer `no_reviewer` — [Paid review authorization](review-policy.md#paid-review-authorization)); when the gate is met through the override it emits `gate_met` instead — so `gate_met` means "merge gate met on HEAD" (an approval or this override; stderr names which), and every consumer already branches on it the same way: stop escalating, let the merge gate end polling. The polling loop's own per-cycle `polling-state-gate.sh` → `merge-gate.sh` exit 0 then ends polling. Fails open to the old routing (a gate error changes nothing).
 
@@ -99,9 +119,25 @@ Then `unreviewed-merge-ledger.sh record --pr N --gate-json -` with the authorizi
 
 **For the backfill (Issue #1900):** `unreviewed-merge-ledger.sh list [--repo R] [--pending]` reads it; `backfill --pr N --sha S --status <s> [--repo R]` updates `backfill_status` (starts `pending`) and stamps `backfill_updated_at`; `--detail-json` stores the outcome object. The runner is `backfill-review.sh` — `backfill-review.md`. A bot `CHANGES_REQUESTED` that lands after an override merge is not read by the runner — it reviews the merged diff afresh with the local CLIs.
 
-Exit codes follow `session-state.sh`: 0 ok, 2 usage, 4 refused / invalid / no such entry, 5 write failure, 6 lock timeout, 8 `HOME` unset.
+Exit codes follow `session-state.sh`: 0 ok, 2 usage, 4 refused / invalid / no such entry, 5 write failure, 6 lock timeout, 7 no snapshot, 8 `HOME` unset.
 
 ## Known limits
 
 - 10 minutes will sometimes merge just before a slow CodeRabbit review would have landed. That is accepted; the backfill covers it, and the window is configurable once there is data.
 - A force-push restarts the window (the `head_ref_force_pushed` anchor), so a busy main that keeps a PR `BEHIND` can repeat the wait after each rebase.
+
+## How agents apply it (issue #2150)
+
+The default wait is 10 minutes from the HEAD anchor described above in this file. The waiting agent must arm its own persistent `Monitor` when the review is requested or the push lands. A host app's notification promise or a no-poll instruction never replaces that watch. Only `NO_REVIEW_OVERRIDE_MINUTES` changes or disables the wait; prose in a project instruction file does not. On 2026-11-10 a thread in another repo idled past the wait because the number lived only in this file and nothing timed the wait.
+
+## Verified live (issue #2155)
+
+**2026-11-10/11 — one of three scenarios confirmed.** A fresh desktop-app session with the post-#2151 rules loaded ran the check on PR #2186. Full table, timestamps and per-tick gate output: the results comment on Issue #2155.
+
+- **Self-armed watch: confirmed, with caveats.** The session armed its own `Monitor` in the turn that opened the PR and acted on its first wake nine minutes before `eligible_at`. No host-app notification arrived in three hours, so the watch was the only thing that woke it. The session's brief named the scenario, so it was primed.
+- **Override merge: not exercised.** CodeAnt approved HEAD 90 seconds after the push, so `no_review_override.applied` stayed `false` on every tick and the merge took the reviewed path. On this repo a reviewer answers within about a minute, so the override path has still not been observed live.
+- **Project file demanding a completed review: not run.** It needs a second repository.
+
+Two gaps the run exposed: the desktop `Monitor` expires after 30 minutes and has no persistent mode (Issue #2201, open), and stable-state backoff told a waiting thread to stop polling while the gate was unmet (Issue #2202, fixed by PR #2204 on 2026-11-11).
+
+An explicit reviewer refusal with no known reset time is ranking evidence only. It never satisfies the all-reviewers-unavailable request skip or shortens the ordinary no-review window; all current-HEAD verdict and CI hard stops remain in force.

@@ -12,7 +12,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = (ROOT / '.claude/scripts/ai-quotas.sh').read_text()
+SOURCE = (ROOT / '.claude/scripts/lib/ai-quotas-codex.sh').read_text()
 FUNCTIONS = '\n'.join(re.search(r'^' + name + r'\(\).*?^}', SOURCE,
                                 re.M | re.S)[0]
                       for name in ('codex_supervise_server', 'codex_stop_server',

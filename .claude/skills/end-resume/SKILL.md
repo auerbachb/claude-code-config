@@ -29,7 +29,10 @@ Resolve `execution-pause.sh`, `background-task-registry.sh`, and
 `session-state.sh` using the standard stop-command order: skills worktree,
 then `$HOME/.claude`. Do not execute a current-checkout fallback: this command
 may be invoked from an unrelated or untrusted repository. Parse only
-`--resume-refill`.
+`--resume-refill`. Resolve `lib/legacy-stop-binding.py` from the same installed
+scripts locations as `LEGACY_STOP_BINDING_SH`. Resolve `RESUME_REPO` with
+`session-state.sh --repo-key` and stop on an unresolved repo. Set
+`RESUME_REPO_ARGS=(--repo "$RESUME_REPO")`.
 
 Bind the same session ID `/end` uses. A native conversation UUID takes
 precedence; only an older runtime without one uses the legacy key.
@@ -44,45 +47,97 @@ if [[ "$NATIVE_SESSION_ID" =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12
 fi
 ```
 
-Bash calls do not share shell variables. Start each later Bash call that uses
-`SESSION_ID` by re-running the binding block above. If it does not match the
-verified scope from this step, stop. Always pass a nonempty `--session` for
-registry reads and transitions and execution-gate reads and writes. Never
-omit the registry's session filter: omission means a repo-wide inventory.
+Bash calls do not share shell variables. In each later call rebind `SESSION_ID`
+and `RESUME_REPO` and compare them and the raw legacy key with the verified selection. Carry the
+selected `STOP_SESSION_ID` and any `LEGACY_GATE_TOKEN` unchanged. Use
+`STOP_SESSION_ID` for the old gate, task inventory and task transitions.
+The successor uses the native runtime `SESSION_ID`. Always pass the verified
+repo and a nonempty session to registry and gate operations.
 
-Before clearing the gate, require all three helpers to be resolved and readable.
-If the native UUID and raw legacy key differ, check the raw key before any
-inventory, clear, refill write, or launch. `/go-on` classification can recognize
-a stop under that key, but neither it nor a `default` record establishes that
-it belongs to this conversation. Refuse an active or unreadable alternate gate;
-leave both gates untouched and report the ambiguity. Never use the alternate
-key as a fallback clear. Recover such a stop only from its verified original
-session context.
+Before inventory or any write, check the raw legacy key when it differs from
+the native UUID. An active legacy gate is eligible only when the installed
+verifier correlates one successful activation with literal or statically bound arguments in the selected native
+transcript with the same repo and gate. Ambiguous or unreadable evidence leaves
+both gates and all tasks untouched. Recover from the original session context
+if independent evidence is unavailable. The verifier scans the active, primary and registered Claude transcript roots. It holds when the bounded inventory cannot rule out a competing activation.
 
 <!-- test-anchor: end-resume-other-gate -->
 
 ```bash
 : "${SESSION_ID:?bind the verified resume session in this shell}"
 LEGACY_GATE_SESSION_ID="${CLAUDE_SESSION_ID:-default}"
+STOP_SESSION_ID="$SESSION_ID"
+LEGACY_GATE_TOKEN=''
+LEGACY_ALREADY_CLEARED=0
 if [[ "$SESSION_ID" != "$LEGACY_GATE_SESSION_ID" ]]; then
-  OTHER_GATE_STATUS=$("$EXECUTION_PAUSE_SH" --status --session "$LEGACY_GATE_SESSION_ID" 2>/dev/null) || OTHER_GATE_STATUS=unreadable
-  if [[ "$OTHER_GATE_STATUS" != inactive ]]; then
+  OTHER_GATE_STATUS=$("$EXECUTION_PAUSE_SH" ${RESUME_REPO_ARGS[@]+"${RESUME_REPO_ARGS[@]}"} \
+    --status --session "$LEGACY_GATE_SESSION_ID" 2>/dev/null) || OTHER_GATE_STATUS=unreadable
+  if [[ -n "${LEGACY_STOP_BINDING_SH:-}" && -n "${RESUME_REPO:-}" ]]; then
+    if [[ "$OTHER_GATE_STATUS" == active ]]; then
+      LEGACY_PROOF=$("$LEGACY_STOP_BINDING_SH" --repo "$RESUME_REPO" \
+        --native-session "$SESSION_ID" --legacy-session "$LEGACY_GATE_SESSION_ID") || LEGACY_PROOF=''
+      if [[ -n "$LEGACY_PROOF" ]]; then
+        LEGACY_GATE_TOKEN=$(jq -er --arg repo "$RESUME_REPO" --arg native "$SESSION_ID" \
+          --arg old "$LEGACY_GATE_SESSION_ID" '
+          select(.verdict == "verified" and .repo == $repo and .native_session == $native
+                 and .legacy_session == $old) | .gate_token | select(test("^[a-f0-9]{64}$"))
+        ' <<< "$LEGACY_PROOF") || LEGACY_GATE_TOKEN=''
+      fi
+      if [[ -n "$LEGACY_GATE_TOKEN" ]]; then
+        NATIVE_GATE_STATUS=$("$EXECUTION_PAUSE_SH" --repo "$RESUME_REPO" \
+          --status --session "$SESSION_ID") || NATIVE_GATE_STATUS=unreadable
+        if [[ "$NATIVE_GATE_STATUS" == inactive ]]; then
+          STOP_SESSION_ID="$LEGACY_GATE_SESSION_ID"
+        fi
+      fi
+    elif [[ "$OTHER_GATE_STATUS" == inactive ]]; then
+      RESUME_SCOPE_RC=0
+      RESUME_SCOPE=$("$EXECUTION_PAUSE_SH" --repo "$RESUME_REPO" --legacy-resume-scope \
+        --session "$LEGACY_GATE_SESSION_ID" --native-session "$SESSION_ID") || RESUME_SCOPE_RC=$?
+      if [[ "$RESUME_SCOPE_RC" -eq 0 && "$RESUME_SCOPE" == "$LEGACY_GATE_SESSION_ID" ]]; then
+        STOP_SESSION_ID="$LEGACY_GATE_SESSION_ID"
+        LEGACY_ALREADY_CLEARED=1
+      elif [[ "$RESUME_SCOPE_RC" -ne 3 ]]; then
+        OTHER_GATE_STATUS=unreadable
+      fi
+    fi
+  fi
+  if [[ "$OTHER_GATE_STATUS" != inactive && "$STOP_SESSION_ID" == "$SESSION_ID" ]]; then
     echo 'BLOCKED: an alternate legacy gate is active or unreadable. No gate was cleared; verify the original stopped session before resuming.' >&2
     exit 1
   fi
 fi
 ```
 
-Then run `background-task-registry.sh --list --session "${SESSION_ID:?missing resume scope}"`
-and use `session-state.sh` to read the repo key and refill state. If either inventory is unavailable or malformed,
-report a degraded resume and leave the execution gate closed. If
-`execution-pause.sh` is missing or cannot clear this session's gate, stop without
-re-arming anything. A partial resume behind an unreadable inventory is worse
-than a visible no-op.
+Then list tasks with
+`background-task-registry.sh --repo "$RESUME_REPO" --list --session "$STOP_SESSION_ID"`
+and read the refill state. If either read is unavailable or malformed, report
+the hold and leave the execution gate closed.
 
 ## Step 1: Clear the execution gate
 
-Call `execution-pause.sh --clear --session "${SESSION_ID:?missing resume scope}"`.
+A first legacy resume clears the exact verified gate under the existing state
+lock. If the native gate or legacy snapshot changed, stop before any refill
+or task write. An interrupted legacy resume can continue from the exact
+receipt without clearing a gate again. The native path uses `execution-pause.sh --clear`.
+
+<!-- test-anchor: end-resume-clear-selected -->
+
+```bash
+: "${STOP_SESSION_ID:?missing stop scope}" "${SESSION_ID:?missing runtime scope}" "${RESUME_REPO:?missing repo}"
+if [[ "$STOP_SESSION_ID" == "$SESSION_ID" ]]; then
+  "$EXECUTION_PAUSE_SH" --repo "$RESUME_REPO" --clear --session "$STOP_SESSION_ID"
+elif [[ "${LEGACY_ALREADY_CLEARED:-0}" -eq 1 ]]; then
+  RESUME_SCOPE=$("$EXECUTION_PAUSE_SH" --repo "$RESUME_REPO" --legacy-resume-scope \
+    --session "$STOP_SESSION_ID" --native-session "$SESSION_ID") || exit $?
+  [[ "$RESUME_SCOPE" == "$STOP_SESSION_ID" ]]
+else
+  "$EXECUTION_PAUSE_SH" --repo "$RESUME_REPO" --clear --session "$STOP_SESSION_ID" \
+    --expect-legacy-token "${LEGACY_GATE_TOKEN:?missing legacy proof}" --native-session "$SESSION_ID"
+fi
+```
+
+Stop on a failed clear or receipt check before continuing.
 This explicit human invocation authorizes new background starts again. Do not
 clear `.repos[REPO].refill.paused` unless `--resume-refill` was supplied.
 
@@ -104,8 +159,10 @@ report the existing identity.
 For a stopped entry that still needs a launch, atomically claim it before the
 runtime check with:
 
+<!-- test-anchor: end-resume-reserve-task -->
+
 ```bash
-"$TASK_REGISTRY_SH" --transition --session "${SESSION_ID:?bind the verified resume session}" \
+"$TASK_REGISTRY_SH" --repo "$RESUME_REPO" --transition --session "${STOP_SESSION_ID:?bind the verified stop session}" \
   --task-id "$TASK_ID" --status rearming --from-status stopped
 ```
 
@@ -117,8 +174,25 @@ rearmed`. Because the compare-and-set runs under the registry lock, concurrent
 `/end-resume` invocations cannot both launch the same continuation.
 
 `rearming` is a reservation, not a stoppable runtime identity, and is excluded
-from registry `--live` results. Immediately before launching, re-check the
-selected execution gate and repeat the alternate-key status check from Step 0.
+from registry `--live` results. Immediately before launching, require exact `inactive` status for both the
+native runtime and raw legacy key in the verified repo. Check each distinct
+key once. For legacy recovery also revalidate the continuation receipt. The PreToolUse launch hook checks the bound legacy gate again while a task is reserved.
+
+<!-- test-anchor: end-resume-prelaunch-gates -->
+
+```bash
+: "${SESSION_ID:?missing runtime scope}" "${STOP_SESSION_ID:?missing stop scope}" "${RESUME_REPO:?missing repo}"
+for gate_scope in "$SESSION_ID" "${LEGACY_GATE_SESSION_ID:?missing checked legacy scope}"; do
+  gate_status=$("$EXECUTION_PAUSE_SH" --repo "$RESUME_REPO" --status --session "$gate_scope") || exit 1
+  [[ "$gate_status" == inactive ]] || exit 1
+  [[ "$SESSION_ID" != "$LEGACY_GATE_SESSION_ID" ]] || break
+done
+if [[ "$STOP_SESSION_ID" != "$SESSION_ID" ]]; then
+  RESUME_SCOPE=$("$EXECUTION_PAUSE_SH" --repo "$RESUME_REPO" --legacy-resume-scope \
+    --session "$STOP_SESSION_ID" --native-session "$SESSION_ID") || exit $?
+  [[ "$RESUME_SCOPE" == "$STOP_SESSION_ID" ]] || exit 1
+fi
+```
 If either check blocks launch, return the reservation to `stopped` before
 exiting. A concurrent `/end` or `/pause` activation blocks the new launch.
 A successful successor registers its own runtime ID through the normal launch hook before the old reservation becomes `rearmed`, so shutdown
@@ -161,7 +235,7 @@ above), and only with a resolved repo key:
 # `--repo-key` prints `_unknown` and exits 0 when it cannot resolve a repo, so
 # an emptiness test alone never fires — normalise the sentinel, or the watch is
 # armed on a scope no render will ever write to.
-REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
+REPO_KEY="$RESUME_REPO"
 [[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""
 TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh) || TABLE_FRESHNESS_SH=""
 if [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" ]]; then
@@ -170,11 +244,11 @@ if [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" ]]; then
   ACTIVE_COUNT=<pipelines re-armed above, running + queued>
   if [[ "${ACTIVE_COUNT:-}" =~ ^[0-9]+$ ]] && (( ACTIVE_COUNT > 0 )); then
     if "$TABLE_FRESHNESS_SH" --note-rendered --active "$ACTIVE_COUNT" \
-         --repo "$REPO_KEY" --session "${CLAUDE_SESSION_ID:-default}" \
+         --repo "$REPO_KEY" --session "$SESSION_ID" \
          --surface end-resume; then
       # Hand `--arm-command` output to the Monitor tool with persistent: true.
       "$TABLE_FRESHNESS_SH" --arm-command --repo "$REPO_KEY" \
-        --session "${CLAUDE_SESSION_ID:-default}"
+        --session "$SESSION_ID"
     else
       echo 'DEGRADED: table-freshness clock not recorded on resume — floor not re-armed; re-render the "Running now" table on every heartbeat'
     fi

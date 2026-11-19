@@ -29,7 +29,7 @@
 #
 # Guarded surfaces:
 #   Every directory published by setup-skills-worktree.sh from
-#   .claude/skills/*/ (SKILL.md + references/*.md, plus the issue-maker pilot modules/**/*.md)
+#   .claude/skills/*/ (SKILL.md + references/*.md, plus dispatcher modules/**/*.md)
 #   .claude/agents/*.md
 #   .claude/reference/chip-launching.md
 #
@@ -105,9 +105,9 @@ for skill in "${SKILLS[@]}"; do
     continue
   fi
   guarded_files+=("$f")
-  # Only the issue-maker pilot currently uses the dispatcher modules/ layout.
+  # The issue-maker and PM dispatchers resolve Markdown modules in this layout.
   # Treat a failed enumeration as missing coverage, never an empty clean set.
-  if [[ "$skill" == "issue-maker" ]]; then
+  if [[ "$skill" == "issue-maker" || "$skill" == "pm" ]]; then
     module_files=""
     if [[ ! -d ".claude/skills/${skill}/modules" ]]; then
       echo "::error::Guarded module directory missing: .claude/skills/${skill}/modules"
@@ -119,6 +119,15 @@ for skill in "${SKILLS[@]}"; do
     elif [[ -z "$module_files" ]]; then
       echo "::error::No guarded module sources: .claude/skills/${skill}/modules"
       missing=$((missing + 1))
+    fi
+    if [[ "$skill" == pm && -d ".claude/skills/pm/modules" ]]; then
+      if ! module_links=$(find ".claude/skills/pm/modules" -type l -print); then
+        echo "::error::Cannot verify PM module links"
+        missing=$((missing + 1))
+      elif [[ -L ".claude/skills/pm/modules" || -n "$module_links" ]]; then
+        echo "::error::PM module sources must be regular files in the skill module tree"
+        missing=$((missing + 1))
+      fi
     fi
     while IFS= read -r module; do
       [[ -n "$module" ]] && guarded_files+=("$module")
@@ -338,7 +347,7 @@ elif [[ -z "$canonical_claim" ]]; then
 elif [[ "$canonical_claim" != *"$WORKTREE_PREFIX"issue-claim.sh* ]]; then
   err "${CHIP_LAUNCHING}: the claim bullet does not carry the skills-worktree candidate — a generated chip runs in another repo, where a bare .claude/scripts path does not exist"
 else
-  for skill in pm prompt wave issue-maker; do
+  for skill in pm wave issue-maker; do
     f=".claude/skills/${skill}/SKILL.md"
     if [[ "$skill" == "issue-maker" ]]; then
       f=".claude/skills/${skill}/modules/handoff.md"

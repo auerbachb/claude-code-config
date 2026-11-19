@@ -77,6 +77,7 @@
 #     BOUNDED_CLOCK_UNREADABLE  1 when `date` failed and the call was killed
 #                            rather than run unbounded — a distinct diagnosis
 #                            from an elapsed-time timeout, so say which it was
+#     BOUNDED_CHILD_UNREAPED  1 when the child is still alive after the reap bound
 #   Optional knobs:
 #     BOUNDED_REQUIRE_OUTPUT=1  Only trust a completed-but-late child when it
 #                            left output behind. For a caller whose ANSWER is
@@ -149,6 +150,7 @@ run_bounded() { # bound_secs, command...
   local bound="$1"; shift
   BOUNDED_TIMED_OUT=0
   BOUNDED_CLOCK_UNREADABLE=0
+  BOUNDED_CHILD_UNREAPED=0
   : > "$CAPTURE"
   : > "$CAPTURE_ERR"
 
@@ -255,10 +257,13 @@ run_bounded() { # bound_secs, command...
     # Still alive after SIGKILL means wedged in uninterruptible I/O, which no
     # signal can end — that is the kernel's call, not ours. What we can stop is
     # the contamination (see BOUNDED_CAPTURE_TEMPLATE above).
-    if [[ -n "${BOUNDED_CAPTURE_TEMPLATE:-}" ]] && kill -0 "$pid" 2>/dev/null; then
-      ORPHANED_CAPTURES+=("$CAPTURE" "$CAPTURE_ERR")
-      CAPTURE="$(mktemp "$BOUNDED_CAPTURE_TEMPLATE")"
-      CAPTURE_ERR="$(mktemp "${BOUNDED_CAPTURE_ERR_TEMPLATE:-$BOUNDED_CAPTURE_TEMPLATE}")"
+    if kill -0 "$pid" 2>/dev/null; then
+      BOUNDED_CHILD_UNREAPED=1
+      if [[ -n "${BOUNDED_CAPTURE_TEMPLATE:-}" ]]; then
+        ORPHANED_CAPTURES+=("$CAPTURE" "$CAPTURE_ERR")
+        CAPTURE="$(mktemp "$BOUNDED_CAPTURE_TEMPLATE")"
+        CAPTURE_ERR="$(mktemp "${BOUNDED_CAPTURE_ERR_TEMPLATE:-$BOUNDED_CAPTURE_TEMPLATE}")"
+      fi
     fi
     BOUNDED_TIMED_OUT=1
     return 124

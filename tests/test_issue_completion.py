@@ -1,0 +1,466 @@
+"""Exercise the real completion CLI against an isolated, stateful GitHub fixture."""
+import json
+import os
+import shlex
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+HELPER = Path(__file__).parents[1] / '.claude/scripts/lib/issue_completion.py'
+MERGE = 'a' * 40
+ISSUE_REVISION = '2026-11-04T20:00:00Z'
+FAKE_GH = r'''#!/usr/bin/env python3
+import json,os,signal,sys
+from pathlib import Path
+root=Path(os.environ['COMPLETION_FIXTURE']); args=sys.argv[1:]
+with (root/'calls').open('a') as f:f.write(json.dumps(args)+'\n')
+mode=(root/'mode').read_text(); state=json.loads((root/'state').read_text())
+def save():
+ (root/'state').write_text(json.dumps(state))
+if mode=='api-error':sys.exit(1)
+if mode=='invalid-json':print('{');sys.exit(0)
+if '--method' in args:
+ if mode=='write-error':sys.exit(1)
+ state['state']='CLOSED';state['writes']+=1
+ if mode in ('reopen-during-close','reopen-after-close'):state['reopen_seen']=True
+ if mode=='reopen-after-close':state['state']='OPEN'
+ if mode in ('edit-during-close','edit-with-interruption'):state['body']='Additional unfinished requirement'
+ save()
+ if mode in ('interrupted','edit-with-interruption'):os.kill(os.getppid(),signal.SIGKILL)
+ print(json.dumps({'state':'closed'}));sys.exit(0)
+query=next(a[6:] for a in args if a.startswith('query='))
+if 'pullRequest(number:' in query:
+ d=json.loads((root/'pr').read_text())
+ if d['data'].get('repository') is None:print(json.dumps(d));sys.exit(0)
+ links=d['data']['repository']['pullRequest']['closingIssuesReferences']['nodes']
+ if mode=='unlinked-at-preflight' and state.get('reads',0)>=1:
+  links.clear()
+ for node in links:
+  if node['number']==7 and node['repository']['nameWithOwner']=='owner/consumer':node['state']=state['state']
+ print(json.dumps(d))
+else:
+ number=int(next(a[7:] for a in args if a.startswith('number=')))
+ state['reads']=state.get('reads',0)+1
+ if mode=='closed-at-preflight' and state['reads']>=2:state['state']='CLOSED'
+ reopened=mode=='reopened' or state.get('reopen_seen') or (mode=='reopen-at-preflight' and state['reads']>=2)
+ save()
+ node=dict(__typename='PullRequest' if mode=='wrong-type' else 'Issue',number=number,
+           state='OPEN' if mode=='delayed' else state['state'],closedAt=None,
+           title='Issue to verify',body=state.get('body','Accepted scope'),comments={'totalCount':0},
+           updatedAt='2026-11-05T00:00:00Z' if reopened or (mode=='edited-at-preflight' and state['reads']>=2) else '2026-11-04T20:00:00Z',
+           url='https://github.com/owner/consumer/issues/'+str(number),
+           repository={'nameWithOwner':'owner/consumer'},
+           timelineItems={'nodes':[{'createdAt':'2026-11-05T00:00:00Z'}] if reopened else []})
+ print(json.dumps({'data':{'repository':{'nameWithOwner':'owner/consumer','issueOrPullRequest':node}}}))
+'''
+
+
+class Completion(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='issue-1973-completion-')
+        self.root = Path(self.temporary.name).resolve()
+        self.home = self.root/'home'; self.home.mkdir(mode=0o700)
+        binary = self.root/'bin'; binary.mkdir()
+        stub = binary/'gh'; stub.write_text(FAKE_GH); stub.chmod(0o700)
+        self.env = dict(os.environ, HOME=str(self.home), COMPLETION_FIXTURE=str(self.root), PATH=str(binary)+os.pathsep+os.environ['PATH'])
+        self.mode('normal')
+        self.state = dict(state='OPEN', writes=0)
+        self.write_state()
+        self.pr = dict(data=dict(viewer=dict(login='owner'),repository=dict(nameWithOwner='owner/consumer',defaultBranchRef=dict(name='main'),pullRequest=dict(number=20,state='MERGED',mergedAt='2026-11-04T21:22:58Z',headRefOid='b'*40,baseRefName='main',url='https://github.com/owner/consumer/pull/20',author=dict(login='owner'),mergeCommit=dict(oid=MERGE),closingIssuesReferences=dict(pageInfo=dict(hasNextPage=False),nodes=[self.node(7)])))))
+        self.write_pr()
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def node(self, number, repo='owner/consumer', state='OPEN'):
+        return dict(__typename='Issue',number=number,state=state,closedAt=None,url='https://github.com/'+repo+'/issues/'+str(number),repository=dict(nameWithOwner=repo))
+
+    def mode(self, value):
+        (self.root/'mode').write_text(value)
+
+    def write_state(self):
+        (self.root/'state').write_text(json.dumps(self.state))
+
+    def write_pr(self):
+        (self.root/'pr').write_text(json.dumps(self.pr))
+
+    def run_helper(self, *extra):
+        p = subprocess.run([sys.executable,str(HELPER),'--repo','owner/consumer','--pr','20',*extra],env=self.env,capture_output=True,text=True,timeout=15)
+        self.assertEqual(p.stderr,'')
+        if p.returncode < 0:
+            return p.returncode, None
+        result = json.loads(p.stdout)
+        self.assertEqual(result['owner_repo'],'owner/consumer')
+        return p.returncode, result
+
+    def complete(self, *extra):
+        return self.run_helper('--complete-issue','7','--scope-verified','--expected-merge',MERGE,'--expected-issue-updated-at',ISSUE_REVISION,*extra)
+
+    def writes(self):
+        return json.loads((self.root/'state').read_text())['writes']
+
+    def test_existing_closure_requires_scope_verification_without_a_write(self):
+        rc,x=self.run_helper();self.assertEqual(rc,1);self.assertEqual(self.writes(),0)
+        self.assertEqual(x['issues'][0]['disposition'],'scope_verification_required')
+        self.state['state']='CLOSED';self.write_state()
+        for flags in ((), ('--scope-verified','--expected-merge','c'*40)):
+            rc,x=self.run_helper(*flags);self.assertEqual(rc,1)
+            self.assertEqual(x['issues'][0]['state'],'CLOSED')
+            self.assertEqual(x['error_class'],'closed_scope_verification_required')
+        rc,x=self.run_helper('--retain-issue','7=partial_scope','--expected-merge',MERGE)
+        self.assertEqual(rc,1);self.assertEqual(x['outcome'],'pending')
+        rc,x=self.run_helper('--scope-verified','--expected-merge',MERGE)
+        self.assertEqual(rc,0);self.assertEqual(x['outcome'],'verified');self.assertEqual(self.writes(),0)
+
+    def test_single_issue_completion_and_duplicate_resume(self):
+        rc,x=self.complete();self.assertEqual(rc,0);self.assertEqual(self.writes(),1)
+        self.assertEqual(x['issues'][0]['state'],'CLOSED')
+        path=Path(x['receipt_path']);self.assertEqual(path.stat().st_mode&0o777,0o600)
+        self.assertEqual(json.loads(path.read_text())['outcome'],'verified')
+        rc,x=self.complete();self.assertEqual(rc,0);self.assertEqual(self.writes(),1)
+
+    def test_incomplete_scope_and_wrong_merge_never_close(self):
+        for options in [[],['--expected-merge',MERGE],['--scope-verified'],['--scope-verified','--expected-merge','c'*40]]:
+            with self.subTest(options=options):
+                rc,x=self.run_helper('--complete-issue','7',*options);self.assertEqual(rc,3);self.assertEqual(self.writes(),0)
+
+    def test_unmerged_nondefault_or_foreign_author_never_close(self):
+        pr=self.pr['data']['repository']['pullRequest']
+        for field,value in [('state','OPEN'),('baseRefName','integration'),('author',dict(login='other'))]:
+            previous=pr[field];pr[field]=value;self.write_pr()
+            with self.subTest(field=field):
+                rc,x=self.complete();self.assertEqual(rc,3);self.assertEqual(self.writes(),0)
+            pr[field]=previous
+
+    def test_unselected_linked_issue_remains_pending(self):
+        pr=self.pr['data']['repository']['pullRequest'];pr['closingIssuesReferences']['nodes'].append(self.node(8));self.write_pr()
+        rc,x=self.complete();self.assertEqual(rc,1);self.assertEqual(self.writes(),1)
+        self.assertEqual(x['outcome'],'pending');self.assertEqual(x['issues'][1]['state'],'OPEN')
+
+    def test_single_close_does_not_attest_for_another_closed_link(self):
+        links = self.pr['data']['repository']['pullRequest']['closingIssuesReferences']['nodes']
+        links.append(self.node(8, state='CLOSED'))
+        self.write_pr()
+        rc, report = self.complete()
+        self.assertEqual(rc, 1)
+        self.assertEqual(report['outcome'], 'pending')
+        self.assertEqual(self.writes(), 1)
+        rc, report = self.run_helper('--scope-verified', '--expected-merge', MERGE)
+        self.assertEqual(rc, 0)
+        self.assertEqual(report['outcome'], 'verified')
+        self.assertEqual(self.writes(), 1)
+
+    def test_same_number_foreign_repo_not_selected(self):
+        pr=self.pr['data']['repository']['pullRequest'];pr['closingIssuesReferences']['nodes']=[self.node(7,'other/repo')];self.write_pr()
+        rc,x=self.complete();self.assertEqual(rc,3);self.assertEqual(self.writes(),0)
+        self.assertEqual(x['issues'][0]['disposition'],'foreign_retained')
+
+    def test_no_issue_delivery_requires_explicit_pinned_disposition(self):
+        self.pr['data']['repository']['pullRequest']['closingIssuesReferences']['nodes']=[];self.write_pr()
+        rc,x=self.run_helper();self.assertEqual(rc,1)
+        rc,x=self.run_helper('--no-issue-verified');self.assertEqual(rc,3)
+        rc,x=self.run_helper('--no-issue-verified','--expected-merge',MERGE)
+        self.assertEqual(rc,0);self.assertTrue(x['no_associated_issues']);self.assertEqual(self.writes(),0)
+        rc,x=self.complete('--no-issue-verified');self.assertEqual(rc,3);self.assertEqual(self.writes(),0)
+        self.pr['data']['repository']['pullRequest']['closingIssuesReferences']['nodes']=[self.node(7)];self.write_pr()
+        rc,x=self.run_helper('--no-issue-verified','--expected-merge',MERGE)
+        self.assertEqual(rc,3);self.assertEqual(self.writes(),0)
+
+    def test_retained_scope_is_explicit_readonly_and_pinned(self):
+        rc,x=self.run_helper('--retain-issue','7=partial_scope');self.assertEqual(rc,3)
+        rc,x=self.run_helper('--retain-issue','7=partial_scope','--expected-merge',MERGE)
+        self.assertEqual(rc,0);self.assertEqual(x['outcome'],'retained');self.assertEqual(self.writes(),0)
+        self.assertEqual(x['retained_scope']['7']['reason'],'partial_scope')
+        for invalid in ['7=unknown','7=', '0=partial_scope']:
+            rc,x=self.run_helper('--retain-issue',invalid,'--expected-merge',MERGE)
+            self.assertEqual(rc,3);self.assertEqual(x['outcome'],'pending')
+        rc,x=self.complete('--retain-issue','7=partial_scope');self.assertEqual(rc,3);self.assertEqual(self.writes(),0)
+
+    def test_retention_does_not_disguise_unknown_or_unselected_work(self):
+        self.pr['data']['repository']['pullRequest']['closingIssuesReferences']['nodes'].append(self.node(8));self.write_pr()
+        rc,x=self.run_helper('--retain-issue','7=owner_decision','--expected-merge',MERGE)
+        self.assertEqual(rc,1);self.assertEqual(x['outcome'],'pending')
+        rc,x=self.run_helper('--retain-issue','7=owner_decision','--retain-issue','8=partial_scope','--expected-merge',MERGE)
+        self.assertEqual(rc,0);self.assertEqual(x['outcome'],'retained');self.assertEqual(self.writes(),0)
+        self.mode('api-error')
+        rc,x=self.run_helper('--retain-issue','7=partial_scope','--expected-merge',MERGE)
+        self.assertEqual(rc,4);self.assertEqual(x['outcome'],'pending')
+
+    def test_missing_closing_link_never_authorizes_automatic_close(self):
+        self.pr['data']['repository']['pullRequest']['closingIssuesReferences']['nodes']=[];self.write_pr()
+        for flags in [(), ('--association-verified',)]:
+            rc, report = self.complete(*flags)
+            self.assertEqual(rc, 3)
+            self.assertEqual(report['error_class'], 'issue_association_unverified')
+        self.assertEqual(self.writes(), 0)
+
+    def test_stale_scope_and_preflight_edit_never_close(self):
+        for flags in ((), ('--expected-issue-updated-at','2026-11-04T19:00:00Z')):
+            rc, report = self.run_helper('--complete-issue','7','--scope-verified','--expected-merge',MERGE,*flags)
+            self.assertEqual(rc, 3)
+            self.assertEqual(report['error_class'], 'issue_scope_revision_unverified')
+        self.state['reads'] = 0
+        self.write_state()
+        self.mode('edited-at-preflight')
+        rc, report = self.complete()
+        self.assertEqual(rc, 3)
+        self.assertEqual(report['error_class'], 'issue_changed_before_close')
+        self.assertEqual(self.writes(), 0)
+
+        self.assertFalse(list(self.home.rglob('pr-20.race-hold.json')))
+        rc, report = self.run_helper('--expected-merge', MERGE, '--retain-issue', '7=partial_scope')
+        self.assertEqual(rc, 0)
+        self.assertEqual(report['outcome'], 'retained')
+        self.assertEqual(report['issues'][0]['state'], 'OPEN')
+        self.assertEqual(self.writes(), 0)
+
+    def test_closing_link_removed_after_scope_read_never_closes(self):
+        self.mode('unlinked-at-preflight')
+        rc, report = self.complete()
+        self.assertEqual(rc, 3)
+        self.assertEqual(report['error_class'], 'delivery_changed_before_close')
+        self.assertEqual(self.writes(), 0)
+
+    def test_api_write_and_delayed_verification_fail_recoverably(self):
+        for mode,expected in [('api-error',4),('invalid-json',4),('write-error',4),('wrong-type',3),('delayed',1)]:
+            with self.subTest(mode=mode):
+                self.state.update(state='OPEN',writes=0);self.write_state();self.mode(mode)
+                rc,x=self.complete();self.assertEqual(rc,expected);self.assertEqual(x['outcome'],'pending')
+                self.assertTrue(Path(x['receipt_path']).is_file())
+                self.mode('normal');rc,x=self.complete();self.assertEqual(rc,0)
+                self.assertEqual(self.writes(),1)
+
+    def test_interruption_after_close_preserves_intent_and_resumes(self):
+        self.mode('interrupted');rc,x=self.complete();self.assertLess(rc,0);self.assertEqual(self.writes(),1)
+        receipts=list(self.home.rglob('pr-20.issue-7.json'));self.assertEqual(len(receipts),1)
+        self.assertEqual(json.loads(receipts[0].read_text())['issues'][0]['disposition'],'closure_pending')
+        self.mode('normal');rc,x=self.complete();self.assertEqual(rc,0);self.assertEqual(self.writes(),1)
+
+    def test_final_preflight_retains_new_reopen_and_accepts_other_closer(self):
+        self.mode('reopen-at-preflight');rc,x=self.complete()
+        self.assertEqual(rc,3);self.assertEqual(x['error_class'],'issue_changed_before_close')
+        self.assertEqual(self.writes(),0);self.assertEqual(json.loads((self.root/'state').read_text())['state'],'OPEN')
+        self.state.update(state='OPEN',writes=0,reads=0);self.write_state();self.mode('closed-at-preflight')
+        rc,x=self.complete();self.assertEqual(rc,0);self.assertEqual(self.writes(),0)
+
+    def test_postwrite_reopen_race_never_reports_verified_completion(self):
+        for mode in ['reopen-during-close','reopen-after-close']:
+            with self.subTest(mode=mode):
+                # A new private home isolates the sticky guard between modes.
+                self.home=self.root/('home-'+mode);self.home.mkdir(mode=0o700);self.env['HOME']=str(self.home)
+                self.state.update(state='OPEN',writes=0,reads=0,reopen_seen=False);self.write_state();self.mode(mode)
+                rc,x=self.complete();self.assertEqual(rc,1)
+                self.assertEqual(x['error_class'],'concurrent_reopen_detected');self.assertEqual(x['outcome'],'pending')
+                self.assertEqual(self.writes(),1)
+                for flags in [(),('--complete-issue','7','--scope-verified','--expected-merge',MERGE),
+                              ('--retain-issue','7=owner_decision','--expected-merge',MERGE)]:
+                    rc,x=self.run_helper(*flags)
+                    self.assertEqual(rc,1);self.assertEqual(x['error_class'],'concurrent_reopen_detected')
+                    self.assertEqual(x['outcome'],'pending');self.assertEqual(self.writes(),1)
+                self.assertTrue(next(self.home.rglob('pr-20.race-hold.json')).is_file())
+
+    def test_scope_change_during_close_keeps_completion_pending_on_retry(self):
+        for mode in ('edit-during-close', 'edit-with-interruption'):
+            with self.subTest(mode=mode):
+                self.home = self.root / ('home-' + mode)
+                self.home.mkdir(mode=0o700)
+                self.env['HOME'] = str(self.home)
+                self.state = dict(state='OPEN', writes=0)
+                self.write_state()
+                self.mode(mode)
+                rc, report = self.complete()
+                if mode == 'edit-during-close':
+                    self.assertEqual(rc, 1)
+                    self.assertEqual(report['error_class'], 'concurrent_scope_change_detected')
+                else:
+                    self.assertLess(rc, 0)
+                self.mode('normal')
+                for retry in (self.run_helper, lambda: self.complete('--repo', 'Owner/Consumer')):
+                    rc, report = retry()
+                    self.assertEqual(rc, 1)
+                    self.assertEqual(report['error_class'], 'concurrent_scope_change_detected')
+                    self.assertEqual(report['outcome'], 'pending')
+                    self.assertEqual(self.writes(), 1)
+
+    def test_unsafe_or_malformed_race_hold_cannot_clear_completion(self):
+        rc,x=self.complete();self.assertEqual(rc,0)
+        path=next(self.home.rglob('pr-20.issue-7.json')).parent/'pr-20.race-hold.json'
+        for content in ['{}','{', '"not an object"']:
+            path.write_text(content);path.chmod(0o600)
+            rc,x=self.run_helper();self.assertEqual(rc,6);self.assertEqual(x['outcome'],'pending')
+        path.unlink();victim=self.root/'hold-victim';victim.write_text('preserve');path.symlink_to(victim)
+        rc,x=self.run_helper();self.assertEqual(rc,6);self.assertEqual(victim.read_text(),'preserve')
+
+    def test_inflight_hold_survives_failed_write_and_recovers_without_duplicate(self):
+        self.mode('write-error');rc,x=self.complete();self.assertEqual(rc,4)
+        hold=next(self.home.rglob('pr-20.race-hold.json'))
+        self.assertEqual(json.loads(hold.read_text())['phase'],'closure_inflight')
+        self.mode('normal');rc,x=self.run_helper();self.assertEqual(rc,1);self.assertEqual(self.writes(),0)
+        rc,x=self.complete();self.assertEqual(rc,0);self.assertEqual(self.writes(),1);self.assertFalse(hold.exists())
+
+    def test_intentionally_reopened_issue_is_not_reclosed(self):
+        self.mode('reopened');rc,x=self.complete();self.assertEqual(rc,3);self.assertEqual(self.writes(),0)
+        self.assertEqual(x['error_class'],'issue_reopened_after_merge')
+
+    def test_actual_workflow_adapter_scopes_pending_state_and_resume(self):
+        reference = HELPER.parents[2] / 'reference/issue-completion.md'
+        body = reference.read_text().split('<!-- test-anchor: issue-completion-record -->', 1)[1]
+        fence = body.split('```bash\n', 1)[1].split('```', 1)[0]
+        repo = self.root/'consumer'; repo.mkdir()
+        subprocess.run(['git','init','-q',str(repo)],check=True,capture_output=True)
+        subprocess.run(['git','-C',str(repo),'remote','add','origin','https://github.com/owner/consumer.git'],check=True,capture_output=True)
+        script_dir = HELPER.parents[1]
+        harness = '''resolve_script() { printf '%s/%s\\n' "$COMPLETION_SCRIPT_DIR" "$1"; }
+'''
+        harness += fence + '''
+reconcile_issue_completion "$@"
+result=$?
+printf '%s\\n' "$COMPLETION_JSON"
+exit "$result"
+'''
+        env = dict(self.env, COMPLETION_SCRIPT_DIR=str(script_dir), OWNER_REPO='owner/consumer', PR_NUM='20')
+        for mode, expected in [('normal',1),('api-error',4)]:
+            self.mode(mode)
+            result = subprocess.run(['bash','-c',harness,'completion'],cwd=repo,env=env,text=True,capture_output=True,timeout=15)
+            self.assertEqual(result.returncode,expected,result.stderr)
+            state=json.loads((self.home/'.claude/session-state.json').read_text())
+            record=state['repos']['owner/consumer']['prs']['20']['issue_completion']
+            self.assertEqual(record['outcome'],'pending')
+            self.assertNotIn('prs',state)
+            if mode=='normal':
+                state['repos']['other/repo']={'prs':{'20':{'phase':'A','sentinel':'foreign'}}}
+                state['repos']['owner/consumer']['prs']['99']={'phase':'B','sentinel':'unrelated'}
+                (self.home/'.claude/session-state.json').write_text(json.dumps(state))
+            else:
+                self.assertEqual(state['repos']['other/repo']['prs']['20']['sentinel'],'foreign')
+                self.assertEqual(state['repos']['owner/consumer']['prs']['99']['sentinel'],'unrelated')
+        self.mode('normal'); self.state['state']='CLOSED'; self.write_state()
+        result=subprocess.run(['bash','-c',harness,'completion'],cwd=repo,env=env,text=True,capture_output=True,timeout=15)
+        self.assertEqual(result.returncode,1,result.stderr)
+        result=subprocess.run(['bash','-c',harness,'completion','--scope-verified','--expected-merge',MERGE],cwd=repo,env=env,text=True,capture_output=True,timeout=15)
+        self.assertEqual(result.returncode,0,result.stderr)
+        state=json.loads((self.home/'.claude/session-state.json').read_text())
+        self.assertEqual(state['repos']['owner/consumer']['prs']['20']['issue_completion']['outcome'],'verified')
+        self.assertEqual(self.writes(),0)
+        self.state['state']='OPEN';self.write_state()
+        result=subprocess.run(['bash','-c',harness,'completion','--retain-issue','7=partial_scope','--expected-merge',MERGE],cwd=repo,env=env,text=True,capture_output=True,timeout=15)
+        self.assertEqual(result.returncode,0,result.stderr)
+        state=json.loads((self.home/'.claude/session-state.json').read_text())
+        self.assertEqual(state['repos']['owner/consumer']['prs']['20']['issue_completion']['outcome'],'retained')
+        self.assertEqual(self.writes(),0)
+        before=(self.home/'.claude/session-state.json').read_bytes()
+        result=subprocess.run(['bash','-c',harness,'completion'],cwd=repo,
+                              env=dict(env,OWNER_REPO='other/repo'),text=True,capture_output=True,timeout=15)
+        self.assertEqual(result.returncode,3)
+        self.assertEqual((self.home/'.claude/session-state.json').read_bytes(),before)
+
+    def test_wrap_completion_gate_preserves_existing_bookkeeping_order(self):
+        def anchor(path, name):
+            body=path.read_text().split('<!-- test-anchor: '+name+' -->',1)[1]
+            return body.split(chr(96)*3+'bash\n',1)[1].split(chr(96)*3,1)[0]
+        scripts=HELPER.parents[1]
+        claude=scripts.parent
+        reconcile=anchor(claude/'reference/issue-completion.md','issue-completion-record')
+        wrap=anchor(claude/'skills/wrap/SKILL.md','wrap-post-merge-bookkeeping')
+        wrapper='resolve_script() { printf "%s/%s\\n" "$COMPLETION_SCRIPT_DIR" "$1"; }\n'
+        original='\nwrap_post_merge_bookkeeping\n'
+        self.assertIn(original,wrap)
+        harness=wrapper+reconcile+wrap.replace(original,'\nwrap_post_merge_bookkeeping "$@"\n')
+        repo=self.root/'consumer';repo.mkdir()
+        subprocess.run(['git','init','-q',str(repo)],check=True,capture_output=True)
+        subprocess.run(['git','-C',str(repo),'remote','add','origin','https://github.com/owner/consumer.git'],check=True,capture_output=True)
+        record=self.root/'bookkeeping-arguments'
+        helper=self.root/'bookkeeping'
+        helper.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >> "$BOOKKEEPING_RECORD"\nprintf "%s\\n" ' + shlex.quote(json.dumps({'issues':[7]})) + '\n')
+        helper.chmod(0o700)
+        env=dict(self.env,COMPLETION_SCRIPT_DIR=str(scripts),CURRENT_REPO='Owner/Consumer',
+                 PR_NUM='20',POST_MERGE_BOOKKEEPING_SH=str(helper),BOOKKEEPING_RECORD=str(record))
+        def run(*args, **more):
+            return subprocess.run(['bash','-c',harness,'wrap',*args],cwd=repo,env=dict(env,**more),
+                                  text=True,capture_output=True,timeout=15)
+        self.assertEqual(run().returncode,1)
+        self.assertFalse(record.exists())
+        self.assertEqual(run('--complete-issue','7','--scope-verified','--expected-merge',MERGE).returncode,3)
+        self.assertFalse(record.exists())
+        self.assertEqual(run(CURRENT_REPO='foreign/repo').returncode,3)
+        self.assertFalse(record.exists())
+        self.assertEqual(run('--retain-issue','7=partial_scope','--expected-merge',MERGE).returncode,0)
+        self.assertEqual(record.read_text().splitlines(),['20','--repo','Owner/Consumer'])
+        self.assertEqual(self.writes(),0)
+        self.assertEqual(run('--complete-issue','7','--scope-verified','--expected-merge',MERGE,
+                             '--expected-issue-updated-at',ISSUE_REVISION).returncode,0)
+        self.assertEqual(record.read_text().splitlines(),['20','--repo','Owner/Consumer']*2)
+        self.assertEqual(self.writes(),1)
+        self.assertEqual(run().returncode,1)
+        self.assertEqual(run('--scope-verified','--expected-merge',MERGE).returncode,0)
+        self.assertEqual(self.writes(),1)
+
+    def test_final_handoff_publication_is_guarded_and_keeps_pending_work(self):
+        rc,report=self.complete();self.assertEqual(rc,0)
+        scripts=HELPER.parents[1];helper=scripts/'handoff-state.sh'
+        initial=dict(pr_number=20,owner_repo='owner/consumer',head_sha='b'*40,phase_completed='B',worktree=str(self.root/'checkout'))
+        subprocess.run([str(helper),'--owner-repo','owner/consumer','--init','20',json.dumps(initial)],env=self.env,check=True,capture_output=True)
+        handoff=self.home/'.claude/handoffs/owner/consumer/pr-20-handoff.json'
+        source=(HELPER.parents[2]/'reference/issue-completion.md').read_text()
+        fence=source.split('<!-- test-anchor: issue-completion-publish -->',1)[1].split(chr(96)*3+'bash\n',1)[1].split(chr(96)*3,1)[0]
+        harness="""resolve_script() { printf '%s/%s\\n' "$COMPLETION_SCRIPT_DIR" "$1"; }
+""" + fence + '\npublish_completed_handoff\n'
+        env=dict(self.env,COMPLETION_SCRIPT_DIR=str(scripts),PR_NUM='20',OWNER_REPO='Owner/Consumer',HEAD_SHA='b'*40)
+        before=handoff.read_bytes()
+        for invalid in [dict(report,outcome='pending'),dict(report,scope_verified=False),dict(report,head_sha='c'*40),dict(report,outcome='retained',retained_scope={}),dict(report,error_class='github_unavailable')]:
+            p=subprocess.run(['bash','-c',harness],env=dict(env,COMPLETION_JSON=json.dumps(invalid)),text=True,capture_output=True,timeout=15)
+            self.assertEqual(p.returncode,3);self.assertEqual(handoff.read_bytes(),before)
+        p=subprocess.run(['bash','-c',harness],env=dict(env,COMPLETION_JSON=json.dumps(report)),text=True,capture_output=True,timeout=15)
+        self.assertEqual(p.returncode,0,p.stderr)
+        recorded=json.loads(handoff.read_text());self.assertEqual(recorded['phase_completed'],'C')
+        self.assertEqual(recorded['issue_completion']['outcome'],'verified')
+        self.state.update(state='OPEN',writes=0);self.write_state()
+        rc,retained=self.run_helper('--retain-issue','7=partial_scope','--expected-merge',MERGE)
+        self.assertEqual(retained['issues'][0]['state'],'OPEN');self.assertEqual(self.writes(),0)
+        self.assertEqual(rc,0)
+        p=subprocess.run(['bash','-c',harness],env=dict(env,COMPLETION_JSON=json.dumps(retained)),text=True,capture_output=True,timeout=15)
+        self.assertEqual(p.returncode,0,p.stderr)
+        self.assertEqual(json.loads(handoff.read_text())['issue_completion']['outcome'],'retained')
+        handoff.unlink()
+        p=subprocess.run(['bash','-c',harness],env=dict(env,COMPLETION_JSON=json.dumps(report)),text=True,capture_output=True,timeout=15)
+        self.assertNotEqual(p.returncode,0);self.assertFalse(handoff.exists())
+
+    def test_parent_phase_c_completion_is_conditional_and_agent_cleanup_unconditional(self):
+        rules=(HELPER.parents[2]/'rules/phase-protocols.md').read_text()
+        section=rules.split('## Phase C Completion Protocol',1)[1].split('## `/wrap`',1)[0]
+        step=section.split('3. **State:**',1)[1].split('4.',1)[0]
+        self.assertIn('only after verified merge and verified/justified-retained completion',step)
+        self.assertIn('Every outcome removes its returned agent',step)
+        self.assertIn('`merged` or `blocked` after merge', section)
+        self.assertIn('pending → preserve evidence and recover',section)
+
+    def test_unsafe_receipt_lock_is_refused_without_github_calls(self):
+        directory=self.home/'.claude/issue-completion/github.com/owner/consumer'
+        directory.mkdir(parents=True,mode=0o700)
+        victim=self.root/'unrelated';victim.write_text('preserve')
+        lock=directory/'pr-20.issue-7.json.lock';lock.symlink_to(victim)
+        rc,result=self.complete()
+        self.assertEqual(rc,6)
+        self.assertEqual(result['outcome'],'pending')
+        self.assertEqual(victim.read_text(),'preserve')
+        self.assertFalse((self.root/'calls').exists())
+
+    def test_null_or_wrong_repository_response_never_closes(self):
+        repository=self.pr['data']['repository']
+        for value in [None,dict(repository,nameWithOwner='other/repo')]:
+            with self.subTest(value=value):
+                self.pr['data']['repository']=value;self.write_pr()
+                rc,result=self.complete();self.assertIn(rc,[3,4])
+                self.assertEqual(result['outcome'],'pending')
+                self.assertEqual(self.writes(),0)
+        self.pr['data']['repository']=repository
+
+    def test_truncated_associations_fail_closed(self):
+        self.pr['data']['repository']['pullRequest']['closingIssuesReferences']['pageInfo']['hasNextPage']=True;self.write_pr()
+        rc,x=self.complete();self.assertEqual(rc,3);self.assertEqual(self.writes(),0)
+
+
+if __name__ == '__main__':
+    unittest.main()

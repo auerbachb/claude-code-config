@@ -153,8 +153,10 @@ case "${1:-}" in
           printf '{"user":{"login":"%s","type":"User"}}\n' "$_pr_author"
         fi ;;
       repos/*/issues/*/comments*) echo '[]' ;;
-      repos/*/commits/*/check-runs*) echo '{"check_runs":[]}' ;;
+      repos/*/commits/*/check-runs*) echo '{"total_count":0,"check_runs":[]}' ;;
       repos/*/commits/*/statuses*) echo '[]' ;;
+      repos/*/actions/runs*) echo '{"total_count":0,"workflow_runs":[]}' ;;
+      repos/*/commits/*) printf '%-40s\n' "$_head_sha" | tr ' ' '0' ;;
       *) echo '[]' ;;
     esac ;;
   *) exit 1 ;;

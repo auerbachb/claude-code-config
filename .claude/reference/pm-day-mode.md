@@ -25,7 +25,7 @@ Day mode adds exactly two things: **between-turn persistence**, and **a contract
 
 A day tick is `monitor-mode.md`'s existing per-cycle checklist wrapped in a `Monitor`. D1 (reconcile and transition) is items 1–3 of that checklist verbatim; D2 (refill) is `/pm` Step 3.4 verbatim. Only D0, D3, D4, and D5 are new, and three of those are bookkeeping.
 
-This matters more than it looks. The alternative — a day-mode-specific transition loop — would be a second implementation of phase transitions that drifts from `phase-protocols.md` the first time that file changes. The same argument retires `/pm`'s old count-only backlog-health block in favour of running `/pm-clean` inline (Step 1C), and it is why teardown runs the full `/pm-handoff` workflow rather than printing a summary of its own.
+This matters more than it looks. The alternative — a day-mode-specific transition loop — would be a second implementation of phase transitions that drifts from `phase-protocols.md` the first time that file changes. The same argument retires `/pm`'s old count-only backlog-health block in favour of running `/pm-clean` inline (Step 1C), and it is why teardown names the resume command rather than printing a summary of its own.
 
 ### The digest tuple
 
@@ -107,7 +107,20 @@ A usage limit is an explicit upstream signal — different in kind from a local 
 
 **Weekly path.** Full `/end` (default window and portable handoff). No auto-wake Monitor — a days-long sleep cannot be a persistent in-session Monitor, and the durable scheduler is declined for the reasons recorded in `cross-session-durability.md`. One-line notify naming `parked_until`. The user resumes manually with `/end-resume --resume-refill`. **On session restart, a weekly stop is never auto-re-armed** — only `limit_kind="rolling_window"` triggers an in-session auto-wake; a readable non-rolling kind or an unreadable `limit_kind` both require manual resume.
 
-**Thrash guard.** `consecutive_limit_hits` counts how many times a resume has immediately re-hit the limit. On each re-hit, the wake sleep is multiplied by `2^(hits-1)` relative to the reset time. At 3 consecutive hits, the loop stays parked permanently and notifies — no further auto-wake. A successful resume (tick completes without a limit) resets the counter to 0.
+**Thrash guard.** `consecutive_limit_hits` counts how many times a resume has immediately re-hit the limit. On each re-hit, the wake sleep is multiplied by `2^(hits-1)` relative to the reset time. At 3 consecutive hits, the loop stays parked permanently and notifies — no further auto-wake. A successful resume (tick completes without a limit) resets the counter to 0. An absent counter starts at zero. A valid
+nonnegative integer or legacy decimal string increments normally. A malformed
+or unreadable counter keeps the park closed for manual resume.
+
+**Day startup ownership.** Freshness and park routing use one typed snapshot.
+The day start reserves its Monitor generation and heartbeat by comparing
+that snapshot and the inactive fleet state in the same write. It renews
+before dispatch, then uses the exact reservation for initialization and
+publication. A comparison loss stops that attempt and leaves the new
+state intact. Only the unpublished reservation can be released.
+An unpublished start holds through the first turn even if its heartbeat
+ages out. An ended owner can be reclaimed only after verified liveness
+evidence and an exact release. A published stale loop keeps the existing
+recovery rule.
 
 **Session-start reconciliation.** The original day snapshot carries the park and typed wake identity. For a completed rolling-window park, PM can re-arm an empty wake slot. Replacing an occupied slot requires native confirmation that the exact recorded task stopped in its owning session; restart alone cannot prove that. The recovery publisher compares the original binding and writes both new identity fields atomically. Unknown ownership, weekly parks, unreadable state, and an unfinished claim require manual resume.
 
@@ -182,7 +195,13 @@ A generated park also requires the original claim's generation before the public
 
 **The probe bound is three-valued (#1445).** `limit_probe_fires_remaining` had one `null` doing two incompatible jobs: "the reset time is known, so re-arm the sleep-until-reset one-shot" and "the reset is unknown and the bound has not been written yet". The second now writes `-1`: 2D.7 Step 1 stamps it with the claim, so the minutes-long assembly window reads honestly instead of ordering the wrong wake, and `/pause` teardown and `/pause-resume` disarm write it once the wake owning the bound has been stopped — where a `null` would have told a later recovery to re-arm exactly what they had just stopped. `null` keeps its original meaning untouched, so every existing reader of it behaves as before. In the other direction, 2D.6 no longer stamps the field at all unless it wins the slot: since #1622 its record is one `--cas` on `limit_cause` composed with the six `--set` writes that complete it, so the reactive path can no longer overwrite a park it did not open, and `limit_cause` records which path produced the surviving record.
 
-**The probe wake, and why a Monitor cannot do it alone.** With no reset time there is nothing to sleep until, so the wake is one persistent Monitor at 30 minutes, at most 12 fires (≈6 hours, comfortably outside the 5-hour rolling window). Each fire re-invokes `/pm day --probe-wake` rather than checking anything itself: the counter lives in the model's context, so only a turn can read it. A `clear` verdict fires the existing generation-checked `/pause-resume --generation …`; `approaching` deliberately does **not** resume, since a window that has begun refilling but not recovered is exactly what the thrash guard exists to keep the loop out of. The bound lives in `limit_probe_fires_remaining`, not in the loop, so a session restart re-arms with the fires that are left — re-arming a fresh twelve on every restart would make a bounded probe unbounded. Exhausting it stops the Monitor, keeps the park, and says so in one line; a park that never comes back and never mentions it is the silent-watcher failure.
+**The probe wake, and why a Monitor cannot do it alone.** With no reset time there is nothing to sleep until, so the wake is one persistent Monitor at 30 minutes, at most 12 fires (≈6 hours, comfortably outside the 5-hour rolling window). Each fire re-invokes `/pm day --probe-wake` rather than checking anything itself: the counter lives in the model's context, so only a turn can read it. A `clear` verdict fires the existing generation-checked `/pause-resume --generation …`; `approaching` deliberately does **not** resume, since a window that has begun refilling but not recovered is exactly what the thrash guard exists to keep the loop out of. The bound lives in `limit_probe_fires_remaining`, not in the loop, so a session restart re-arms with the fires that are left — re-arming a fresh twelve on every restart would make a bounded probe unbounded. A positive bound keeps the park active after its nominal deadline and
+permits only verified captured-wake recovery or manual resume. A non-clear
+fire consumes one unit atomically against the captured park and wake. A stale
+identity makes no write. A clear fire must claim a fresh resume generation
+while the count is positive. It races the final decrement under the same
+comparison, so an exhausted park stays closed. Exhausting it stops
+the Monitor, keeps the park, and says so in one line; a park that never comes back and never mentions it is the silent-watcher failure.
 
 **No new monitor class.** The probe records its identity in `limit_resume_task_id` / `limit_resume_generation` — the fields `/pause` Step 2 item 4 already tears down, `/pause-resume` Step 5 already disarms, and `/pause-resume` Step 0 already generation-checks. Teardown, restart recovery, and stale-wake rejection therefore needed no new code paths, only the extra field reads that pick *which* wake to re-arm — and, since #1445, the `-1` those two teardown sites write instead of `null` so a restart does not re-arm the wake they stopped.
 
@@ -192,7 +211,7 @@ A generated park also requires the original claim's generation before the public
 
 ## Handoff as the session seam
 
-Teardown runs the full `/pm-handoff` workflow inline and prints its prompt, on **every** exit and pause. A day is expected to be a chain of long sessions rather than one marathon (#773), so the seam between them has to be automatic: a run that ends without a handoff makes the next thread cold-start from nothing, which is the cost this mode exists to remove.
+Teardown prints the resume pointer on **every** exit and pause. A day is expected to be a chain of long sessions rather than one marathon (#773), so the seam between them has to be automatic: a run that ends without its resume pointer leaves the next thread guessing where to start, which is the cost this mode exists to remove.
 
 This is also the intended integration point for the usage-limit wind-down (#824). A wind-down that fires while a day loop is running should reach the same teardown path — stop the Monitor, emit the handoff — rather than growing a second, parallel notion of "the day is over."
 

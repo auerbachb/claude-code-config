@@ -59,6 +59,16 @@ check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
+echo "== Scenario (n3a): a retired Graphite comment quoting an invitation does not invite BugBot =="
+reset_state
+write_commits "$(ts_seconds_ago 7200)"
+GRAPHITE_TRIGGER="$(printf '%s' "$TRIGGER_COMMENT_N3" | jq -c '.user.login = "graphite-app[bot]"')"
+write_state "[]" "[]" "[]" "[$GRAPHITE_TRIGGER]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "Graphite comment leaves BugBot uninvited" "STATUS=no_reviewer paid_route=switch_bugbot" "$OUT"
+
+############################################################################
 echo "== Scenario (n4): trigger comment PREDATES the HEAD commit -> switch_bugbot (a stale invite must not mask an unprovisioned one) =="
 # Same fixture as (n3) with the timestamps swapped: the invite is older than the
 # push, so it belongs to an earlier SHA. Without the freshness filter this reads

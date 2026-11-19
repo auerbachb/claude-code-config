@@ -10,7 +10,7 @@
 #   The desktop app starts the Bash tool and Monitor commands without the
 #   operator's login profile, so HUMAN_QUEUE_DATABASE_URL is often unset there
 #   and every human-queue.sh call would exit 7. The capture hook already solves
-#   this (desk/README.md, "Capture hook", "Finding the store"): the
+#   this (desk/docs/capture-hook.md, "Finding the store"): the
 #   environment, then ${XDG_CONFIG_HOME:-~/.config}/human-queue/database_url
 #   (a file you own, mode 600), then the last literal
 #   `export HUMAN_QUEUE_DATABASE_URL=...` line of the first shell profile that
@@ -65,6 +65,49 @@ dc_run() {
 
 case "${1:-}:${2:-}" in
   -h:*|--help:*|help:*|*:-h|*:--help) dc_run "$@" ;;
+esac
+
+# The queue comes from the account's binding, never from a fallback (issue
+# #2183). `bindings` only reads the registry, so it runs with no store at all.
+# `bind` and `carry-over` must work in an unbound account, so they are exempt;
+# they migrate and record a binding themselves. Every other subcommand needs
+# the account's queue, or it refuses here, before any store contact or
+# register-control.
+# shellcheck source=../bin/lib/bindings.sh
+. "$dc_bin/lib/bindings.sh"
+case "${1:-}" in
+  bindings) dc_run "$@" ;;
+  bind|carry-over) ;;
+  *)
+    if ! dc_schema=$(hqb_test_schema); then
+      dc_schema=""
+    fi
+    # The caller's binding name travels with the schema (issue #2184): the
+    # queue checks it against the owner it recorded. A test schema takes the
+    # name only through hqb_test_binding (hq_test_ names); a real account's
+    # name always comes from the registry row, never from the environment.
+    if [ -z "$dc_schema" ]; then
+      if ! dc_dir=$(hqb_config_dir); then
+        dc_unavailable "cannot find this account's queue: neither CLAUDE_CONFIG_DIR nor HOME is set"
+      fi
+      dc_rc=0
+      hqb_lookup "$dc_dir" || dc_rc=$?
+      case "$dc_rc" in
+        0) dc_schema="$HQB_SCHEMA"; dc_name="$HQB_NAME" ;;
+        3)
+          printf "desk-cli: You can't run the desk here until you configure a queue for this account. Bind it with: %s bind --name <name> --schema <schema>\n" "$dc_bin/desk-cli.sh" >&2
+          exit 4
+          ;;
+        *) dc_unavailable "$HQB_REASON" ;;
+      esac
+    else
+      dc_name=$(hqb_test_binding)
+    fi
+    HUMAN_QUEUE_SCHEMA="$dc_schema"
+    HUMAN_QUEUE_BINDING="$dc_name"
+    export HUMAN_QUEUE_SCHEMA HUMAN_QUEUE_BINDING
+    unset dc_schema dc_name dc_dir dc_rc
+    ;;
 esac
 
 case "${HUMAN_QUEUE_DATABASE_URL:-}" in

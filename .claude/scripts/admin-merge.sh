@@ -67,6 +67,8 @@
 #                       first. A value that cannot be entered is a hard error
 #                       (exit 7) in every mode, never a silent cwd fallback.
 #   --branch <name>     Protected branch (default: the PR's base branch).
+#   --defer-bookkeeping  In --auto-plain, leave post-merge bookkeeping to /wrap
+#                        after its issue completion assessment.
 #   --ac-verified       REQUIRED by --auto-plain. Caller attests it has completed
 #                       cr-merge-gate.md Step 2 — per-criterion Test Plan
 #                       verification against the code at the CURRENT SHA — for this
@@ -137,6 +139,16 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# This path can merge past branch protection, so the merge gate it runs must read
+# the repository's required-check list live: pin the short-lived read cache off
+# for this process and everything it starts (issue #2443; lib/slow-read-cache.sh —
+# a TTL of 0 disables it, and nothing a caller sets can raise it back).
+export SLOW_READ_CACHE_TTL=0
+# Same for the per-PR snapshot of reviews, comments, statuses, check-runs and the
+# HEAD commit (issue #2444; lib/pr-snapshot.sh): nothing this path acts on may be
+# a shared read. SLOW_READ_CACHE_TTL=0 already turns it off; this names it too.
+export PR_SNAPSHOT_TTL=0
+
 # The shared wall-clock bound (issue #1404). Loaded here, consumed only by
 # resolve_repo_path's fallback below — the one git call this script makes
 # itself. Loading is best-effort at this point ON PURPOSE: every other mode,
@@ -153,6 +165,7 @@ fi
 # Post-merge only: preserve pickup evidence before any claim deletion.
 # Keep all three merge shapes on one retryable bookkeeping boundary.
 release_issue_claim() {
+  [[ "$DEFER_BOOKKEEPING" != true ]] || return 0
   if [[ -x "$SCRIPT_DIR/post-merge-bookkeeping.sh" ]]; then
     "$SCRIPT_DIR/post-merge-bookkeeping.sh" "$PR_NUMBER" --repo "$OWNER_REPO" >/dev/null || \
       echo "WARN: post-merge bookkeeping not confirmed for PR #$PR_NUMBER; retry /wrap" >&2
@@ -181,6 +194,7 @@ REVIEWER_OVERRIDE=""
 # not rest on clean-behind-check.sh's ticked-checkbox proxy alone. The caller
 # asserts it ran cr-merge-gate.md Step 2 against the code at the current SHA.
 AC_VERIFIED=false
+DEFER_BOOKKEEPING=false
 # Authorship guard (issue #733): a bypass merge is the most consequential PR
 # write. Refuse non-author PRs unless the caller passes --allow-nonauthor under
 # an explicit per-PR user override.
@@ -212,6 +226,7 @@ while [[ $# -gt 0 ]]; do
       shift 2 ;;
     --force-solo) FORCE_SOLO=true; shift ;;
     --ac-verified) AC_VERIFIED=true; shift ;;
+    --defer-bookkeeping) DEFER_BOOKKEEPING=true; shift ;;
     --allow-nonauthor) ALLOW_NONAUTHOR=true; shift ;;
     --reviewer)
       REVIEWER_OVERRIDE="${2:-}"
@@ -229,6 +244,11 @@ while [[ $# -gt 0 ]]; do
       PR_NUMBER="$1"; shift ;;
   esac
 done
+
+if [[ "$DEFER_BOOKKEEPING" == true && "$MODE" != "auto-plain" ]]; then
+  echo "ERROR: --defer-bookkeeping is only valid with --auto-plain" >&2
+  exit 2
+fi
 
 # --auto-plain + --allow-nonauthor hard refusal (issue #1251 review round).
 # --auto-plain is the one mode Claude may run UNATTENDED — no human confirms

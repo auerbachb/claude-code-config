@@ -45,10 +45,11 @@ OLD="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 # ---- stub script dir ---------------------------------------------------------
 S="$TMP/scripts"
 mkdir -p "$S/lib"
-for f in review-triggers-allowed.sh ci-status.sh check-runs-dedup.sh session-state.sh state-lock.sh; do
+for f in review-triggers-allowed.sh ci-status.sh check-runs-dedup.sh check-runs-snapshot.sh session-state.sh state-lock.sh; do
   cp "$REPO_ROOT/.claude/scripts/$f" "$S/"
 done
-cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$REPO_ROOT/.claude/scripts/lib/codeant-round.jq" "$S/lib/"
+cp "$REPO_ROOT/.claude/scripts/lib/repo-normalizer.sh" "$REPO_ROOT/.claude/scripts/lib/codeant-round.jq" "$REPO_ROOT/.claude/scripts/lib/check-run-conclusions.jq" "$S/lib/"
+cp "$REPO_ROOT/.claude/scripts/lib/check_run_workflows.py" "$S/lib/"
 mkdir -p "$TMP/reference"
 cp "$REPO_ROOT/.claude/reference/session-state-schema.json" "$TMP/reference/"
 SUT="$S/review-triggers-allowed.sh"
@@ -104,7 +105,18 @@ case "$args" in
     printf '{"headRefOid":"%s","state":"%s"}\n' "$FIXTURE_HEAD" "${FIXTURE_PR_STATE:-OPEN}" ;;
   *"/issues/"*"/comments"*) serve "$FX/comments.json" "${FAIL_COMMENTS:-}" ;;
   *"/pulls/"*"/reviews"*) serve "$FX/reviews.json" "${FAIL_REVIEWS:-}" ;;
-  *"/check-runs"*) serve "$FX/checks.json" "${FAIL_CHECKS:-}" ;;
+  *"/check-runs"*)
+    [[ -n "${FAIL_CHECKS:-}" ]] && { echo "HTTP 502" >&2; exit 1; }
+    jq '. + {total_count:(.check_runs|length)}' "$FX/checks.json" ;;
+  *"/actions/runs"*)
+    if [[ -n "${FIXTURE_WORKFLOWS:-}" ]]; then printf '%s\n' "$FIXTURE_WORKFLOWS"; exit 0; fi
+    jq -c --arg head "$FIXTURE_HEAD" '
+      [.check_runs[] | select(.app.slug == "github-actions")]
+      | group_by(.check_suite.id) | map(.[0].check_suite.id as $suite |
+        {id:$suite,workflow_id:$suite,run_attempt:1,event:"push",head_branch:"fixture",head_sha:$head,
+         pull_requests:[],check_suite_id:$suite,html_url:("https://github.com/acme/one/actions/runs/" + ($suite|tostring)),
+         status:"completed",conclusion:"success"})
+      | {total_count:length,workflow_runs:.}' "$FX/checks.json" ;;
   *"/timeline"*) serve "$FX/timeline.json" "${FAIL_TIMELINE:-}" ;;
   *"/commits/"*) serve "$FX/commit.json" "${FAIL_COMMIT:-}" ;;
   *) echo "unexpected gh call: $args" >&2; exit 1 ;;
@@ -144,6 +156,7 @@ set_reviews() { printf '[%s]' "$(IFS=,; echo "$*")" > "$FX/reviews.json"; }
 
 GREEN_OLD="$(run_check build success github-actions 7200)"
 reset() { # <tier json> [tier rc]
+  unset FIXTURE_WORKFLOWS
   export FIXTURE_TIER_OUT="$1" FIXTURE_TIER_RC="${2:-0}"
   export FIXTURE_PROBE_OUT="" FIXTURE_PROBE_RC=0 FIXTURE_HEAD="$HEAD" FIXTURE_PR_STATE=OPEN FIXTURE_PR_FAIL=""
   export FIXTURE_REFUSED="" FIXTURE_CAP_OUT='{"platform":"bugbot","date":"2026-10-08","spent_usd":1,"add_usd":1.58,"cap_usd":10,"status":"ok"}' FIXTURE_CAP_RC=0
@@ -271,6 +284,17 @@ check_eq "threshold default 600" "600" "$(f .settled.threshold_s)"
 check_eq "the refusal guard was asked about HEAD in this repo" "refused $PR $HEAD GH_REPO=$REPO" "$(grep '^refused' "$GUARD_CALLS")"
 check_eq "the daily cap was asked with the rate" "cap bugbot --add-usd 1.58" "$(grep '^cap' "$GUARD_CALLS")"
 check_eq "the tally rides on the cursor decision" "ok" "$(f .reviewers.cursor.daily_cap.status)"
+
+reset "$(tier_json present full)"
+set_checks "$(run_check build success github-actions 60)" "$(run_check 'Graphite / AI Reviews' success graphite-app 3600)"
+set_comments "$(comment 'graphite-app[bot]' '@cursor review' 30)" "$(comment 'graphite-app[bot]' '@codeant-ai review' 30)"
+run
+check_eq "retired app cannot shorten the settle window" "false" "$(f .settled.settled)"
+set_checks "$(run_check build success github-actions 60)" "$(run_check 'Graphite / AI Reviews' success graphite-app 3600 | jq -c 'del(.app)')"
+run
+check_eq "legacy Graphite without a publisher cannot shorten the settle window" "false" "$(f .settled.settled)"
+check_eq "retired app cannot spend Cursor invitations" "0" "$(f .reviewers.cursor.invitations)"
+check_eq "retired app cannot spend CodeAnt invitations" "0" "$(f .reviewers.codeant.invitations)"
 
 reset "$(tier_json invalid full)"
 run
@@ -579,6 +603,28 @@ run --claim cursor
 check_eq "  a cursor claim is still denied, no ledger" "1:null" "$RC:$(ledger cursor)"
 check_eq "coderabbit is unaffected: still only the fallback" "excluded:not_fallback" "$(dec coderabbit)"
 check_eq "coderabbit carries no cap" "null" "$(f '.reviewers.coderabbit.cap')"
+
+echo "== workflow identity survives the real review-trigger CI path =="
+reset "$(tier_json present ci+codeant-one-round)"
+old_check="$(run_check build failure github-actions 7200 | jq '.id=11 | .check_suite.id=1')"
+new_check="$(run_check build success github-actions 3600 | jq '.id=22 | .check_suite.id=2')"
+set_checks "$old_check" "$new_check"
+export FIXTURE_WORKFLOWS="$(jq -cn --arg head "$HEAD" '
+  {total_count:2,workflow_runs:[range(1;3) | . as $id |
+    {id:$id,workflow_id:10,run_attempt:1,event:"push",head_branch:"fixture",head_sha:$head,pull_requests:[],
+     check_suite_id:$id,html_url:("https://github.com/acme/one/actions/runs/"+($id|tostring)),
+     status:"completed",conclusion:(if $id==1 then "failure" else "success" end)}]}')"
+run
+check_eq "completed same-scope predecessor is superseded" "allowed:tier_allows" "$(dec codeant)"
+check_eq "same-scope replacement is green" "green" "$(f .ci)"
+FIXTURE_WORKFLOWS="$(jq '.workflow_runs[0].workflow_id=20' <<<"$FIXTURE_WORKFLOWS")"
+run
+check_eq "different workflow failure remains red" "deferred:ci_red" "$(dec codeant)"
+FIXTURE_WORKFLOWS="$(jq '.workflow_runs[0] |= (.workflow_id=10 | .status="in_progress" | .conclusion=null)' <<<"$FIXTURE_WORKFLOWS")"
+set_checks "$(jq '.status="in_progress" | .conclusion=null' <<<"$old_check")" "$new_check"
+run
+check_eq "unfinished same-scope predecessor stays pending" "deferred:ci_pending" "$(dec codeant)"
+unset FIXTURE_WORKFLOWS
 
 echo "== usage =="
 RC=0; bash "$SUT" >/dev/null 2>&1 || RC=$?

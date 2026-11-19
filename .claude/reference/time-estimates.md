@@ -1,7 +1,7 @@
 # Time Estimate Vocabulary
 
-> This document is the single source of truth for capture-time estimates. All three
-> skills — `/issue-maker`, `/prompt`, `/start-issue` — share this table and format.
+> This document is the single source of truth for capture-time estimates. Both
+> skills — `/issue-maker`, `/start-issue` — share this table and format.
 > The tier table below is derived from measured merge history by the formula in
 > "The Rounds-Based Estimate", and is re-tuned as history accumulates —
 > see [`estimate-actuals.md`](estimate-actuals.md) for the current measured minutes
@@ -142,8 +142,7 @@ The round counts track the measured distribution rather than being picked: the
 `{hi}` of 180 min likewise clears the measured 122-min median and sits 5 min under
 the 185-min mean, where the retired seed value of 90 sat well below both.
 
-**Tier vocabulary** is identical to `tier-inference.md` (issue-maker) and `/prompt`
-Step 5: Heavy / Standard / Light, evaluated using the same signals. **XL is not one of
+**Tier vocabulary** is identical to `tier-inference.md` (issue-maker): Heavy / Standard / Light, evaluated using the same signals. **XL is not one of
 them** — see below.
 
 ### The XL row — a bound marker, not a rounds row (issue #1680)
@@ -198,8 +197,7 @@ them would break the arithmetic each example teaches.
 | Skill | Behavior |
 |-------|----------|
 | `/issue-maker` | Infer tier from the issue signals, look up the estimate line, add `## Estimate` section to the issue body before filing. |
-| `/prompt` | Surface the estimate in the Tier Recommendation output. If the issue body already has `## Estimate`, echo that line; otherwise derive from tier + this table. |
-| `/start-issue` | Surface the estimate in the ready-to-code summary. Same fallback logic as `/prompt`. |
+| `/start-issue` | Surface the estimate in the ready-to-code summary. Same fallback logic as `/issue-maker`. |
 | `/pm` | Show `Est:` line under each suggested issue. Resolved via `estimate-resolve.sh`. |
 | `/subagent` | Show `Est:` line in the launch report and completion summary. Resolved via `estimate-resolve.sh`. |
 | `/wave` | Show batch makespan after the wave block. Computed via `makespan.sh`. |
@@ -309,10 +307,11 @@ included. It replaces the bulleted-list shape, not just augments it.
 | **Issue** | `#N` |
 | **Scope** | Short description, truncated to 40 chars (`cut -c1-40`) so each row stays one line |
 | **Status** | `queued` for a not-yet-launched row; `merged` for one that has landed; otherwise the phase — `Phase A`, `Phase B`, `Phase C` |
+| **Model** | Family name on the issue — `Opus`, `Sonnet`, `Haiku` or `Fable` — for the phase the row shows (see "Model cell" below). `—` when queued or when no readable record exists |
 | **Est** | `Est: {lo}–{hi} min · plan on {bound}` from `estimate-resolve.sh`, or `unestimated` |
 | **Start (ET)** | Wall-clock launch time, e.g. `12:18 PM` |
 | **Projected end (ET)** | On-track: start + planning bound. Over the bound: the pace-scaled revised finish |
-| **Remaining** | On-track: `bound − elapsed`. Over the bound: the overrun marker `+{over} over plan` |
+| **Remaining** | On-track: `bound − elapsed`. Over the bound: the overrun marker `+{over} over plan`. On a `merged` row: the actual against the plan, `{actual} min vs plan {bound}` or `+{over} min over plan` (see "Completed rows") |
 
 **Queued rows carry `—` in all three clock columns** — Start, Projected end, and
 Remaining. Nothing has started, so there is nothing honest to print; the row exists
@@ -324,24 +323,68 @@ same on-track / running-slow semantics the readout above already has.
 
 **Completed rows carry `merged` in Status, and an actual rather than a projection.**
 A row whose PR has landed keeps its recorded Start, shows the delivered clock time in
-`Projected end`, and carries `—` in `Remaining` because nothing remains. The `merged`
-status is what marks that middle cell as a fact instead of a forecast: a landed PR
-must never read as a future-tense claim, and re-labelling the column per row would
-give one table two column meanings. Delivered time is the PR's own `mergedAt`, read
-back like every other timestamp here and never taken from the render-time clock.
+`Projected end`, and carries the actual against the plan in `Remaining`. The `merged`
+status is what marks those cells as facts instead of forecasts: a landed PR must never
+read as a future-tense claim, and re-labelling the column per row would give one table
+two column meanings. Delivered time is the PR's own `mergedAt`, read back like every
+other timestamp here and never taken from the render-time clock.
+
+- **Which start it measures from.** The board's recorded launch time: the
+  `pipeline_started_at` on the PR's `prs` entry, else the issue's `pipelines` `started_at`
+  (`/board` Step 2). It is **not** `estimate-log.sh`'s start, which runs from the issue
+  claim and so reads longer. The two numbers differ; do not compare them.
+- **Actual against plan.** `overrun-check.sh --actual-cell --bound-min M --started-at S
+  --ended-at E` prints `{minutes} min vs plan {M}` when the row landed within its
+  planning bound (floored minutes), or `+{over} min over plan` past it (`+<1 min over
+  plan` under a minute). It reuses the same ISO parse and minute arithmetic as the
+  clock cells; there is no second estimator.
+- **Em dash, never a guess.** An unestimated row (no bound), or a row whose start or
+  `mergedAt` cannot be read, renders `—` in `Remaining`. The Start and Projected-end
+  cells follow their own rules above.
+- **Round roll-up.** One line after the summary, when at least one row is delivered:
+  `3 delivered: 2 under plan, 1 over by 22 min`. Under plan, over plan and unreadable
+  rows partition the delivered count, so the three always sum to it. Several overruns
+  sum their minutes; an unreadable row adds `, N without a readable plan or start`.
+  When the delivered count is approximate (the timestamp fallback), the line says
+  `approximately` in front.
 
 ### Example
 
 ```markdown
 **Running now**
 
-| Issue | Scope | Status | Est | Start (ET) | Projected end (ET) | Remaining |
-|-------|-------|--------|-----|-----------|--------------------|-----------|
-| #1512 | Universal dispatch + progress table | Phase B | Est: 90–180 min · plan on 180 | 12:18 PM | 3:18 PM | 1.4 h |
-| #1489 | Rebuild the escalation retry window | Phase A | Est: 45–90 min · plan on 90 | 12:41 PM | 2:03 PM | +22 min over plan |
-| #1480 | Key catalog entries on normalized path | merged | Est: 15–30 min · plan on 30 | 12:18 PM | 12:44 PM | — |
-| #1504 | Re-anchor the scripts README gate | queued | Est: 15–30 min · plan on 30 | — | — | — |
+| Issue | Scope | Status | Model | Est | Start (ET) | Projected end (ET) | Remaining |
+|-------|-------|--------|-------|-----|-----------|--------------------|-----------|
+| #1512 | Universal dispatch + progress table | Phase B | Sonnet | Est: 90–180 min · plan on 180 | 12:18 PM | 3:18 PM | 1.4 h |
+| #1489 | Rebuild the escalation retry window | Phase A | Opus | Est: 45–90 min · plan on 90 | 12:41 PM | 2:03 PM | +22 min over plan |
+| #1480 | Key catalog entries on normalized path | merged | Haiku | Est: 15–30 min · plan on 30 | 12:18 PM | 12:44 PM | 24 min vs plan 30 |
+| #1504 | Re-anchor the scripts README gate | queued | — | Est: 15–30 min · plan on 30 | — | — | — |
 ```
+
+### Model cell
+
+The Model cell is read from the routing record `model-route.sh` saved for the issue
+before its launch (`task-model-routing.md` §"State and dispatch integration"), never
+from the chat or from a guess:
+
+- **Pre-PR (no PR yet):** `.repos["<key>"].tasks["issue-N"].model_routing["<phase>"].decision.model`
+  in the session state. This is the only time the session record is read.
+- **Once a PR exists:** `.model_routing["issue-N"]["<phase>"].decision.model` in that
+  PR's handoff only. A missing or unreadable handoff, or a missing phase record, renders
+  `—`; the session record is never a fallback here.
+- **`<phase>`** is the letter of the row's Status (`A`, `B`, `C`). A `merged` row shows
+  the latest phase that has a record (`C`, then `B`, then `A`), read from the handoff only.
+  The parent deletes the handoff after the merge, and the session record holds Phase A
+  alone, so a merged row whose handoff is gone renders `—` rather than the Phase A model
+  presented as the latest route. A record that is malformed (not an object with a string
+  model, for example the string `bad`) or holds an unknown model also renders `—` and stops
+  the walk, rather than falling back to an earlier phase.
+- The stored value is a lowercase alias (`haiku`, `sonnet`, `opus`, `fable`); the cell
+  renders its family name. Anything else, a missing field or an unreadable file renders
+  `—`. A queued row renders `—` without a lookup.
+
+`/board` is the renderer that reads this; `/subagent` Steps 7.2 and 8 and `/pm` (which
+renders through `/board`) carry the same column set.
 
 ### Helper: `overrun-check.sh --readout-cells`
 
@@ -507,9 +550,10 @@ drops a guarantee — say so before merging them.
 
 **The guarantee:** while at least one pipeline is running or queued, a full "Running
 now" table is never more than an hour old, whatever mix of one-liners, notifications
-and merge lines the thread emits in between.
+and merge lines the thread emits in between. That holds while wake-ups keep arriving or the floor watch is re-armed; with
+neither, rule 3 bounds the delay by the gap between wake-ups instead of the hour.
 
-Three rules, all owned by `table-freshness.sh` — it holds the floor number and the
+Four rules, all owned by `table-freshness.sh` — it holds the floor number and the
 stale/fresh arithmetic, so no caller re-derives either:
 
 1. **Record every render.** Every site that emits the table — dispatch, heartbeat,
@@ -525,12 +569,34 @@ stale/fresh arithmetic, so no caller re-derives either:
    not a one-liner. Exit 0 (`fresh`, `idle`, `unrecorded`) leaves the one-liner
    available. Pass `--active` whenever the count is known — with no recorded render
    it is what makes the verdict fail closed rather than guess.
+   **Consult the gate on every wake-up, not only before a message.** An orchestrating
+   thread that gets a wake-up of any kind — a sub-agent completion, a CI event, a
+   floor-watch or ceiling-watch expiry notice, or a tick — runs `--check` first. A
+   `stale` verdict renders the full table on that wake-up even when the thread has
+   nothing else to say. This is what keeps the hour honest when the watch itself has
+   died (below).
 3. **A hard floor fires unprompted.** Arm `table-freshness.sh --arm-command` as a
    **persistent `Monitor`** in the same step as the round's first dispatch — the same
    primitive and the same reasoning as the ceiling watch (`scheduling-reliability.md`;
    never `CronCreate`, never chained one-shot wake-ups). The tick prints one line when
    the hour elapses with work still active, deduped per recorded render, so a thread
    re-rendering on its own cadence never sees a floor message at all.
+   **The desktop Monitor expires after 30 minutes** (Issue #2201). A floor watch
+   therefore cannot be relied on for an hour by itself. Each expiry notice is a
+   wake-up: re-arm the watch at once with the same repo and session pair while work
+   is still active (`--status` reports `active_pipelines` above zero), then run the
+   gate in rule 2. Two kinds of wake-up exist. An expiry notice re-arms the watch and
+   runs the gate. Any other wake-up runs the gate only. The bound follows from that:
+   while the watch is re-armed on each expiry notice, the tick announces a stale hour
+   inside an armed window, so the table is re-rendered about an hour after its last
+   render plus one re-arm delay. If the watch is missing and only other wake-ups
+   arrive, the table renders at the first wake-up after the hour mark, so the bound is
+   the gap between wake-ups, not the hour. Nothing in this mechanism renders without a
+   recorded render, and nothing fires for an idle thread.
+4. **Dispatch renders once.** When `/pm` or `/subagent` launches a round, the full
+   table (running and queued rows together) is printed once at dispatch and recorded
+   with `--note-rendered --active <N>`. That render starts the hour; no separate
+   status message is needed to start it.
 
 **Idle threads are exempt, explicitly.** When nothing is running or queued, the
 round-end summary is the terminal board and the thread stays quiet. The exemption is

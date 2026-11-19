@@ -27,7 +27,7 @@ Use the returned `nodes[].id` as `threadId` in `resolveReviewThread`. Check `isR
 When a workflow replies to review threads, keep the thread node IDs it touched and re-query
 `pullRequest.reviewThreads` after the reply/resolve pass. Every touched ID must be present and
 must report `isResolved: true`; otherwise retry `resolveReviewThread`, then fall back to
-`minimizeComment(classifier: RESOLVED)` on the first comment node ID. Report the final
+`minimizeComment(classifier: RESOLVED)` on the first comment node ID only when GraphQL identifies its author as a Bot. Report the final
 `addressed / resolved / dangling` counts and list dangling thread URLs.
 
 GitHub only auto-resolves a thread when the **exact** diff hunk lines change. After a fix that

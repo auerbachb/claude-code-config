@@ -50,7 +50,9 @@
 # "found" is not a distinct code):
 #   0  OK — ran to completion (including the zero-forgotten case)
 #   2  Usage error (unknown flag, --days/--author requires a value)
-#   3  Environment error (gh/jq/git missing or not a git repo; gh API failure)
+#   3  Environment error (gh/jq/git missing or not a git repo; gh API failure),
+#      or an indeterminate linked-issue signal for any PR (fail closed: no
+#      records are emitted, so a caller can never dispatch an unknown status)
 #
 # READ-ONLY CONTRACT:
 #   No PR is closed/merged, no branch deleted, nothing pushed. Git fetches use
@@ -277,19 +279,30 @@ printf '%s' "$OPEN_PRS" \
       # enough for this signal, so ask for it explicitly with --first: default
       # mode is set-valued (issue #1492) and a two-line value would be handed
       # straight to `gh issue view` below.
+      # Fail closed: an indeterminate linked-issue signal (helper missing, lookup
+      # error, or unreadable state) writes the lookup_failed marker, which makes
+      # the whole run exit 3 before anything is emitted. An unknown status must
+      # never reach the caller as a "merge" recommendation.
       ISSUE=""
       if [ -x "$PR_ISSUE_REF" ]; then
-        ISSUE="$("$PR_ISSUE_REF" --first "$NUM" 2>/dev/null || true)"
+        ISSUE="$("$PR_ISSUE_REF" --first "$NUM" 2>/dev/null)"; ref_rc=$?
+        # Exit 1 means "no linked issue" (normal). Exit 0 with a value is a link.
+        # Anything above 1 is a lookup failure.
+        if [ "$ref_rc" -gt 1 ]; then
+          err "could not resolve linked issue for PR #$NUM (pr-issue-ref exit $ref_rc) — linked-issue signal indeterminate"
+          : > "$TMP/lookup_failed"
+        fi
       else
-        err "pr-issue-ref.sh not found at $PR_ISSUE_REF — linked-issue signal skipped for #$NUM"
+        err "pr-issue-ref.sh not found at $PR_ISSUE_REF — linked-issue signal indeterminate for #$NUM"
+        : > "$TMP/lookup_failed"
       fi
       if [ -n "$ISSUE" ]; then
-        # Capture gh's own exit code: a network/auth/API failure must surface as
-        # an indeterminate signal on stderr, not silently degrade into a normal
-        # "merge" recommendation as though the issue were open.
+        # Capture gh's own exit code: a network/auth/API failure is indeterminate
+        # and fails the run closed, not a "merge" as though the issue were open.
         ISTATE="$(gh issue view "$ISSUE" --json state --jq '.state' 2>/dev/null)"; istate_rc=$?
-        if [ "$istate_rc" -ne 0 ]; then
-          err "could not fetch issue #$ISSUE state for PR #$NUM (gh exit $istate_rc) — linked-issue close signal skipped for this PR"
+        if [ "$istate_rc" -ne 0 ] || [ -z "$ISTATE" ]; then
+          err "could not fetch issue #$ISSUE state for PR #$NUM (gh exit $istate_rc) — linked-issue signal indeterminate; run failed closed"
+          : > "$TMP/lookup_failed"
         elif [ "$ISTATE" = "CLOSED" ]; then
           REC="close"
           RATIONALE="linked issue #$ISSUE closed"
@@ -315,6 +328,10 @@ printf '%s' "$OPEN_PRS" \
 # ---------------------------------------------------------------------------
 # Emit (sorted oldest-first so the most-forgotten surface at the top).
 # ---------------------------------------------------------------------------
+if [ -e "$TMP/lookup_failed" ]; then
+  err "linked-issue signal indeterminate for at least one PR — no recommendations emitted (fail closed)"
+  exit 3
+fi
 if [ "$EMIT_JSON" -eq 1 ]; then
   jq -c -s 'sort_by(.age_days) | reverse' "$TMP/forgotten.jsonl" 2>/dev/null || echo "[]"
 else

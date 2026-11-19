@@ -219,13 +219,13 @@ class Bookkeeping(unittest.TestCase):
         self.assertIsNotNone(m)
         env = dict(self.env, POST_MERGE_BOOKKEEPING_SH=str(self.scripts / "post-merge-bookkeeping.sh"), CURRENT_REPO="alice/demo", PR_NUM="41", PR_ISSUE_REF_SH=str(self.scripts / "pr-issue-ref.sh"), ISSUE_CLAIM_SH=str(self.scripts / "issue-claim.sh"), BOOKKEEPING_SCRIPTS=str(self.scripts))
         for _ in range(2):
-            r = subprocess.run([SHELL, "-c", 'resolve_script() { printf "%s/%s\\n" "$BOOKKEEPING_SCRIPTS" "$1"; }\n' + m[1]], cwd=self.base, env=env, text=True, capture_output=True, timeout=45)
+            r = subprocess.run([SHELL, "-c", 'resolve_script() { printf "%s/%s\\n" "$BOOKKEEPING_SCRIPTS" "$1"; }\n' + 'reconcile_issue_completion() { return 0; }\n' + m[1]], cwd=self.base, env=env, text=True, capture_output=True, timeout=45)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(self.rows()[0]["actual_min"], 120)
             self.assert_clean()
         self.assertEqual(len(self.rows()), 1)
-        self.assertIn("If already merged, execute `wrap-post-merge-bookkeeping`", skill)
-        self.assertIn("`MERGED` → execute `wrap-post-merge-bookkeeping`", skill)
+        self.assertIn("If already merged, use the Phase 3 merged entry below", skill)
+        self.assertIn("`MERGED` → use the Phase 3 merged entry", skill)
 
     def test_claim_replacement_during_real_logger_lock_wait_is_retained(self):
         self.seed(body="Closes #7\nCloses #8")
@@ -334,7 +334,7 @@ class Bookkeeping(unittest.TestCase):
         self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
         self.assertFalse(followup.exists())
 
-    def test_actual_auto_plain_merge_boundary(self):
+    def configure_auto_plain_merge(self):
         self.seed(state="OPEN", renewed=True)
         for name, text, exit_code in (
             ("pr-authorship.sh", '{"authorship":"mine"}', 0),
@@ -344,6 +344,8 @@ class Bookkeeping(unittest.TestCase):
             path = self.scripts / name
             path.write_text("#!/bin/sh\nprintf '%s\\n' '" + text + "'\nexit " + str(exit_code) + "\n")
             path.chmod(0o755)
+    def test_actual_auto_plain_merge_boundary(self):
+        self.configure_auto_plain_merge()
         r = self.run_script("admin-merge.sh", "--auto-plain", "--ac-verified", "--force-solo", "--repo-path", str(self.base))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("AUTO_PLAIN_MERGED", r.stdout)
@@ -351,6 +353,18 @@ class Bookkeeping(unittest.TestCase):
         self.assert_clean()
         calls = self.data["calls"]
         self.assertFalse(any("-X" in c and c[c.index("-X") + 1] in ("PUT", "PATCH") for c in calls))
+
+    def test_wrap_can_defer_auto_plain_bookkeeping_until_completion(self):
+        self.configure_auto_plain_merge()
+        invalid = self.run_script("admin-merge.sh", "--defer-bookkeeping", "--repo-path", str(self.base))
+        self.assertEqual(invalid.returncode,2)
+        r = self.run_script("admin-merge.sh", "--auto-plain", "--ac-verified", "--defer-bookkeeping", "--force-solo", "--repo-path", str(self.base))
+        self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertIn("AUTO_PLAIN_MERGED",r.stdout)
+        self.assertFalse(self.log.exists())
+        issue=self.load()["issues"]["alice/demo#7"]
+        self.assertTrue(issue["labels"])
+        self.assertTrue(issue["comments"])
 
 
 if __name__ == "__main__":

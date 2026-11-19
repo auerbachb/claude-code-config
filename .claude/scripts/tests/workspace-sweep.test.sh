@@ -31,10 +31,14 @@ cases = r'''
         return 'resolve_script() { printf "%s\\n" "$CADENCE_RUNNER"; }\n'+extracted.stdout
     merged=worktree('cadence-merged')
     active=worktree('cadence-active','OPEN');(active/'README').write_text('unfinished')
+    closed_wt=worktree('cadence-closed','CLOSED')
     block=fence('.claude/rules/phase-protocols.md','# workspace-sweep-post-merge\n')
     result=subprocess.run(['bash','-c',block],cwd=root,env=dict(env,CADENCE_RUNNER=str(runner)),text=True,capture_output=True,timeout=120)
     verify(result.returncode==0 and not result.stdout and not merged.exists(),'actual Phase C command silently reaps merged worktree')
     verify(active.exists() and root.exists(),'actual Phase C command protects unfinished and caller worktrees')
+    verify(closed_wt.exists() and git('branch','--list','cadence-closed')!='','actual Phase C command keeps a worktree whose PR was closed without merging')
+    kept=json.loads((Path(logs()[-1]['evidence'])/'stdout').read_text())
+    verify(any(r['branch']=='cadence-closed' and r['reason']=='closed_unmerged_pr' for r in kept['skipped_finished_worktrees']),'the sweep records closed_unmerged_pr as the reason it kept the worktree')
     before=len(calls());reported=cadence('--repo-dir',str(root),'--report')
     summary=json.loads(reported.stdout)
     verify(reported.returncode==0 and summary['repositories'][0]['removed']==1 and summary['repositories'][0]['worktree_logical_bytes_reclaimed']>0,'on-demand report exposes actual reclaimed count/logical bytes')
@@ -42,7 +46,7 @@ cases = r'''
     verify(git('branch','--list','cadence-merged')=='','actual cleanup removes finished local branch')
     verify(logs()[-1]['removed']==1 and logs()[-1]['skipped_with_reason']>=1,'actual cleanup counts recorded')
     now=int(time.time())
-    tick=fence('.claude/skills/pm/SKILL.md','# workspace-sweep-pm-day\n')
+    tick=fence('.claude/skills/pm/modules/day-tick.md','# workspace-sweep-pm-day\n')
     for _ in range(2):
         result=subprocess.run(['bash','-c',tick],cwd=root,env=dict(env,CADENCE_RUNNER=str(runner)),text=True,capture_output=True,timeout=120)
         verify(result.returncode==0 and not result.stdout,'actual tick inside post-merge interval is silent')

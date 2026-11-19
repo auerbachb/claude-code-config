@@ -114,7 +114,8 @@
 #
 # EXIT CODES
 #   0  replaced by another control session, or --once finished
-#   4  usage error, including a cadence at or past the live-desk bound
+#   4  usage error, including a cadence at or past the live-desk bound; or the
+#      queue belongs to another account (issue #2184): one `stopped` line, no retry
 #   (the loop itself never ends on a store failure; the Monitor's own expiry
 #   or TaskStop ends it)
 #
@@ -329,8 +330,20 @@ if [ "$dt_secs" -ge "$((dt_live * 60))" ]; then
   dt_die "HUMAN_QUEUE_TICK_SECONDS ($dt_secs s) must be shorter than the live-desk bound ($dt_live min), or the desk goes stale between ticks"
 fi
 
-dt_err=$(mktemp "${TMPDIR:-/tmp}/desk-tick.XXXXXX") || exit 1
-trap 'rm -f "$dt_err"' EXIT
+dt_tmp=$(mktemp -d "${TMPDIR:-/tmp}/desk-tick.XXXXXX") || exit 1
+dt_err="$dt_tmp/err"
+dt_mobile_pid=""
+dt_cleanup() {
+  if [ -n "$dt_mobile_pid" ]; then
+    kill -TERM "$dt_mobile_pid" 2>/dev/null || true
+    wait "$dt_mobile_pid" 2>/dev/null || true
+  fi
+  rm -f "$dt_err" "$dt_tmp/mobile-out" "$dt_tmp/mobile-error"
+  rmdir "$dt_tmp" 2>/dev/null || true
+}
+trap dt_cleanup EXIT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 dt_failing=0
 
@@ -363,9 +376,12 @@ except (ValueError, IndexError):
     sys.exit(1)
 if not isinstance(data, dict):
     sys.exit(1)
-s = data.get("session")
-sys.stdout.write(s if isinstance(s, str) else "")
-'
+if sys.argv[1] == "mobile":
+    sys.stdout.write("1" if data.get("mobile_answers_imported") is True else "")
+else:
+    s = data.get("session")
+    sys.stdout.write(s if isinstance(s, str) else "")
+' "${2:-}"
 }
 
 # dt_held JSON — the effective hold; unknown or malformed values are not releases.
@@ -416,6 +432,20 @@ ids = [i.get("id") for i in items
        and re.match(r"^D-[1-9][0-9]*$", i["id"])]
 sys.stdout.write(" ".join(ids))
 '
+}
+
+# dt_owner_stop — a tick refused because the queue belongs to another account
+# (issue #2184) prints one `stopped` line and ends the loop with exit 4: the
+# refusal does not clear on its own, so retrying every cadence only hides it.
+# Any other exit-4 refusal falls through to dt_still_ours.
+dt_owner_stop() {
+  local line
+  line=$(grep -m1 'human-queue: tick: this queue ' "$dt_err" 2>/dev/null || true)
+  if [ -n "$line" ]; then
+    printf 'desk-tick %s stopped: %s\n' "$dt_gen" "${line#human-queue: tick: }"
+    exit 4
+  fi
+  return 0
 }
 
 # dt_still_ours — after a refusal (exit 4), whether this session is still the
@@ -548,8 +578,58 @@ dt_released() {
   if [ -n "$1" ]; then printf 'desk-tick %s released\n' "$dt_gen"; fi
 }
 
+# Remote bodies and dependency diagnostics never reach the Monitor. A single
+# background pass lets a slow provider coexist with the next desktop tick.
+dt_mobile() {
+  local ids rc=0 child
+  if [ "$1" = sync ]; then
+    "$dt_py" -I "$dt_bin/mobile-sync.py" --session "$dt_session" >"$dt_tmp/mobile-out" 2>/dev/null &
+  else
+    "$dt_cli" mobile-reply pending "$dt_session" >"$dt_tmp/mobile-out" 2>/dev/null &
+  fi
+  child=$!
+  trap 'kill -TERM "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 0' TERM HUP
+  wait "$child" || rc=$?
+  ids=$("$dt_py" -I -c '
+import json, re, sys
+items = json.load(sys.stdin)
+if not isinstance(items, list) or any(not isinstance(x, str) or not re.fullmatch(r"D-[1-9][0-9]*", x) for x in items):
+    sys.exit(1)
+print(" ".join(items))
+' <"$dt_tmp/mobile-out" 2>/dev/null) || { ids=""; rc=1; }
+  if [ "$rc" -eq 0 ]; then
+    rm -f "$dt_tmp/mobile-error"
+  elif [ ! -e "$dt_tmp/mobile-error" ]; then
+    printf 'desk-tick %s mobile-unavailable\n' "$dt_gen"
+    : >"$dt_tmp/mobile-error"
+  fi
+  if [ -n "$ids" ]; then printf 'desk-tick %s mobile %s\n' "$dt_gen" "$ids"; fi
+}
+
+dt_schedule_mobile() {
+  local cfg="${DESK_MOBILE_CONFIG:-${HOME:+$HOME/.config/human-queue/mobile.json}}" action
+  if [ -n "$cfg" ] && [ -e "$cfg" ]; then
+    action=sync
+  elif [ "$(dt_control "$1" mobile)" = 1 ]; then
+    # A committed reply still needs its first wake if the operator disabled sync.
+    action=pending
+  else
+    return 0
+  fi
+  if [ "$dt_once" -eq 1 ]; then
+    (trap - EXIT; dt_mobile "$action")
+    return
+  fi
+  if [ -n "$dt_mobile_pid" ]; then
+    if kill -0 "$dt_mobile_pid" 2>/dev/null; then return 0; fi
+    wait "$dt_mobile_pid" 2>/dev/null || true
+  fi
+  (trap - EXIT; dt_mobile "$action") &
+  dt_mobile_pid=$!
+}
+
 dt_cycle() {
-  local out rc control ids due held released hold_ok
+  local out rc control ids due held released hold_ok control_json
   released=""
   hold_ok=1
   rc=0
@@ -559,6 +639,7 @@ dt_cycle() {
     return 0
   fi
   rc=0
+  control_json="$out"
   control=$(dt_control "$out") || rc=$?
   if [ "$rc" -ne 0 ]; then
     printf 'control-status printed something other than a JSON object\n' >"$dt_err"
@@ -572,6 +653,9 @@ dt_cycle() {
   rc=0
   out=$("$dt_cli" tick --session "$dt_session" --interrupts "$dt_rule" 2>"$dt_err") || rc=$?
   if [ "$rc" -eq 4 ]; then
+    # A queue that belongs to another account (issue #2184) never accepts
+    # this desk, so retrying is pointless: stop with one line.
+    dt_owner_stop
     # Refused: most likely another desk registered after step 1. Confirm
     # before stopping, so any other exit-4 cause stays an error line.
     dt_still_ours
@@ -652,6 +736,8 @@ dt_cycle() {
   if [ -n "$dt_sweep_line" ]; then
     printf '%s\n' "$dt_sweep_line"
   fi
+  # A slow remote pass must not delay desktop notices from this tick.
+  dt_schedule_mobile "$control_json"
 }
 
 if [ "$dt_once" -eq 1 ]; then

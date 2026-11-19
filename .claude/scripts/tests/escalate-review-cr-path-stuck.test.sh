@@ -125,9 +125,13 @@ case "$ARGS" in
         author:{login:"solouser", type:"User"}}'
     exit 0 ;;
   *"git/commits/"*) jq -cn --arg d "$FIXTURE_PUSH_TS" '{committer:{date:$d}}'; exit 0 ;;
+  *actions/runs*)
+    jq -cn --arg sha "$FIXTURE_HEAD_SHA" --argjson r "$FAKE_CI_RUN" \
+      '{total_count:1,workflow_runs:[{id:1,workflow_id:1,run_attempt:1,event:"push",head_sha:$sha,head_branch:"fixture",pull_requests:[],html_url:"https://github.com/solo/repo/actions/runs/1",check_suite_id:1,status:$r.status,conclusion:$r.conclusion}]}'
+    exit 0 ;;
   *check-runs*)
     jq -cn --argjson r "$FAKE_CI_RUN" --arg d "$FIXTURE_PUSH_TS" \
-      '{check_runs:[$r + {completed_at:$d, check_suite:{id:1}}]}'
+      '{total_count:1,check_runs:[$r + {completed_at:$d, check_suite:{id:1}}]}'
     exit 0 ;;
   *commits/*/statuses*) printf '%s' "[]"; exit 0 ;;
   *pulls/*/reviews*)    printf '%s' "$FAKE_REVIEWS"; exit 0 ;;

@@ -31,7 +31,7 @@ Three scripts refuse non-author PRs on their own, independent of the calling ski
 
 - **`polling-state-gate.sh --ensure-session`** — blocks *enrolment*. A PR that cannot be enrolled cannot be babysat, polled, or picked up by a monitor loop, which cuts off the largest class of accidental writes at the source.
 - **`admin-merge.sh`** — blocks the branch-protection-bypass merge path.
-- **`merge-gate.sh`** — blocks a **confirmed** foreign author, and emits an `authorship` field in its JSON so read-only callers such as `/status` can still *display* collaborator PRs while separating them from actionable rows.
+- **`merge-gate.sh`** — blocks a **confirmed** foreign author, and emits an `authorship` field in its JSON so read-only callers such as `/pr-status` can still *display* collaborator PRs while separating them from actionable rows.
 
 The asymmetry is deliberate: `merge-gate.sh` blocks only on a confirmed-foreign author because it is also the read path for status displays, where an undetermined author should degrade to "shown but not actionable" rather than vanishing from the table.
 

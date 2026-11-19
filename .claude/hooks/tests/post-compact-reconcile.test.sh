@@ -138,4 +138,10 @@ python3 -c "import sys; sys.stdout.write('{\"compact_summary\":\"x\"' + ',\"pad\
   | bash "$HOOK" >/dev/null 2>&1 \
   || fail "hook failed or hung on large stdin input"
 
+# --- 9. Recovery prompt tells the agent to reread the run mode, not trust the summary ---
+for payload in '{}' '{"compact_summary":"fixture summary"}'; do
+  rm_context=$(printf '%s' "$payload" | bash "$HOOK" | jq -r '.hookSpecificOutput.additionalContext')
+  [[ "$rm_context" == *"run-mode.sh get"* && "$rm_context" == *"never take the mode"* ]] || fail 'recovery prompt must reread the run mode via run-mode.sh get'
+done
+
 echo "ok   — post-compact-reconcile.sh: all tests passed"

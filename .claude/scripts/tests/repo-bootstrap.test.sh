@@ -338,6 +338,7 @@ for f in "${ALL_FILES[@]}"; do
   mkdir -p "$REPO5/$(dirname "$f")"
   printf 'stub\n' > "$REPO5/$f"
 done
+cp "$REPO_ROOT/.claude/reference/agent-issue-claims-block.md" "$REPO5/AGENTS.md"
 
 OUT=$(cd "$REPO5" && bash "$SUT" --apply 2>&1)
 RC=$?
@@ -428,6 +429,75 @@ check_not_contains "case8: no script-usage.log diagnostic leaks" "script-usage.l
 bash "$SUT" --help >/dev/null 2>&1
 check_eq "case8: append still lands when ~/.claude exists" "1" \
   "$(grep -c 'repo-bootstrap.sh' "$HOME/.claude/script-usage.log")"
+
+# --------------------------------------------------------------------------
+# Case 9: AGENTS.md issue-claim block (issue #2285). Real script, scratch repos.
+# --------------------------------------------------------------------------
+SRC_BLOCK="$REPO_ROOT/.claude/reference/agent-issue-claims-block.md"
+
+# 9a: no AGENTS.md -> --check reports [MISSING]; --apply creates it with the block
+R9A="$TMP/repo-agents-new"; make_repo "$R9A"
+OUT=$(cd "$R9A" && bash "$SUT" --check 2>&1)
+check_contains "case9a: --check reports AGENTS.md [MISSING]" "[MISSING]   AGENTS.md" "$OUT"
+OUT=$(cd "$R9A" && bash "$SUT" --apply 2>&1)
+check_contains "case9a: --apply reports [INSTALLED] AGENTS.md" "[INSTALLED] AGENTS.md" "$OUT"
+check_eq "case9a: created AGENTS.md is exactly the source block" "0" "$(cmp -s "$SRC_BLOCK" "$R9A/AGENTS.md"; echo $?)"
+SUM_A="$(file_checksum "$R9A/AGENTS.md")"
+OUT=$(cd "$R9A" && bash "$SUT" --apply 2>&1)
+check_eq "case9a: second --apply changes nothing" "$SUM_A" "$(file_checksum "$R9A/AGENTS.md")"
+check_contains "case9a: second run reports [OK]" "[OK]        AGENTS.md" "$OUT"
+check_not_contains "case9a: no leftover temp file" ".repo-bootstrap-agents" "$(ls -a "$R9A")"
+OUT=$(cd "$R9A" && bash "$SUT" --check 2>&1)
+check_not_contains "case9a: --check clean once installed" "[MISSING]   AGENTS.md" "$OUT"
+
+# 9b: existing AGENTS.md (no trailing newline) -> block appended, prior bytes untouched
+R9B="$TMP/repo-agents-existing"; make_repo "$R9B"
+printf '# Team rules\n\nPick work by label.' > "$R9B/AGENTS.md"
+cp "$R9B/AGENTS.md" "$TMP/9b-before"
+(cd "$R9B" && bash "$SUT" --apply >/dev/null 2>&1)
+BEFORE_LEN=$(wc -c < "$TMP/9b-before" | tr -d ' ')
+head -c "$BEFORE_LEN" "$R9B/AGENTS.md" > "$TMP/9b-prefix"
+check_eq "case9b: every pre-existing byte is still the file's prefix" "0" "$(cmp -s "$TMP/9b-prefix" "$TMP/9b-before"; echo $?)"
+check_contains "case9b: block appended" "BEGIN agent-issue-claims" "$(cat "$R9B/AGENTS.md")"
+SUM_B="$(file_checksum "$R9B/AGENTS.md")"
+(cd "$R9B" && bash "$SUT" --apply >/dev/null 2>&1)
+check_eq "case9b: second --apply changes nothing" "$SUM_B" "$(file_checksum "$R9B/AGENTS.md")"
+
+# 9c: drifted block -> --check flags it; --apply rewrites only the marked block
+R9C="$TMP/repo-agents-drift"; make_repo "$R9C"
+{ printf 'TOP LINE\n\n'; cat "$SRC_BLOCK"; printf '\nBOTTOM LINE\n'; } > "$R9C/AGENTS.md"
+sed 's/Check\*\* before/Check** XX before/' "$R9C/AGENTS.md" > "$TMP/9c-drift"
+cp "$TMP/9c-drift" "$R9C/AGENTS.md"
+check_contains "case9c: premise: drift was injected" "XX before" "$(cat "$R9C/AGENTS.md")"
+OUT=$(cd "$R9C" && bash "$SUT" --check 2>&1)
+check_contains "case9c: drifted block reported [MISSING]" "differs from the source" "$OUT"
+(cd "$R9C" && bash "$SUT" --apply >/dev/null 2>&1)
+check_eq "case9c: text above the block kept" "TOP LINE" "$(head -n 1 "$R9C/AGENTS.md")"
+check_eq "case9c: text below the block kept" "BOTTOM LINE" "$(tail -n 1 "$R9C/AGENTS.md")"
+check_not_contains "case9c: drift removed" "XX before" "$(cat "$R9C/AGENTS.md")"
+
+# 9f: a script-created file (block on line 1) drifts -> rewrite is valid, keeps the mode
+R9F="$TMP/repo-agents-line1"; make_repo "$R9F"
+(cd "$R9F" && bash "$SUT" --apply >/dev/null 2>&1)
+sed 's/Check\*\* before/Check** XX before/' "$R9F/AGENTS.md" > "$TMP/9f-drift"
+cp "$TMP/9f-drift" "$R9F/AGENTS.md"
+chmod 640 "$R9F/AGENTS.md"
+(cd "$R9F" && bash "$SUT" --apply >/dev/null 2>&1)
+check_eq "case9f: line-1 block restored to exactly the source" "0" "$(cmp -s "$SRC_BLOCK" "$R9F/AGENTS.md"; echo $?)"
+check_eq "case9f: file mode preserved by the rewrite" "-rw-r-----" "$(ls -l "$R9F/AGENTS.md" | cut -c1-10)"
+
+# 9d: unbalanced markers and a symlink are never edited
+R9D="$TMP/repo-agents-malformed"; make_repo "$R9D"
+printf 'x\n<!-- BEGIN agent-issue-claims -->\nno end\n' > "$R9D/AGENTS.md"
+SUM_D="$(file_checksum "$R9D/AGENTS.md")"
+(cd "$R9D" && bash "$SUT" --apply >/dev/null 2>&1)
+check_eq "case9d: unbalanced markers left byte-identical" "$SUM_D" "$(file_checksum "$R9D/AGENTS.md")"
+R9E="$TMP/repo-agents-symlink"; make_repo "$R9E"
+printf 'elsewhere\n' > "$TMP/9e-target"
+ln -s "$TMP/9e-target" "$R9E/AGENTS.md"
+OUT=$(cd "$R9E" && bash "$SUT" --apply 2>&1)
+check_contains "case9e: symlink reported" "[SYMLINK]   AGENTS.md" "$OUT"
+check_eq "case9e: symlink target untouched" "elsewhere" "$(cat "$TMP/9e-target")"
 
 # --------------------------------------------------------------------------
 # Summary

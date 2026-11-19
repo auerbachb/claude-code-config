@@ -28,13 +28,75 @@ class Browser(unittest.TestCase):
     def test_identity_freshness_and_null(self):
         """Require identity and freshness, without converting missing usage to zero."""
         doc = observation()
-        self.assertEqual(browser.validate(doc, 'fixture', 'FIXTURE@example.com', 1000), doc)
+        self.assertEqual(browser.validate(doc, 'fixture', 'FIXTURE@example.com', 1000), dict(doc, identity_verified=True))
         for email, now in [('other@example.com', 1000), ('fixture@example.com', 1400)]:
             with self.assertRaises(ValueError):
                 browser.validate(doc, 'fixture', email, now)
         doc['rows'][0]['used_pct'] = None
         with self.assertRaises(ValueError):
             browser.validate(doc, 'fixture', '', 1000)
+
+    def test_cursor_email_optional_but_never_loosened_otherwise(self):
+        """#1870: only Cursor may omit the email; it is then unverified. Claude and bad emails stay rejected."""
+        for shape in ('absent', None, ''):
+            doc = observation()
+            if shape == 'absent':
+                del doc['email']
+            else:
+                doc['email'] = shape
+            out = browser.validate(doc, 'fixture', 'fixture@example.com', 1000)
+            self.assertIs(out['identity_verified'], False)
+        for bad in ('   ', 'not-an-email', 'other@example.com'):
+            with self.assertRaises(ValueError):
+                browser.validate(dict(observation(), email=bad), 'fixture', 'fixture@example.com', 1000)
+        claude = dict(observation(), provider='claude')
+        claude['rows'] = [dict(claude['rows'][0], window='7-day')]
+        for shape in ('absent', None, ''):
+            doc = dict(claude)
+            if shape == 'absent':
+                del doc['email']
+            else:
+                doc['email'] = shape
+            with self.assertRaises(ValueError):
+                browser.validate(doc, 'fixture', 'fixture@example.com', 1000, 'claude')
+
+    def test_verified_only_when_a_supplied_email_matched_a_known_expected_one(self):
+        """#1870: identity_verified is never claimed for a non-ok status or an unchecked email."""
+        ok = browser.validate(observation(), 'fixture', 'fixture@example.com', 1000)
+        self.assertIs(ok['identity_verified'], True)
+        # No known expected email to compare against: nothing was matched.
+        self.assertIs(browser.validate(dict(observation(), status='logged_out', rows=[]), 'fixture', '', 1000)['identity_verified'], False)
+        for status in ('logged_out', 'unreadable'):
+            base = dict(observation(), status=status, rows=[])
+            wrong = dict(base, email='other@example.com')
+            with self.assertRaises(ValueError):
+                browser.validate(wrong, 'fixture', 'fixture@example.com', 1000)
+            none = dict(base)
+            del none['email']
+            self.assertIs(browser.validate(none, 'fixture', 'fixture@example.com', 1000)['identity_verified'], False)
+            self.assertIs(browser.validate(dict(base, email=''), 'fixture', 'fixture@example.com', 1000)['identity_verified'], False)
+            matched = browser.validate(base, 'fixture', 'fixture@example.com', 1000)
+            self.assertIs(matched['identity_verified'], True)
+            self.assertIs(browser.validate(base, 'fixture', '', 1000)['identity_verified'], False)
+
+    def test_claude_non_ok_status_is_no_looser_than_before(self):
+        """Claude observations carry no identity_verified, and an ok one with a wrong email is rejected."""
+        rows = [dict(observation()['rows'][0], window='7-day')]
+        base = dict(observation(), provider='claude', rows=rows)
+        with self.assertRaises(ValueError):
+            browser.validate(dict(base, email='other@example.com'), 'fixture', 'fixture@example.com', 1000, 'claude')
+        out = browser.validate(dict(base, email='fixture@example.com'), 'fixture', 'fixture@example.com', 1000, 'claude')
+        self.assertNotIn('identity_verified', out)
+        signed_out = dict(base, status='logged_out', rows=[], email='')
+        self.assertNotIn('identity_verified', browser.validate(signed_out, 'fixture', 'fixture@example.com', 1000, 'claude'))
+
+    def test_schema_version_is_an_integer_not_a_boolean(self):
+        """Python treats True == 1; a boolean schema_version must not pass as version 1."""
+        for value in [True, False, 1.0, '1']:
+            doc = observation()
+            doc['schema_version'] = value
+            with self.assertRaises(ValueError):
+                browser.validate(doc, 'fixture', 'fixture@example.com', 1000)
 
     def test_secret_fields_and_bad_numbers(self):
         """Reject unrecognized fields, boolean percentages and malformed pools."""
@@ -312,25 +374,82 @@ class Browser(unittest.TestCase):
             self.assertEqual(json.loads(out.getvalue())['error_class'],'browser_stage_unknown')
             self.assertEqual(err.getvalue(),'')
 
+    def test_claude_organization_binding_and_provider_only_read(self):
+        """A Claude observation may verify identity by organization ID (#2337); Cursor's schema stays exact."""
+        org = '6f1c2a4e-0d3b-4c5e-9a7b-123456789abc'
+        other = '0a0a0a0a-0b0b-4c0c-8d0d-e1e1e1e1e1e1'
+
+        def claude(**fields):
+            doc = dict(schema_version=1, provider='claude', label='fixture', status='ok', observed_at_epoch=1000,
+                       rows=[dict(window='7-day', used_pct=64, resets_at_epoch=None)])
+            doc.update(fields)
+            return doc
+
+        # The email stays required; a matching email with a matching organization ID is accepted.
+        self.assertEqual(browser.validate(claude(email='FIXTURE@example.com', organization_id=org.upper()), 'fixture',
+                                          'fixture@example.com', 1000, 'claude', org)['organization_id'], org.upper())
+        # A profile with no recorded organization ID has nothing to compare: the email match stands.
+        self.assertEqual(browser.validate(claude(email='fixture@example.com', organization_id=org), 'fixture',
+                                          'fixture@example.com', 1000, 'claude', '')['status'], 'ok')
+        self.assertEqual(browser.validate(claude(email='fixture@example.com'), 'fixture',
+                                          'fixture@example.com', 1000, 'claude', '')['status'], 'ok')
+        rejected = [
+            (claude(organization_id=org), 'fixture', 'fixture@example.com', 1000, 'claude', org),   # no email: organization alone
+            (claude(organization_id=org), 'fixture', '', 1000, 'claude', org),                      # no email, no expected email
+            (claude(), 'fixture', 'fixture@example.com', 1000, 'claude', org),                      # neither field
+            (claude(email='fixture@example.com', organization_id=other), 'fixture', 'fixture@example.com', 1000, 'claude', org),  # org mismatch
+            (claude(email='other@example.com', organization_id=org), 'fixture', 'fixture@example.com', 1000, 'claude', org),      # email mismatch
+            (claude(email='fixture@example.com', organization_id='not-a-uuid'), 'fixture', 'fixture@example.com', 1000, 'claude', org),
+            (claude(email='fixture@example.com', organization_id=''), 'fixture', 'fixture@example.com', 1000, 'claude', ''),
+        ]
+        for doc, label, email, now, provider, expected_org in rejected:
+            with self.assertRaises(ValueError):
+                browser.validate(doc, label, email, now, provider, expected_org)
+        # Cursor observations never carry an organization ID.
+        doc = observation()
+        doc['organization_id'] = org
+        with self.assertRaises(ValueError):
+            browser.validate(doc, 'fixture', 'fixture@example.com', 1000)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'observation'
+            path.write_text(json.dumps(claude())); path.chmod(0o600)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                browser.main(['--print-provider', str(path)])
+            self.assertEqual(out.getvalue(), 'claude\n')
+            for content, mode in [(json.dumps(dict(provider='codex')), 0o600), ('not json', 0o600),
+                                  (json.dumps(dict(provider=['claude'])), 0o600), (json.dumps(claude()), 0o644)]:
+                path.write_text(content); path.chmod(mode)
+                out, err = io.StringIO(), io.StringIO()
+                with self.assertRaises(SystemExit), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    browser.main(['--print-provider', str(path)])
+                self.assertEqual((out.getvalue(), err.getvalue()), ('', ''))
+
     def test_actual_shell_reader_accepts_only_fixed_classes(self):
         source = Path(browser.__file__).parents[1] / 'ai-quotas.sh'
         text = source.read_text()
-        function = text.split('read_cursor_browser() {',1)[1].split('\n}\n',1)[0]
+        def shell_function(name):
+            return text.split(name+'() {',1)[1].split('\n}\n',1)[0]
+        # read_cursor_browser delegates the failure mapping to browser_failure_row (#2299),
+        # so the harness must define both or the reader fails with "command not found".
         harness = '''set -u
 python3() { printf '%s' "$BRIDGE_PAYLOAD"; }
 claude_bin() { printf 'unused'; }
 set_outcome() { printf 'OUTCOME %s %s %s\\n' "$1" "$2" "$3"; }
 emit_row() { printf 'ROW %s\\n' "$*"; }
 CURSOR_EMAIL=fixture@example.invalid SELF_DIR=/unused BROWSER_RESULTS='' NOW=1000 CURSOR_WINDOW=weekly
-read_cursor_browser() {''' + function + '\n}\nread_cursor_browser fixture\n'
+browser_failure_row() {''' + shell_function('browser_failure_row') + '''
+}
+read_cursor_browser() {''' + shell_function('read_cursor_browser') + '\n}\nread_cursor_browser fixture\n'
         for name in sorted(browser.ERROR_CLASSES) + ['RAW-SECRET-UNSAFE', '', None]:
             payload = json.dumps(dict(status='unreadable',error_class=name))
             result = subprocess.run(['bash','-c',harness],env=dict(os.environ,BRIDGE_PAYLOAD=payload),
                                     capture_output=True,text=True,timeout=5,check=True)
             expected = name if name in browser.ERROR_CLASSES else 'browser_stage_unknown'
             status = 'timeout' if expected == 'browser_timeout' else 'unreadable'
+            self.assertEqual(result.stderr,'',msg='reader wrote to stderr for %r' % (name,))
             self.assertIn('OUTCOME '+status+' browser '+expected, result.stdout)
-            self.assertEqual(result.stderr,'')
             self.assertNotIn('RAW-SECRET-UNSAFE',result.stdout)
 
     def test_actual_internal_cli_requires_completed_native_read(self):
@@ -440,6 +559,62 @@ print(json.dumps({'structured_output':doc}))
             self.assertFalse(browser.completed_read(link, attempt))
             (Path(str(path)+'.failed')).touch()
             self.assertFalse(browser.completed_read(path, attempt))
+
+    def test_spending_page_fields_and_old_files(self):
+        """Spending-page fields (#1870) validate for Cursor, stay optional, and never reach Claude."""
+        doc = observation()
+        doc.update(plan='Ultra', on_demand_used_usd=6.33, on_demand_limit_usd=50, cycle_resets_at_epoch=1796000000)
+        self.assertEqual(browser.validate(doc, 'fixture', 'fixture@example.com', 1000), dict(doc, identity_verified=True))
+        unlimited = dict(doc, on_demand_limit_usd=None, on_demand_unlimited=True)
+        self.assertTrue(browser.validate(unlimited, 'fixture', 'fixture@example.com', 1000))
+        for change in [dict(plan=3), dict(plan='x' * 41), dict(plan='bad\nname'), dict(on_demand_used_usd=-1),
+                       dict(on_demand_used_usd=True), dict(on_demand_limit_usd='50'), dict(cycle_resets_at_epoch=float('inf')),
+                       dict(on_demand_unlimited=1), dict(on_demand_unlimited=True, on_demand_limit_usd=50), dict(cycle_resets_at_epoch=1),
+                       dict(rows=[dict(window='cursor-models', used_pct=101, resets_at_epoch=None)]),
+                       dict(rows=[dict(window='cursor-models', used_pct=50, resets_at_epoch=1)])]:
+            if 'rows' in change or 'cycle_resets_at_epoch' in change:
+                now_value = 1000000
+            else:
+                now_value = 1000
+            if now_value != 1000:
+                change = dict(change, observed_at_epoch=now_value)
+                with self.assertRaises(ValueError):
+                    browser.validate(dict(doc, **change), 'fixture', 'fixture@example.com', now_value)
+                continue
+            with self.assertRaises(ValueError):
+                browser.validate(dict(doc, **change), 'fixture', 'fixture@example.com', 1000)
+        claude = dict(doc, provider='claude', rows=[dict(window='7-day', used_pct=5, resets_at_epoch=None)])
+        with self.assertRaises(ValueError):
+            browser.validate(claude, 'fixture', 'fixture@example.com', 1000, 'claude')
+
+    def test_printed_cursor_sample_is_valid_json(self):
+        """The sample observation in the instructions parses once its <placeholders> are filled."""
+        import contextlib
+        import io
+        import re
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            browser.main(['--print-instructions', 'cursor'])
+        text = out.getvalue()
+        start = text.index('{"schema_version"')
+        end = text.index(']}', start) + 2
+        sample = re.sub(r'"<[^<>"]*>"', '"x"', text[start:end])
+        sample = re.sub(r'<[^<>]*>', '1', sample)
+        doc = json.loads(sample)
+        self.assertEqual(doc['provider'], 'cursor')
+
+    def test_print_instructions_name_the_spending_page_and_the_browser_pane(self):
+        """The observation route is documented from the helper itself and carries no credential wording to fill in."""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            browser.main(['--print-instructions', 'cursor'])
+        text = out.getvalue()
+        for needle in ['https://cursor.com/dashboard/spending', 'mcp__Claude_Browser__', 'mcp__claude-in-chrome__',
+                       'Cursor Models', 'Other Models', 'Monthly Limit', 'Save', 'Never click', 'On-Demand Usage', 'reset on', 'on_demand_limit_usd']:
+            self.assertIn(needle, text)
+        self.assertLess(text.index('mcp__Claude_Browser__'), text.index('mcp__claude-in-chrome__'))
+        with self.assertRaises(SystemExit):
+            browser.main(['--print-instructions', 'claude'])
 
 
 if __name__ == '__main__':

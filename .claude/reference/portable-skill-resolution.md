@@ -273,7 +273,7 @@ the same way and behaves the same when the remote is absent.
 Chip emitters copy only the **named** sections of `chip-launching.md`, so a rule
 that lives only in that file's prose never reaches a generated chip
 (`chip-emitters-copy-only-named-sections`). The claim instruction therefore
-ships as a `### Constraints` bullet reproduced verbatim across `/pm`, `/prompt`,
+ships as a `### Constraints` bullet reproduced verbatim across `/pm`,
 `/wave`, and `/issue-maker` — and that bullet lands in a coding thread running
 **in another repo**, which makes it the single highest-leverage resolution site
 in the corpus. Its script path carries the candidate order inline for the same

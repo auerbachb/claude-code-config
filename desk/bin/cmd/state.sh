@@ -15,7 +15,7 @@ HQ_STATE_VALUE_MAX=65536
 # text can exceed that, so the UTF-8 size is capped too, with room to spare.
 HQ_STATE_VALUE_MAX_BYTES=131000
 # Owned by the subcommand named after each; `state set` refuses them.
-HQ_STATE_RESERVED="tick_watermark tick_at control_session reviews_watermark interrupt plan eod_sweep checkin checkin_asked"
+HQ_STATE_RESERVED="tick_watermark tick_at control_session queue_owner reviews_watermark interrupt plan eod_sweep checkin checkin_asked mobile_answers_imported"
 
 cmd_usage() {
   cat <<'EOF'
@@ -45,13 +45,17 @@ RESERVED KEYS (readable with get; `set` refuses them)
                    written by `sweep due`
   checkin          today's morning check-in and reading budget (JSON);
                    written by `checkin set`
+  mobile_answers_imported  set once when a mobile answer is accepted
   checkin_asked    the day the morning check-in was last due (YYYY-MM-DD);
                    written by `checkin due`
   tick_watermark   the snapshot the last `tick` read under; written by tick
   tick_at          when the last `tick` ran (UTC ISO 8601); written by tick,
                    cleared by register-control when the session changes
+  quiz_count:DATE  the daily quiz completion count; written by quiz complete
   control_session  the registered desk control session; written by
                    register-control
+  queue_owner      the account name this queue belongs to (issue #2184);
+                   written by owner set and owner transfer
   reviews_watermark  the start of the last successful sync-reviews;
                    written by sync-reviews (move it with --since)
   filed:*          a pending desk filing, filed:<owner/name>:issue-<N>;
@@ -161,10 +165,13 @@ cmd_run() {
         eod_sweep) hq_die_validation "state set: eod_sweep is reserved: only sweep due writes it" ;;
         checkin) hq_die_validation "state set: checkin is reserved: use checkin set" ;;
         checkin_asked) hq_die_validation "state set: checkin_asked is reserved: only checkin due writes it" ;;
+        mobile_answers_imported) hq_die_validation "state set: $key is reserved: only mobile-reply writes it" ;;
+        queue_owner) hq_die_validation "state set: queue_owner is reserved: use owner set (first bind) or owner transfer (explicit)" ;;
         *) hq_die_validation "state set: control_session is reserved: use register-control" ;;
       esac
     fi
     case "$key" in
+      quiz_count:*) hq_die_validation "state set: $key is reserved: only quiz complete writes it" ;;
       filed:*) hq_die_validation "state set: filed:* keys are reserved: only filed writes them (and sync-reviews deletes them)" ;;
     esac
     if [ "${#value}" -gt "$HQ_STATE_VALUE_MAX" ]; then

@@ -10,10 +10,9 @@
 #   TTL expiry
 #   Emitter allowlist drift: header VALID EMITTERS (printed verbatim by --help)
 #     must match the --emitter case allowlist (Issue #1464)
-#   Emitter call-site coverage: all six canonical emitter SKILL.md files carry an
+#   Emitter call-site coverage: all four canonical emitter procedure files (pm's is
+#     modules/flow/launch.md, the rest are SKILL.md) carry an
 #     explicit --reserve call site, not an inherited-by-reference one (#1388)
-#   Runnable-invocation pin: /harness-audit ships its reservation as an executable
-#     snippet, so that snippet must survive deletion detection on its own
 #   HOME-uniqueness invariant: no two tests may share a session-state.json, with
 #     a planted-duplicate negative control proving the check can fail (#1601)
 #
@@ -121,7 +120,7 @@ fi
 # 4. --reserve with explicit --task-id is echoed back
 new_home H
 custom_id="my-custom-task-99"
-tid2="$(run_registry "$H" --reserve --emitter prompt --issue 42 --cap-free 5 --task-id "$custom_id")"
+tid2="$(run_registry "$H" --reserve --emitter wave --issue 42 --cap-free 5 --task-id "$custom_id")"
 rc2=$?
 if [[ $rc2 -eq 0 && "$tid2" == "$custom_id" ]]; then
   ok "--reserve --task-id echo back custom id"
@@ -135,7 +134,7 @@ fi
 new_home H
 # Fill 2 slots (cap-free=2)
 run_registry "$H" --reserve --emitter pm --issue 10 --cap-free 2 > /dev/null
-run_registry "$H" --reserve --emitter prompt --issue 11 --cap-free 2 > /dev/null
+run_registry "$H" --reserve --emitter wave --issue 11 --cap-free 2 > /dev/null
 # Third one should be refused
 run_registry "$H" --reserve --emitter wave --issue 12 --cap-free 2 >/dev/null 2>&1
 rc_cap=$?
@@ -192,7 +191,7 @@ fi
 # ---------------------------------------------------------------------------
 new_home H
 t_a="$(run_registry "$H" --reserve --emitter pm --issue 30 --cap-free 5)"
-t_b="$(run_registry "$H" --reserve --emitter prompt --issue 31 --cap-free 5)"
+t_b="$(run_registry "$H" --reserve --emitter wave --issue 31 --cap-free 5)"
 run_registry "$H" --transition --task-id "$t_b" --state running >/dev/null
 n_off="$(run_registry "$H" --count --state offered)"
 n_run="$(run_registry "$H" --count --state running)"
@@ -242,7 +241,7 @@ fi
 # ---------------------------------------------------------------------------
 new_home H
 t_c="$(run_registry "$H" --reserve --emitter pm --issue 60 --cap-free 5)"
-t_d="$(run_registry "$H" --reserve --emitter prompt --issue 61 --cap-free 5)"
+t_d="$(run_registry "$H" --reserve --emitter wave --issue 61 --cap-free 5)"
 run_registry "$H" --transition --task-id "$t_c" --state done >/dev/null 2>>"$TR_ERR"
 run_registry "$H" --transition --task-id "$t_d" --state retracted >/dev/null 2>>"$TR_ERR"
 n_term="$(run_registry "$H" --count)"
@@ -289,7 +288,7 @@ fi
 new_home H
 t_a="$(run_registry "$H" --reserve --emitter pm --issue 100 --cap-free 1 2>/dev/null)"
 rc_a=$?
-t_b="$(run_registry "$H" --reserve --emitter prompt --issue 101 --cap-free 1 2>/dev/null)"
+t_b="$(run_registry "$H" --reserve --emitter wave --issue 101 --cap-free 1 2>/dev/null)"
 rc_b=$?
 if [[ $rc_a -eq 0 && $rc_b -eq 7 ]]; then
   ok "sequential double-reserve against FREE=1: first wins, second exits 7"
@@ -311,7 +310,7 @@ fi
 # confirm the code ran rather than errored out silently.
 new_home H2
 ( run_registry "$H2" --reserve --emitter pm --issue 200 --cap-free 1 > /dev/null 2>&1 ) & pid_r1=$!
-( run_registry "$H2" --reserve --emitter prompt --issue 201 --cap-free 1 > /dev/null 2>&1 ) & pid_r2=$!
+( run_registry "$H2" --reserve --emitter wave --issue 201 --cap-free 1 > /dev/null 2>&1 ) & pid_r2=$!
 wait "$pid_r1"; rc_r1=$?
 wait "$pid_r2"; rc_r2=$?
 n_race="$(run_registry "$H2" --count)"
@@ -466,7 +465,7 @@ HOME="$H" bash "$REGISTRY" --repo test/repo --retract >/dev/null 2>&1
 new_home H
 # Seed 3 baseline entries (cap-free=10 as an unconstrained seed)
 run_registry "$H" --reserve --emitter pm --issue 700 --cap-free 10 >/dev/null
-run_registry "$H" --reserve --emitter prompt --issue 701 --cap-free 10 >/dev/null
+run_registry "$H" --reserve --emitter wave --issue 701 --cap-free 10 >/dev/null
 run_registry "$H" --reserve --emitter wave --issue 702 --cap-free 10 >/dev/null
 baseline_count="$(run_registry "$H" --count)"
 
@@ -496,7 +495,7 @@ fi
 # 36. Header VALID EMITTERS list matches the --emitter case allowlist.
 #     usage() prints the header verbatim (sed '2,/^$/p'), so --help output IS
 #     the header: a stale emitter list is a user-facing contract bug, not a
-#     comment typo.  Pins the harness-audit drift found in Issue #1464.
+#     comment typo.  Pins the emitter-list drift found in Issue #1464.
 #     Both lists are extracted by anchoring on a structural marker and reading
 #     the next line -- the VALID EMITTERS heading for the header, the
 #     `case "$EMITTER" in` statement for the allowlist -- then sorted before
@@ -504,8 +503,8 @@ fi
 #     bash) does not trip the guard.
 #     Each list is split into tokens BEFORE whitespace is trimmed, and only the
 #     token edges are trimmed, so whitespace interior to a name is preserved --
-#     a malformed header entry like "harness -audit" stays distinct from
-#     "harness-audit" and is reported as drift rather than normalized away.
+#     a malformed header entry like "start -issue" stays distinct from
+#     "start-issue" and is reported as drift rather than normalized away.
 #     Fails closed if either list cannot be extracted.
 # ---------------------------------------------------------------------------
 new_home H
@@ -523,26 +522,12 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 37. harness-audit is accepted by --reserve (behavioral pin for the sixth
-#     canonical emitter named in chip-launching.md).
-# ---------------------------------------------------------------------------
-new_home H
-rc_ha=0
-tid_ha="$(run_registry "$H" --reserve --emitter harness-audit --issue 1464 --cap-free 3 2>/dev/null)" || rc_ha=$?
-if [[ $rc_ha -eq 0 && -n "$tid_ha" ]]; then
-  ok "--emitter harness-audit is accepted by --reserve"
-else
-  fail "--emitter harness-audit should be accepted (rc=$rc_ha, tid='$tid_ha')"
-fi
-
-# ---------------------------------------------------------------------------
 # 38. Every canonical emitter SKILL.md carries an EXPLICIT --reserve call site.
 #     chip-launching.md §Offer Registry requires every spawn_task emitter to
 #     reserve first, but a requirement inherited purely by reference is not
-#     greppable: /harness-audit satisfied it that way for months and the census
+#     greppable: one emitter satisfied it that way for months and the census
 #     silently undercounted whenever it emitted (Issue #1388, found by the
-#     chip-emission audit).  Test 37 pins that the registry ACCEPTS
-#     harness-audit; this pins that the skill actually CALLS it.
+#     chip-emission audit).  This pins that each skill actually CALLS it.
 #
 #     The check is PROXIMITY-bounded, not same-line and not file-wide.  The file
 #     is flattened to one whitespace-normalized line, then chip-offer-registry.sh
@@ -553,13 +538,13 @@ fi
 #       - File-wide presence of both tokens was rejected too: an emitter that
 #         merely name-drops the script in unrelated prose would satisfy it.
 #       - Either order is required because emitters genuinely spell the call
-#         three ways: bare `chip-offer-registry.sh --reserve` (pm, prompt,
-#         wave), `--reserve --emitter X` (start-issue, harness-audit), and
+#         three ways: bare `chip-offer-registry.sh --reserve` (pm,
+#         wave), `--reserve --emitter X` (start-issue), and
 #         `--emitter X ... --reserve` (issue-maker).  Requiring the --emitter
 #         value itself would fail the first three outright, so it is not part
 #         of the assertion.  The widest real gap is issue-maker's ~60 chars, so
 #         120 has headroom without spanning paragraphs.
-#     Fails closed when a SKILL.md is missing rather than skipping the emitter.
+#     Fails closed when an emitter procedure is missing.
 #
 #     Note: `producer | grep -q` is avoided deliberately — under `set -o
 #     pipefail` grep exits at the first match, the producer takes SIGPIPE, and
@@ -568,11 +553,14 @@ fi
 # ---------------------------------------------------------------------------
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SKILLS_DIR="$REPO_ROOT/.claude/skills"
-CANONICAL_EMITTERS=(pm prompt wave issue-maker start-issue harness-audit)
+CANONICAL_EMITTERS=(pm wave issue-maker start-issue)
 missing_reserve=()
 missing_file=()
 for emitter in "${CANONICAL_EMITTERS[@]}"; do
   skill_md="$SKILLS_DIR/$emitter/SKILL.md"
+  if [[ "$emitter" == pm ]]; then
+    skill_md="$SKILLS_DIR/pm/modules/flow/launch.md"
+  fi
   if [[ ! -f "$skill_md" ]]; then
     missing_file+=("$emitter")
     continue
@@ -587,75 +575,11 @@ for emitter in "${CANONICAL_EMITTERS[@]}"; do
   fi
 done
 if (( ${#missing_file[@]} > 0 )); then
-  fail "canonical emitter SKILL.md not found: ${missing_file[*]} (expected under $SKILLS_DIR)"
+  fail "canonical emitter procedure not found: ${missing_file[*]} (expected under $SKILLS_DIR)"
 elif (( ${#missing_reserve[@]} > 0 )); then
   fail "emitters without an explicit chip-offer-registry.sh --reserve call site: ${missing_reserve[*]}"
 else
   ok "all ${#CANONICAL_EMITTERS[@]} canonical emitters carry an explicit --reserve call site"
-fi
-
-# ---------------------------------------------------------------------------
-# 39. /harness-audit's reservation must exist as a RUNNABLE invocation, not only
-#     as a mandate sentence.
-#
-#     Test 38 asks a narrower question than its name suggests: does the skill
-#     name the reserve command anywhere in its own text?  For five emitters that
-#     IS the call site — a SKILL.md instruction is what gets executed.
-#     /harness-audit is the exception: it states the mandate in prose AND ships a
-#     runnable snippet, and test 38 sees only the prose, because the snippet
-#     spells the command as "$REGISTRY" rather than the literal script name.
-#     Measured on this tree: deleting the snippet leaves test 38 green, and the
-#     snippet alone does not satisfy test 38 at all (CodeAnt review, PR #1615).
-#     So 38 cannot detect the executable call site disappearing.
-#
-#     Test 38 is deliberately NOT tightened to require a fenced call for every
-#     emitter: five of the six state the call in prose only, so a file-wide fence
-#     rule would fail them (measured — the reason the same requirement was
-#     declined in review round 2).  The fence requirement is therefore scoped to
-#     the one emitter that actually ships a fence.
-#
-#     Only lines that could actually invoke the registry are considered.  Shell
-#     fences alone open a scanned region (a ```text block naming the flags is not
-#     a call); every other fence marker closes it.  Inside, comment lines and
-#     pure output statements (echo/printf) are dropped.  Each dropped line and
-#     fence marker is replaced by a separator wider than the match window, so a
-#     window can never span two blocks and a dropped line cannot join its
-#     neighbours into a false one.
-#
-#     Two conditions must then hold together: a command expression must sit near
-#     --reserve, and --emitter harness-audit must sit near it too.  The command
-#     expression is matched name-agnostically -- the literal script name OR any
-#     "$VAR" command -- deliberately NOT pinned to "$REGISTRY".  Pinning the
-#     current spelling would false-fail a rename, and would also fail if the
-#     snippet ever switched to the literal script name, which is the direction
-#     this guard should welcome.  What it does reject is a bare flag string
-#     assignment with no command in front of it.
-#     (CodeAnt and CodeRabbit reviews, PR #1615.)
-# ---------------------------------------------------------------------------
-HA_SKILL_MD="$SKILLS_DIR/harness-audit/SKILL.md"
-if [[ ! -f "$HA_SKILL_MD" ]]; then
-  fail "harness-audit SKILL.md not found at $HA_SKILL_MD"
-else
-  ha_sep="$(printf '%*s' 130 '' | tr ' ' '#')"
-  ha_fenced="$(awk -v sep="$ha_sep" '
-      /^[[:space:]]*```(bash|sh|shell)[[:space:]]*$/ { in_fence = 1; printf "%s ", sep; next }
-      /^[[:space:]]*```/                             { in_fence = 0; printf "%s ", sep; next }
-      !in_fence                                      { next }
-      /^[[:space:]]*#/                               { printf "%s ", sep; next }
-      /^[[:space:]]*(echo|printf)[[:space:]]/        { printf "%s ", sep; next }
-                                                     { print }
-    ' "$HA_SKILL_MD" 2>/dev/null | tr '\n' ' ' | tr -s '[:space:]' ' ')"
-  ha_cmd_re='(chip-offer-registry\.sh|"\$[A-Za-z_][A-Za-z0-9_]*").{0,160}--reserve'
-  ha_flag_re='--emitter harness-audit.{0,120}--reserve|--reserve.{0,120}--emitter harness-audit'
-  if [[ -z "$ha_fenced" ]]; then
-    fail "harness-audit SKILL.md: no shell-fenced lines found to check"
-  elif ! grep -qE -- "$ha_cmd_re" <<<"$ha_fenced"; then
-    fail "harness-audit: --reserve appears in a shell fence but with no command expression in front of it (a bare flag string is not an invocation)"
-  elif ! grep -qE -- "$ha_flag_re" <<<"$ha_fenced"; then
-    fail "harness-audit: --reserve invocation missing from every shell fence (test 38 still passes on the prose mandate alone, so it cannot catch this)"
-  else
-    ok "harness-audit ships a runnable --reserve invocation inside a shell fence"
-  fi
 fi
 
 # ---------------------------------------------------------------------------

@@ -6,8 +6,11 @@
 # Never dismisses humans: requires GitHub user.type == "Bot" AND login in the repo allowlist.
 #
 # Usage:
-#   dismiss-stale-bot-changes.sh <pr_number> [--handoff-file <path>] [--owner-repo <owner/repo>]
+#   dismiss-stale-bot-changes.sh <pr_number> [--handoff-file <path>] [--owner-repo <owner/repo>] [--include-retired-graphite]
 #   dismiss-stale-bot-changes.sh --help
+#
+# --include-retired-graphite opts an explicit cleanup into stale Graphite reviews.
+# Normal automated callers use the active reviewer list.
 #
 # --owner-repo scopes the handoff APPEND only (issue #1302). Without it the
 # append fell through to handoff-state.sh's flat path even when --handoff-file
@@ -43,12 +46,17 @@ print_usage() {
 PR_NUMBER=""
 HANDOFF_FILE=""
 OWNER_REPO_ARG=""
+INCLUDE_RETIRED_GRAPHITE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)
       print_usage
       exit 0
+      ;;
+    --include-retired-graphite)
+      INCLUDE_RETIRED_GRAPHITE=1
+      shift
       ;;
     --handoff-file)
       HANDOFF_FILE="${2:-}"
@@ -114,8 +122,10 @@ if [[ -z "$HEAD_SHA" ]]; then
 fi
 
 # Literal bot logins — must match dismiss targets; humans never appear here.
-# graphite-app[bot]: retired 2026-11-03 (#1889); kept so a leftover stale review still dismisses.
-ALLOWLIST_JSON='["coderabbitai[bot]","cursor[bot]","greptile-apps[bot]","codeant-ai[bot]","graphite-app[bot]"]'
+ALLOWLIST_JSON='["coderabbitai[bot]","cursor[bot]","greptile-apps[bot]","codeant-ai[bot]"]'
+if [[ "$INCLUDE_RETIRED_GRAPHITE" -eq 1 ]]; then
+  ALLOWLIST_JSON=$(jq -c '. + ["graphite-app[bot]"]' <<< "$ALLOWLIST_JSON") || exit 4
+fi
 
 if ! REVIEWS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" 2>/dev/null); then
   echo "ERROR: gh api failed while listing PR reviews" >&2

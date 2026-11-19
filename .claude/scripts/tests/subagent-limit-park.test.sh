@@ -44,7 +44,6 @@ REPO_ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
 DOC="$REPO_ROOT/.claude/reference/subagent-thread-limit-park.md"
 GO_ON="$REPO_ROOT/.claude/skills/go-on/SKILL.md"
 SUBAGENT="$REPO_ROOT/.claude/skills/subagent/SKILL.md"
-PM_SKILL="$REPO_ROOT/.claude/skills/pm/SKILL.md"
 PAUSE_RESUME="$REPO_ROOT/.claude/skills/pause-resume/SKILL.md"
 SCHEMA="$REPO_ROOT/.claude/reference/session-state-schema.json"
 DAY_MODE_DOC="$REPO_ROOT/.claude/reference/pm-day-mode.md"
@@ -133,7 +132,7 @@ BLOCK_PIPELINE="$(extract_skill_bash "$DOC" subagent-limit-pipeline-record)" || 
 BLOCK_WAKE="$(extract_skill_bash     "$DOC" subagent-limit-wake-arm)"        || exit 1
 BLOCK_PUBLISH="$(extract_skill_bash  "$DOC" subagent-limit-wake-publish)"    || exit 1
 BLOCK_RECOVERY="$(extract_skill_bash "${PARK_SNAPSHOT_RECOVERY_TEST_SOURCE:-$DOC}" subagent-limit-park-recovery)"   || exit 1
-BLOCK_PM_SNAPSHOT="$(extract_skill_bash "${PARK_SNAPSHOT_PM_TEST_SOURCE:-$PM_SKILL}" pm-day-park-snapshot)" || exit 1
+BLOCK_PM_SNAPSHOT="$(extract_skill_bash "${PARK_SNAPSHOT_PM_TEST_SOURCE:-$REPO_ROOT/.claude/skills/pm/modules/day-preconditions.md}" pm-day-park-snapshot)" || exit 1
 BLOCK_GEN="$(extract_skill_bash    "$GO_ON" go-on-limit-generation-gate)"    || exit 1
 BLOCK_PROBE="$(extract_skill_bash  "$GO_ON" go-on-limit-park-probe)"         || exit 1
 
@@ -481,7 +480,7 @@ echo "== #1622: /pm 2D.6 landing between this park's claim and its wake publish 
 # winner then reached §4, also read null, and published. Two wakes over one
 # park. 2D.6 now claims `limit_cause` by the same compare-and-set, so the
 # interleaving costs it the slot instead of the park.
-BLOCK_PM_2D6="$(extract_skill_bash "$PM_SKILL" pm-day-2d6-park-claim)" || exit 1
+BLOCK_PM_2D6="$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" pm-day-2d6-park-claim)" || exit 1
 
 run_pm_2d6() {  # run_pm_2d6 <parked_until> <limit_kind> [new_hits]
   PARKED_UNTIL="$1" LIMIT_KIND="$2" NEW_HITS="${3-1}" bash -c "$BLOCK_PM_2D6" 2>/dev/null | tail -1
@@ -792,7 +791,7 @@ seed_existing_park preemptive "$(epoch_to_iso $(( NOW + 1800 )))" 0
 "$SESSION_STATE_SH" --set "$recovery_day_path.park_generation=\"recovery-probe\"" \
   --set "$recovery_day_path.limit_probe_fires_remaining=7" >/dev/null
 RECOVERY_OUT=$("${BASH:-bash}" -c "$BLOCK_RECOVERY")
-check_eq "probe recovery carries its existing bound" 'rearm_probe fires=7' "$(field "$RECOVERY_OUT" PARK_RECOVERY)"
+check_eq "an old pre-emptive park is retired, not probed (#2416)" 'retire_preemptive' "$(field "$RECOVERY_OUT" PARK_RECOVERY)"
 check_eq "probe recovery accepts exact numeric zero proof" 'WAKE_PUBLISH=ok' \
   "$(run_recovered_publish "$(field "$RECOVERY_OUT" PARK_RECOVERY_BINDING)" 0 limit-existing)"
 check_eq "probe recovery does not refresh its bound" 'preemptive|7|9|limit-recovered' \
@@ -808,8 +807,8 @@ check_eq "an expired park resumes instead"       "PARK_RECOVERY=expired" "$(run_
 seed_existing_park preemptive "$(epoch_to_iso $(( NOW + 1800 )))" 'null'
 jq --arg k "$REPO_KEY" '.repos[$k].day.limit_probe_fires_remaining = 7' "$STATE_FILE" \
   > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
-check_eq "a live probe bound re-arms the probe with its own count" \
-  "PARK_RECOVERY=rearm_probe fires=7" "$(run_recovery)"
+check_eq "a live probe bound on an old pre-emptive park is retired (#2416)" \
+  "PARK_RECOVERY=retire_preemptive" "$(run_recovery)"
 
 seed_existing_park reactive "$(epoch_to_iso $(( NOW + 3*86400 )))" 'null'
 jq --arg k "$REPO_KEY" '.repos[$k].day.limit_kind = "weekly"' "$STATE_FILE" \
@@ -821,10 +820,66 @@ check_eq "a weekly park never auto-wakes"        "PARK_RECOVERY=manual" "$(run_r
 seed_existing_park preemptive "$(epoch_to_iso $(( NOW + 1800 )))" 'null'
 jq --arg k "$REPO_KEY" '.repos[$k].day.limit_probe_fires_remaining = -1' "$STATE_FILE" \
   > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
-check_eq "a -1 bound stays parked, re-arms nothing" "PARK_RECOVERY=manual" "$(run_recovery)"
+check_eq "a -1 bound on an old pre-emptive park is retired, not stranded" "PARK_RECOVERY=retire_preemptive" "$(run_recovery)"
 jq --arg k "$REPO_KEY" '.repos[$k].day.limit_probe_fires_remaining = 0' "$STATE_FILE" \
   > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
-check_eq "a spent 0 bound stays parked too"         "PARK_RECOVERY=manual" "$(run_recovery)"
+check_eq "a spent 0 bound on an old pre-emptive park is retired too" "PARK_RECOVERY=retire_preemptive" "$(run_recovery)"
+
+# #2416: a retired pre-emptive park really is cleared, and a REACTIVE park is
+# not touched by the same route. Per-PR records stay for /go-on to resume.
+seed_existing_park preemptive "$(epoch_to_iso $(( NOW + 1800 )))" 'null'
+jq --arg k "$REPO_KEY" '.repos[$k].day.limit_probe_fires_remaining = 3
+  | .repos[$k].prs["77"] = {handoff_reason: "usage_limit_park", phase: "B"}' "$STATE_FILE" \
+  > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+RETIRE_SNAP=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day")
+"$REPO_ROOT/.claude/scripts/park-retire.sh" --repo "$REPO_KEY" --snapshot "$RETIRE_SNAP" \
+  --state-helper "$SESSION_STATE_SH" >/dev/null 2>&1
+check_eq "retiring clears the old pre-emptive park's deadline and cause" "null|null|null" \
+  "$(jq -r --arg k "$REPO_KEY" '.repos[$k].day | [.parked_until, .limit_cause, .limit_probe_fires_remaining] | map(tostring) | join("|")' "$STATE_FILE")"
+check_eq "  and the per-PR park record survives for /go-on" "usage_limit_park" \
+  "$(jq -r --arg k "$REPO_KEY" '.repos[$k].prs["77"].handoff_reason' "$STATE_FILE")"
+check_eq "  and recovery then reads no park" "PARK_RECOVERY=none" "$(run_recovery)"
+seed_existing_park reactive "$(epoch_to_iso $(( NOW + 1800 )))" 'null'
+check_eq "a reactive park is never routed to retirement" "PARK_RECOVERY=rearm" "$(run_recovery)"
+
+# #2416 review: retirement compares against the snapshot classification read. If
+# a reactive park replaces the slot first, park-retire.sh exits 7 and leaves it.
+seed_existing_park preemptive "$(epoch_to_iso $(( NOW + 1800 )))" 'null'
+CLS_OUT=$("${BASH:-bash}" -c "$BLOCK_RECOVERY" 2>/dev/null)
+CAPTURED=$(printf '%s\n' "$CLS_OUT" | sed -n 's/^PARK_RETIRE_SNAPSHOT=//p')
+check_eq "classification sees the pre-emptive park and carries its snapshot" "retire_preemptive|1" \
+  "$(field "$CLS_OUT" PARK_RECOVERY)|$([ -n "$CAPTURED" ] && echo 1 || echo 0)"
+seed_existing_park reactive "$(epoch_to_iso $(( NOW + 3600 )))" 'null'
+REPL_BEFORE=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day")
+"$REPO_ROOT/.claude/scripts/park-retire.sh" --repo "$REPO_KEY" --snapshot "$CAPTURED" \
+  --state-helper "$SESSION_STATE_SH" >/dev/null 2>&1
+RETIRE_RC=$?
+check_eq "retiring the captured snapshot over a replacement park exits 7" "7" "$RETIRE_RC"
+check_eq "  and the replacement reactive park is intact" "$REPL_BEFORE" \
+  "$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day")"
+
+# #2416 fail-closed: only the exact cause string `preemptive` retires. A record
+# with no cause, a differently-cased or non-string cause, or an open claim keeps
+# today's path (re-arm / unreadable), never a retirement.
+PD=".repos[\"$REPO_KEY\"].day"
+seed_existing_park reactive "$(epoch_to_iso $(( NOW + 1800 )))" 'null'
+"$SESSION_STATE_SH" --set "$PD.limit_cause=null" >/dev/null
+check_eq "a park with no cause is not retired as pre-emptive" "PARK_RECOVERY=rearm" "$(run_recovery)"
+seed_existing_park Preemptive "$(epoch_to_iso $(( NOW + 1800 )))" 'null'
+check_eq "a wrongly-cased cause is not retired as pre-emptive" "PARK_RECOVERY=rearm" "$(run_recovery)"
+seed_existing_park preemptive "$(epoch_to_iso $(( NOW + 1800 )))" 'null'
+"$SESSION_STATE_SH" --set "$PD.limit_cause=7" >/dev/null
+check_eq "a malformed (non-string) cause reads unreadable, not retired" "PARK_RECOVERY=unreadable" "$(run_recovery)"
+seed_existing_park preemptive "$(epoch_to_iso $(( NOW + 1800 )))" 'null'
+"$SESSION_STATE_SH" --set "$PD.park_claim_token=\"in-flight\"" >/dev/null
+check_eq "a pre-emptive record with an open claim is not retired" "PARK_RECOVERY=rearm" "$(run_recovery)"
+
+# #2416 review: an unset or unresolvable repo key must never read as "no park".
+seed_existing_park reactive "$(epoch_to_iso $(( NOW + 1800 )))" 'null'
+UNSET_OUT=$(REPO_KEY="" SESSION_STATE_SH=/usr/bin/false "${BASH:-bash}" -c "$BLOCK_RECOVERY" 2>/dev/null | tail -1)
+check_eq "an unresolvable repo key is unreadable, never none" "PARK_RECOVERY=unreadable" "$UNSET_OUT"
+UNSET_OUT=$(REPO_KEY="" CLAUDE_SESSION_REPO="$REPO_KEY" "${BASH:-bash}" -c "$BLOCK_RECOVERY" 2>/dev/null | tail -1)
+check_eq "an unset repo key resolves from the state helper and sees the park" "PARK_RECOVERY=rearm" "$UNSET_OUT"
 
 seed_unparked
 check_eq "no park: recovery is a no-op"          "PARK_RECOVERY=none" "$(run_recovery)"
@@ -854,7 +909,10 @@ run_recovery_record() (
   printf 'SELECTED_UNTIL=%s\n' "$PARKED_UNTIL"
 )
 snapshot_prefix() {
-  printf '%s\n' "$1" | sed -n '/^# One lock-protected record/,/^read_day parked_until/p' | sed '$d'
+  # The subagent block alone resolves an unset REPO_KEY and fails closed on an
+  # unresolved one (#2416 review); those lines are the only permitted difference.
+  printf '%s\n' "$1" | sed -n '/^# One lock-protected record/,/^read_day parked_until/p' | sed '$d' \
+    | grep -v -e '^\[ -n "\$REPO_KEY" \] || DAY_SNAPSHOT_RC=4$'
 }
 check_eq "PM and subagent use the identical snapshot mechanism" \
   "$(snapshot_prefix "$BLOCK_PM_SNAPSHOT")" "$(snapshot_prefix "$BLOCK_RECOVERY")"
@@ -1117,7 +1175,7 @@ echo "== Pre-emptive (#1619): the horizon gate, and its parity with /pm 2D.7 =="
 
 BLOCK_HORIZON="$(extract_skill_bash "$DOC" subagent-limit-horizon-gate)"       || exit 1
 BLOCK_WINDOW="$(extract_skill_bash  "$DOC" subagent-limit-preemptive-window)"  || exit 1
-BLOCK_PM_D2="$(extract_skill_bash   "$PM_SKILL" pm-day-d2-horizon-branch)"     || exit 1
+BLOCK_PM_D2="$(extract_skill_bash   "$REPO_ROOT/.claude/skills/pm/modules/day-tick.md" pm-day-d2-horizon-branch)"     || exit 1
 
 # A stand-in for usage-horizon.sh: --check prints the STATUS/REASON pair and
 # exits on the documented code; --observe exits 0 whatever the verdict.
@@ -1201,6 +1259,26 @@ for SCRIPT in "$STUB_DIR/does-not-exist.sh" "$GARBAGE" ""; do
     | grep -E '^HORIZON_(STATUS|REFILL_OK|PARK)=')
   check_eq "parity on degraded input '${SCRIPT:-<unresolved>}'" "$THEIRS" "$MINE"
 done
+# #2416: through the REAL helper both callers read `clear` in every state the
+# old script distinguished — nothing recorded, a foreign session's old reading,
+# a displaced own reading, an attestation either way — and neither refills
+# nothing nor parks. The figure is not a launch input.
+REAL_HORIZON="$REPO_ROOT/.claude/scripts/usage-horizon.sh"
+EMPTY_HOME="$TMP_HOME/unused-horizon-home"
+mkdir -p "$EMPTY_HOME/.claude"
+for ATTEST in true false; do
+  for REMAINING in "" 10 500000; do
+    MINE=$(CLAUDE_SESSION_ID=gate-case HOME="$EMPTY_HOME" HORIZON_COUNTER_NEVER_SEEN=$ATTEST \
+      run_horizon "$BLOCK_HORIZON" "$REAL_HORIZON" "$REMAINING" 1000000)
+    THEIRS=$(CLAUDE_SESSION_ID=gate-case HOME="$EMPTY_HOME" HORIZON_COUNTER_NEVER_SEEN=$ATTEST \
+      run_horizon "$BLOCK_PM_D2" "$REAL_HORIZON" "$REMAINING" 1000000)
+    check_eq "real helper (attest=$ATTEST remaining='$REMAINING'): both gates agree" "$THEIRS" "$MINE"
+    check_eq "  status is clear" "clear" "$(field "$MINE" HORIZON_STATUS)"
+    check_eq "  refill is allowed" "true" "$(field "$MINE" HORIZON_REFILL_OK)"
+    check_eq "  nothing parks" "false" "$(field "$MINE" HORIZON_PARK)"
+  done
+done
+
 # Negative control for the parity comparison itself: two DIFFERENT verdicts must
 # not compare equal, or every check above would pass vacuously.
 MINE=$(run_horizon "$BLOCK_HORIZON" "$(make_horizon_stub clear)" 900000 1000000 \
@@ -1322,8 +1400,8 @@ check_eq "  the probe bound rides the SAME write" "12"      "$(day_get limit_pro
 check_eq "  thrash counter incremented"    "1"              "$(day_get consecutive_limit_hits)"
 # ...and that record is exactly what §6 recovery re-arms the PROBE from, with
 # the stored count rather than a fresh bound.
-check_eq "recovery re-arms the probe with the claimed count" \
-  "PARK_RECOVERY=rearm_probe fires=12" "$(run_recovery)"
+check_eq "recovery retires a park the removed path claimed (#2416)" \
+  "PARK_RECOVERY=retire_preemptive" "$(run_recovery)"
 
 # The wake: no reset time -> the bounded probe, at the cadence, not a one-shot.
 OUT=$(NEW_HITS=1 LIMIT_KIND=rolling_window PARK_RESET_KNOWN=false \
@@ -1381,6 +1459,29 @@ require_text "the subagent monitor loop gates refill on the verdict" \
   "$SUBAGENT" "Step 0's horizon verdict gates this step"
 require_text "  and gates the first dispatch on it too" \
   "$SUBAGENT" 'Check the usage horizon before every one of those launches'
+
+# #2376: every hold line says this is not the account usage reader, the
+# explicit request is defined, and the attestation survives a compaction.
+HOLD_LINES=$(grep -c 'Launch held:' "$DOC")
+HOLD_NOTED=$(grep 'Launch held:' "$DOC" | grep -c 'not the account usage reader; signing in will not change it\.')
+check_eq "the hold table has five hold lines" "5" "$HOLD_LINES"
+check_eq "every hold line says it is not the account usage reader" "$HOLD_LINES" "$HOLD_NOTED"
+require_text "the displaced-reading reason has a hold line" \
+  "$DOC" 'counter-seen-reading-displaced.*Wait for a fresh harness counter'
+require_text "an unconfirmed attestation keeps the continuous-observation basis" \
+  "$DOC" 'counter-never-seen-unverified.*stricter basis'
+require_text "a live chat message naming the work is the explicit request" \
+  "$DOC" 'names the work to start is the'
+require_text "the one-time note is kept" \
+  "$DOC" '\[horizon counter absent\] Proceeding with the launches you requested\.'
+require_text "a compaction no longer bars the attestation" \
+  "$DOC" 'A compaction no longer bars the flag'
+require_text "the exception still cannot become refill permission" \
+  "$DOC" 'Do not set'
+require_text "/subagent treats a named invocation as the request and asks nothing" \
+  "$SUBAGENT" 'ask nothing about the horizon, and launch'
+require_text "the day tick carries the same hold-line sentence" \
+  "$REPO_ROOT/.claude/skills/pm/modules/day-tick.md" 'not the account usage reader'
 
 # ---------------------------------------------------------------------------
 echo "== Pre-emptive: a park day mode already opened is ADOPTED, never doubled =="
@@ -1459,11 +1560,9 @@ check_eq "  and keeps its vendor reset"   "$(epoch_to_iso $(( NOW + 900 )))" "$(
 echo "== Pre-emptive: wiring, and the #1444 ownership decision (AC 2, 4, 5, 6) =="
 # ---------------------------------------------------------------------------
 
-require_text "monitor-mode's per-cycle checklist reads the horizon" \
-  "$RULES/monitor-mode.md" 'usage-horizon\.sh --observe'
-require_text "  from the harness-printed counter only" \
-  "$RULES/monitor-mode.md" 'harness-printed `<total_tokens>`'
-require_text "  and routes critical to the park procedure" \
+refute_text "monitor-mode's per-cycle checklist no longer reads the horizon (#2416)" \
+  "$RULES/monitor-mode.md" 'usage-horizon\.sh'
+refute_text "  and does not route critical to a pre-emptive park" \
   "$RULES/monitor-mode.md" 'subagent-thread-limit-park\.md` §7'
 require_text "the subagent monitor loop reads it every cycle" \
   "$SUBAGENT" 'Read the usage horizon'
@@ -1478,24 +1577,12 @@ require_text "  with a named degraded mode when it does not resolve" \
 # kept the strings but moved the gate — or ran --check without --observe — would
 # still pass. Pin the POSITION as well: item 0 of each per-cycle checklist,
 # ahead of every other item, observing before checking.
-check_before "monitor-mode: the horizon read opens the per-cycle checklist" \
-  "$RULES/monitor-mode.md" '^Every ~60s, in order:' '^0\. \*\*Usage horizon'
-check_before "  and precedes every other item in it" \
-  "$RULES/monitor-mode.md" '^0\. \*\*Usage horizon' '^1\. Process completed subagents'
-require_text "  observing before checking, on that same line" \
-  "$RULES/monitor-mode.md" '^0\. \*\*Usage horizon.*--observe.*--check'
 check_before "the subagent monitor loop reads it as item 0 too" \
   "$SUBAGENT" '^### Monitor loop' '^0\. \*\*Read the usage horizon'
 check_before "  ahead of processing completed subagents" \
   "$SUBAGENT" '^0\. \*\*Read the usage horizon' '^1\. \*\*Check for completed subagents'
 require_text "  observing before branching on --check" \
   "$SUBAGENT" '^0\. \*\*Read the usage horizon.*--observe.*--check'
-# Negative control for the ordering matcher: the reversed claim must FAIL, or
-# every check_before above would be passing on a comparison that cannot fail.
-check_true "negative control — check_before can distinguish order" \
-  "$( A="$(line_of "$RULES/monitor-mode.md" '^0\. \*\*Usage horizon')"
-      B="$(line_of "$RULES/monitor-mode.md" '^1\. Process completed subagents')"
-      [ "$B" -lt "$A" ] && echo false || echo true )"
 require_text "the doc pins the counter to the harness value" \
   "$DOC" 'the one the \*\*harness printed\*\*'
 require_text "  and forbids substituting a remembered figure" \
@@ -1523,16 +1610,16 @@ require_text "pm-monitoring-decision separates polling from parking" \
 
 # AC 5: both out-of-scope notes now name what is in scope.
 require_text "/pm 2D.7 names the newly in-scope loops" \
-  "$PM_SKILL" 'Now in scope elsewhere'
+  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'Now in scope elsewhere'
 # #1444 moved PMM and babysit from "out of scope" to "readers only". Assert the
 # NEW sentence and refute the old one — a presence-only check on the section
 # would still pass if the out-of-scope claim came back beside the new text.
 require_text "  and names #1444's two loops as readers only" \
-  "$PM_SKILL" 'Also in scope, as readers only \(#1444\)'
+  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'Also in scope, as readers only \(#1444\)'
 refute_text "  and no longer calls them out of scope" \
-  "$PM_SKILL" 'Still out of scope'
+  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'Still out of scope'
 refute_text "  and no longer calls the monitor-mode reflex an unfiled follow-up" \
-  "$PM_SKILL" 'is a named follow-up, not part of this change'
+  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'is a named follow-up, not part of this change'
 require_text "pm-day-mode.md's scope boundary is updated" \
   "$REPO_ROOT/.claude/reference/pm-day-mode.md" 'Scope boundary \(updated by #1619, then #1444\)'
 refute_text "  and no longer says the follow-up is unfiled" \
@@ -1541,10 +1628,10 @@ refute_text "  and no longer says the follow-up is unfiled" \
 # AC 6: safety.md's horizon carve-out covers this reader WITHOUT amendment.
 refute_text "safety.md was not amended for this reader" \
   "$RULES/safety.md" 'subagent-thread-limit-park'
-require_text "  and its horizon carve-out still stands as written" \
+refute_text "  and its horizon carve-out is gone (#2416)" \
   "$RULES/safety.md" 'Horizon carve-out \(#1427\)'
-require_text "the doc claims that carve-out rather than widening it" \
-  "$DOC" "carve-out \(#1427\) covers this reader"
+require_text "the doc marks the pre-emptive section inert (#2416)" \
+  "$DOC" 'Inert since #2416'
 # No local estimation anywhere in the new procedure.
 refute_text "the pre-emptive leg estimates nothing locally" \
   "$DOC" 'estimate the remaining|derive the counter|count the tokens'

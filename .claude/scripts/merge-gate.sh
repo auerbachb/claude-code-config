@@ -120,8 +120,15 @@
 # Usage:
 #   merge-gate.sh <pr_number> [--reviewer cr|bugbot|greptile] [--allow-nonauthor]
 #                             [--allow-hollow-approval]
-#                             [--allow-unverified-required-checks]
+#                             [--allow-unverified-required-checks] [--live]
 #   merge-gate.sh --help
+#
+# --live (issue #2444): every read this run makes, and every script it starts,
+# is a live GitHub read — the per-PR snapshot (lib/pr-snapshot.sh) and the slow
+# read cache (lib/slow-read-cache.sh) are pinned off. Pass it on every gate run
+# that is the last check before a merge (/wrap, /merge, Phase C). Polling runs
+# leave it off and may share reads for up to 60s. Detail:
+# .claude/reference/pr-snapshot-live-merge-paths.md
 #
 # Authorship guard (issue #733): a merge is a write, so the gate BLOCKS a
 # confirmed foreign-author PR (adds a `missing` entry; the `authorship` field is
@@ -170,7 +177,8 @@
 #       "base": "main",
 #       "contexts": ["typecheck", "build", …],
 #       "unsatisfied": [{"context": "build", "state": "absent"}, …],
-#       "error": ""              # populated only when source == "unavailable"
+#       "error": "",             # unreadable protection or failed evaluation
+#       "cancelled_retry": null  # one otherwise-ready, cancelled Actions check
 #     }
 #   }
 #
@@ -188,8 +196,19 @@
 # `unsatisfied[].state` is `absent` (no check-run and no commit status of that
 # name on HEAD), `wrong_app` (runs of that name exist, but protection pins the
 # context to an `app_id` and none of them came from that app — GitHub would not
-# accept them either), the run's non-`completed` status, its blocking conclusion,
-# or a commit status's `pending`/`failure`/`error`.
+# accept them either), the run's non-`completed` status, its conclusion when that
+# is anything other than `success`/`neutral`/`skipped` (so `cancelled` is its own
+# state here, as are `failure`, `timed_out`, `action_required`, `startup_failure`,
+# `stale`, and `none` for a completed run that carries no conclusion), or a commit
+# status's `pending`/`failure`/`error`.
+#
+# A required context is satisfied by `success`, `neutral`, or `skipped` ONLY —
+# GitHub's own rule, a whitelist, so a conclusion this script has never seen fails
+# closed (issue #1846). That is stricter than the general `ci_status` count, which
+# keeps `cancelled` non-blocking for checks that are not required. `merge_state`
+# `BLOCKED` is still reported as a diagnostic and adds no `missing[]` entry of its
+# own; the required-context entry above is what makes a cancelled required check
+# visible to a consumer that reads only `met`/`missing`.
 #
 # Reading this output: pipe it with `printf '%s'`, a herestring, or a file —
 # NEVER `echo "$GATE_JSON" | jq`. zsh's `echo` expands backslash escapes by
@@ -238,6 +257,14 @@
 #   4 — gh / network / jq error
 
 set -uo pipefail
+# Per-run GitHub REST call count (issue #2441): off unless GH_REST_COUNT=1 or GH_REST_WARN_AT is set.
+if [[ -z "${GH_REST_COUNT_ACTIVE:-}" && ( -n "${GH_REST_COUNT:-}" || -n "${GH_REST_WARN_AT:-}" ) ]]; then
+  if . "$(dirname "${BASH_SOURCE[0]}")/lib/gh-count.sh" 2>/dev/null; then
+    gh_count_reexec "${BASH_SOURCE[0]}" "$@" || true
+  else
+    printf '%s: REST call count unavailable (counter library missing)\n' "$(basename "${BASH_SOURCE[0]}")" >&2
+  fi
+fi
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 # --------------------------------------------------------------------------
@@ -249,6 +276,7 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>
 # library's header for the rule, the PR #883 failures that motivated it, and why
 # review-substance.sh keeps a deliberately different variant.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 TS_NORMALIZER_LIB="${SCRIPT_DIR}/lib/ts-normalizer.sh"
 if [[ ! -f "$TS_NORMALIZER_LIB" || ! -r "$TS_NORMALIZER_LIB" ]]; then
   echo "merge-gate.sh: sibling library missing or unreadable: $TS_NORMALIZER_LIB" >&2
@@ -294,6 +322,7 @@ ALLOW_HOLLOW=false
 # check", it is "we checked and the check never ran", which is the entire defect
 # #1361 exists to close.
 ALLOW_UNVERIFIED_REQ=false
+LIVE_READS=false
 
 print_usage() {
   awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
@@ -316,6 +345,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --allow-unverified-required-checks)
       ALLOW_UNVERIFIED_REQ=true
+      shift
+      ;;
+    --live)
+      LIVE_READS=true
       shift
       ;;
     --reviewer)
@@ -352,6 +385,15 @@ if [[ -z "$PR_NUMBER" ]]; then
   echo "ERROR: <pr_number> is required" >&2
   print_usage >&2
   exit 2
+fi
+
+# --live: a gate run that is the last check before a merge reads everything live.
+# Exported so every child script (pr-state.sh, check-runs-snapshot.sh, ci-status.sh,
+# reviewer-of.sh, required-checks.sh) inherits it; a TTL of 0 stores and reuses
+# nothing, and nothing a caller sets can raise it back (issues #2443, #2444).
+if [[ "$LIVE_READS" == true ]]; then
+  export SLOW_READ_CACHE_TTL=0
+  export PR_SNAPSHOT_TTL=0
 fi
 
 if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
@@ -403,6 +445,8 @@ emit_json() {
   local no_review_override="${21:-}"
   if [[ -z "$no_review_override" ]]; then no_review_override='null'; fi
   jq -cn \
+    --arg pr_number "$PR_NUMBER" \
+    --arg owner_repo "${OWNER_REPO:-}" \
     --argjson met "$met" \
     --arg reviewer "$reviewer" \
     --arg path "$path" \
@@ -425,7 +469,7 @@ emit_json() {
     --argjson deferred_issues "$deferred_issues" \
     --argjson no_review_override "$no_review_override" \
     'def scrub: walk(if type == "string" then gsub("[[:cntrl:]]"; " ") else . end);
-     {met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met, authorship: $authorship, review_evidence: $review_evidence, required_contexts: $required_contexts, review_tier: $review_tier, deferred_thread_count: $deferred_thread_count, deferred_issues: $deferred_issues, no_review_override: $no_review_override}
+     {pr_number: ($pr_number | tonumber), owner_repo: $owner_repo, met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met, authorship: $authorship, review_evidence: $review_evidence, required_contexts: $required_contexts, review_tier: $review_tier, deferred_thread_count: $deferred_thread_count, deferred_issues: $deferred_issues, no_review_override: $no_review_override}
      | scrub'
 }
 
@@ -448,7 +492,7 @@ fi
 OWNER="${OWNER_REPO%/*}"
 REPO="${OWNER_REPO#*/}"
 
-PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,headRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision,author 2>/dev/null || true)
+PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,headRefOid,baseRefName,mergeStateStatus,mergeable,reviewDecision,author,isDraft 2>/dev/null || true)
 if [[ -z "$PR_JSON" ]]; then
   emit_json false unknown cr "$(missing_json "PR #$PR_NUMBER not found")" "" "$(emit_empty_ci)" "" "" "" "$(emit_empty_code_owner_bots)" '[]' 0
   exit 3
@@ -458,6 +502,7 @@ PR_STATE=$(echo "$PR_JSON" | jq -r '.state // "UNKNOWN"')
 HEAD_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid // ""')
 BASE_REF=$(echo "$PR_JSON" | jq -r '.baseRefName // ""')
 MERGE_STATE=$(echo "$PR_JSON" | jq -r '.mergeStateStatus // ""')
+PR_READY=$(echo "$PR_JSON" | jq -r '.isDraft == false')
 MERGEABLE=$(echo "$PR_JSON" | jq -r '.mergeable // ""')
 REVIEW_DECISION=$(echo "$PR_JSON" | jq -r '.reviewDecision // ""')
 PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.author.login // ""')
@@ -472,45 +517,23 @@ if [[ -z "$HEAD_SHA" ]]; then
   exit 4
 fi
 
-# Review tier (issue #1726) — resolved once, here, by the sibling resolver and
-# always against the base branch: this call passes no --config, and nothing in
-# this script lets a flag or the environment supply one, so a PR can never pick
-# the policy it is judged by. Any failure (missing resolver, non-zero exit,
-# unparseable output, an unknown gate) leaves REVIEW_TIER_GATE empty — the full
-# reviewer path then runs — and records a reason the gate adds to `missing`.
-REVIEW_TIER_SH="$SCRIPT_DIR/review-tier.sh"
-REVIEW_TIER_GATE=""
-REVIEW_TIER_JSON="null"
-REVIEW_TIER_FAILURE=""
-NRO_WINDOW_SECONDS=""   # issue #1899 — empty = override disabled
-if [[ ! -x "$REVIEW_TIER_SH" ]]; then
-  REVIEW_TIER_FAILURE="review-tier.sh not found or not executable at $REVIEW_TIER_SH"
-else
-  REVIEW_TIER_RC=0
-  REVIEW_TIER_OUT=$("$REVIEW_TIER_SH" "$PR_NUMBER" --repo "$OWNER_REPO" ${BASE_REF:+--base "$BASE_REF"} --json) || REVIEW_TIER_RC=$?
-  if [[ "$REVIEW_TIER_RC" -ne 0 ]]; then
-    REVIEW_TIER_FAILURE="review-tier.sh exited $REVIEW_TIER_RC"
-  elif ! REVIEW_TIER_JSON=$(printf '%s' "$REVIEW_TIER_OUT" | jq -ce '
-        select(type == "object" and (.gate | IN("legacy", "ci-only", "ci+codeant-one-round", "full")))
-        | {gate, tier, policy}' 2>/dev/null); then
-    REVIEW_TIER_FAILURE="review-tier.sh returned no usable tier"
-    REVIEW_TIER_JSON="null"
-  else
-    REVIEW_TIER_GATE=$(printf '%s' "$REVIEW_TIER_JSON" | jq -r '.gate')
-    # No-review override window (issue #1899), minutes → seconds; read from the
-    # same base-branch policy. Absent, null, or non-integer → disabled.
-    NRO_MINUTES=$(printf '%s' "$REVIEW_TIER_OUT" | jq -r '.no_review_override_minutes | if type == "number" then floor else "" end' 2>/dev/null || true)
-    [[ "$NRO_MINUTES" =~ ^[0-9]+$ ]] && NRO_WINDOW_SECONDS=$((NRO_MINUTES * 60))
-  fi
-fi
-
 # Fetch last commit timestamp for Greptile freshness gate (issue #723) and the
 # stale-approval guard (issue #836). Used in greptile) to confirm a 👍 issue
 # comment is post-push; used in cr) and bugbot) to reject approvals whose
 # submitted_at predates this committer date (force-push retargeting).
 # Non-fatal: an empty result disables both filters (comments/approvals accepted
 # regardless of age), which is preferable to silently blocking a clean review.
-LAST_COMMIT_TS=$(gh api "repos/$OWNER/$REPO/git/commits/$HEAD_SHA" 2>/dev/null | jq -r '.committer.date // ""' 2>/dev/null || echo "")
+# Per-PR snapshot (issue #2444): the HEAD commit, check-runs, statuses, reviews
+# and both comment lists are shared with the other scripts of this poll cycle for
+# at most 60s; any doubt is a live read (lib/pr-snapshot.sh). Missing library:
+# plain live reads, exactly as before.
+if [[ -r "${SCRIPT_DIR}/lib/pr-snapshot.sh" ]] && . "${SCRIPT_DIR}/lib/pr-snapshot.sh" 2>/dev/null; then
+  pr_snap_init "$OWNER/$REPO" "$PR_NUMBER" "$HEAD_SHA" || true
+else
+  pr_snap_list() { gh api --paginate "$2"; }
+  pr_snap_object() { gh api "$2"; }
+fi
+LAST_COMMIT_TS=$(pr_snap_object head-commit "repos/$OWNER/$REPO/git/commits/$HEAD_SHA" 2>/dev/null | jq -r '.committer.date // ""' 2>/dev/null || echo "")
 
 # --------------------------------------------------------------------------
 # Fetch data once, reuse everywhere
@@ -531,11 +554,13 @@ die_local() {
   exit 4
 }
 
-if ! CHECK_RUNS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" 2>/dev/null); then
-  die_api "check-runs"
+if ! CHECK_RUNS_RAW=$("$(dirname "$0")/check-runs-snapshot.sh" --repo "$OWNER/$REPO" --head "$HEAD_SHA" --pr "$PR_NUMBER" 2>/dev/null); then
+  die_api "check/workflow snapshot"
 fi
-# `gh --paginate` concatenates per-page objects; flatten AND dedup (newest check
-# suite wins per (app, check name) — see check-runs-dedup.sh), then re-wrap as a
+# Keep the legacy envelope for the no-review timing reader as well as CI.
+CHECK_RUNS_RAW=$(printf '%s\n' "$CHECK_RUNS_RAW" | jq -c '{check_runs: .}') || die_api "check/workflow snapshot parse"
+# The shared snapshot includes workflow-scoped checks and workflow inventory.
+# Dedup is idempotent on that enriched array; re-wrap it as a
 # single {check_runs: [...]} object so downstream `.check_runs[]` jq queries work.
 #
 # The CI pass/fail verdict is NOT classified here — that stays delegated to
@@ -566,10 +591,12 @@ if [[ -z "$CI_STATUS_JSON" ]] || ! echo "$CI_STATUS_JSON" | jq -e . >/dev/null 2
   die_api "ci-status.sh"
 fi
 
-if ! REVIEWS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" 2>/dev/null); then
+if ! REVIEWS_RAW=$(pr_snap_list reviews "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" 2>/dev/null); then
   die_api "reviews"
 fi
-REVIEWS_JSON=$(echo "$REVIEWS_RAW" | jq -s 'add // []')
+# GitHub still reports its native review decision. Retired-app review objects
+# never participate in the gate’s classification of active or human reviews.
+REVIEWS_JSON=$(echo "$REVIEWS_RAW" | jq -s '(add // []) | map(select((.user.login // "") != "graphite-app[bot]"))')
 if [[ -z "$REVIEWS_JSON" ]] || ! echo "$REVIEWS_JSON" | jq -e . >/dev/null 2>&1; then
   die_api "reviews parse"
 fi
@@ -579,14 +606,14 @@ fi
 # evidence payload, and a busy PR pushes the walkthrough or the inline findings
 # past comment 100. Losing them there does not merely under-report: it turns a
 # genuine approval hollow and blocks the merge.
-if ! PR_COMMENTS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
+if ! PR_COMMENTS_RAW=$(pr_snap_list comments "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
   die_api "pull-comments"
 fi
 PR_COMMENTS_JSON=$(echo "$PR_COMMENTS_RAW" | jq -s 'add // []')
 if [[ -z "$PR_COMMENTS_JSON" ]] || ! echo "$PR_COMMENTS_JSON" | jq -e . >/dev/null 2>&1; then
   die_api "pull-comments parse"
 fi
-if ! ISSUE_COMMENTS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
+if ! ISSUE_COMMENTS_RAW=$(pr_snap_list issue-comments "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" 2>/dev/null); then
   die_api "issue-comments"
 fi
 ISSUE_COMMENTS_JSON=$(echo "$ISSUE_COMMENTS_RAW" | jq -s 'add // []')
@@ -716,23 +743,105 @@ if [[ -z "$RESOLVED_COMMENT_IDS" ]] \
   RESOLVED_COMMENT_IDS='[]'
 fi
 
+# Review tier (issue #1726) — resolved once, here, by the sibling resolver and
+# always against the base branch: this call passes no --config, and nothing in
+# this script lets a flag or the environment supply one, so a PR can never pick
+# the policy it is judged by. Any failure (missing resolver, non-zero exit,
+# unparseable output, an unknown gate) leaves REVIEW_TIER_GATE empty — the full
+# reviewer path then runs — and records a reason the gate adds to `missing`.
+# Resolve the signed-in login once, before the helpers below: they bind their
+# short-lived read caches to it (issue #2443) and inherit the shared lookup, so
+# the authorship check further down reuses it instead of asking again.
+if [[ -r "${SCRIPT_DIR}/lib/gh-viewer.sh" ]] && . "${SCRIPT_DIR}/lib/gh-viewer.sh" 2>/dev/null; then
+  gh_viewer_resolve || true
+fi
+REVIEW_TIER_SH="$SCRIPT_DIR/review-tier.sh"
+REVIEW_TIER_GATE=""
+REVIEW_TIER_JSON="null"
+REVIEW_TIER_FAILURE=""
+NRO_WINDOW_SECONDS=""   # issue #1899 — empty = override disabled
+if [[ ! -x "$REVIEW_TIER_SH" ]]; then
+  REVIEW_TIER_FAILURE="review-tier.sh not found or not executable at $REVIEW_TIER_SH"
+else
+  REVIEW_TIER_RC=0
+  REVIEW_TIER_OUT=$("$REVIEW_TIER_SH" "$PR_NUMBER" --repo "$OWNER_REPO" ${BASE_REF:+--base "$BASE_REF"} --json) || REVIEW_TIER_RC=$?
+  if [[ "$REVIEW_TIER_RC" -ne 0 ]]; then
+    REVIEW_TIER_FAILURE="review-tier.sh exited $REVIEW_TIER_RC"
+  elif ! REVIEW_TIER_JSON=$(printf '%s' "$REVIEW_TIER_OUT" | jq -ce '
+        select(type == "object" and (.gate | IN("legacy", "ci-only", "ci+codeant-one-round", "full")))
+        | {gate, tier, policy}' 2>/dev/null); then
+    REVIEW_TIER_FAILURE="review-tier.sh returned no usable tier"
+    REVIEW_TIER_JSON="null"
+  else
+    REVIEW_TIER_GATE=$(printf '%s' "$REVIEW_TIER_JSON" | jq -r '.gate')
+    # No-review override window (issue #1899), minutes → seconds; read from the
+    # same base-branch policy. Absent, null, or non-integer → disabled.
+    NRO_MINUTES=$(printf '%s' "$REVIEW_TIER_OUT" | jq -r '.no_review_override_minutes | if type == "number" then floor else "" end' 2>/dev/null || true)
+    [[ "$NRO_MINUTES" =~ ^[0-9]+$ ]] && NRO_WINDOW_SECONDS=$((NRO_MINUTES * 60))
+  fi
+fi
+# (Resolved here, after the review-thread walk, rather than earlier: nothing above
+# reads the tier, and a gate that dies on a failed thread read no longer spends the
+# tier's calls first — issue #2443.)
+
 # Runtime CODEOWNERS detection. Branch protection is repo-specific, so only
 # enforce reviewDecision against bot code-owner approvals when this repo actually
 # names CR or Greptile as a code owner.
 CODEOWNERS_TEXT=""
-for codeowners_path in CODEOWNERS .github/CODEOWNERS docs/CODEOWNERS; do
-  if [[ -n "$BASE_REF" ]]; then
-    CODEOWNERS_JSON=$(gh api --method GET "repos/$OWNER/$REPO/contents/$codeowners_path" -f ref="$BASE_REF" 2>/dev/null || true)
+# Short-lived reuse (issue #2443; lib/slow-read-cache.sh): keyed by the base
+# branch's tip SHA, read before and after the live reads and stored only when both
+# agree, bound to the repo and the signed-in login. A definite answer only: a file
+# that was found with every earlier path an explicit HTTP 404, or all three paths
+# an explicit 404. A rate limit, a 5xx or an odd response is never stored, and any
+# doubt is the live read below.
+CO_CACHE=0 CO_TIP1="" CO_DEFINITE=1 CO_HIT_OK=0 CO_START=""
+if [[ -n "$BASE_REF" && -n "${GH_VIEWER_LOGIN:-}" && -r "${SCRIPT_DIR}/lib/slow-read-cache.sh" ]] \
+   && . "${SCRIPT_DIR}/lib/slow-read-cache.sh" 2>/dev/null && slow_cache_enabled codeowners \
+   && CO_START="$(date +%s)" \
+   && CO_TIP1="$(slow_cache_base_tip "$OWNER/$REPO" "$BASE_REF")"; then
+  CO_CACHE=1
+  if CODEOWNERS_TEXT="$(slow_cache_get codeowners "$OWNER/$REPO" "$BASE_REF" "$CO_TIP1" "$GH_VIEWER_LOGIN")"; then
+    CO_HIT_OK=1
   else
-    CODEOWNERS_JSON=$(gh api --method GET "repos/$OWNER/$REPO/contents/$codeowners_path" 2>/dev/null || true)
+    CODEOWNERS_TEXT=""
   fi
+fi
+if [[ "$CO_HIT_OK" != 1 ]]; then
+for codeowners_path in CODEOWNERS .github/CODEOWNERS docs/CODEOWNERS; do
+  CO_ERR="$(mktemp 2>/dev/null)" || CO_ERR=/dev/null
+  CO_RC=0
+  if [[ -n "$BASE_REF" ]]; then
+    # With the cache on, read the commit the key names, so the stored value is
+    # exactly that commit's file whatever the branch does meanwhile.
+    CODEOWNERS_JSON=$(gh api --method GET "repos/$OWNER/$REPO/contents/$codeowners_path" -f ref="${CO_TIP1:-$BASE_REF}" 2>"$CO_ERR") || CO_RC=$?
+  else
+    CODEOWNERS_JSON=$(gh api --method GET "repos/$OWNER/$REPO/contents/$codeowners_path" 2>"$CO_ERR") || CO_RC=$?
+  fi
+  if [[ "$CO_RC" -ne 0 ]] && ! grep -q 'HTTP 404' "$CO_ERR" 2>/dev/null; then CO_DEFINITE=0; fi
+  [[ "$CO_ERR" == /dev/null ]] || rm -f "$CO_ERR"
   if [[ -n "$CODEOWNERS_JSON" ]]; then
-    CODEOWNERS_TEXT=$(echo "$CODEOWNERS_JSON" | jq -r '.content // ""' | base64 --decode 2>/dev/null || true)
+    # A decode that fails part-way (a valid prefix, then bad input) may still leave
+    # text behind, and the live gate keeps using it exactly as before; but such a
+    # read is partial, so it is never stored (CO_DEFINITE=0).
+    CO_DEC_RC=0
+    CODEOWNERS_TEXT=$(echo "$CODEOWNERS_JSON" | jq -r '.content // ""' | base64 --decode 2>/dev/null) || CO_DEC_RC=$?
+    [[ "$CO_DEC_RC" -eq 0 ]] || CO_DEFINITE=0
     if [[ -n "$CODEOWNERS_TEXT" ]]; then
       break
     fi
+    # A body with no decodable content is neither a clean 404 nor a clean file.
+    [[ "$CO_RC" -ne 0 ]] || CO_DEFINITE=0
+  elif [[ "$CO_RC" -eq 0 ]]; then
+    CO_DEFINITE=0   # success with an empty body: not an answer
   fi
 done
+if [[ "$CO_CACHE" == 1 && "$CO_DEFINITE" == 1 ]]; then
+  CO_TIP2="$(slow_cache_base_tip "$OWNER/$REPO" "$BASE_REF" 2>/dev/null)" || CO_TIP2=""
+  if [[ -n "$CO_TIP2" && "$CO_TIP2" == "$CO_TIP1" ]]; then
+    slow_cache_put codeowners "$OWNER/$REPO" "$BASE_REF" "$CO_TIP1" "$GH_VIEWER_LOGIN" "$CODEOWNERS_TEXT" "$CO_START" >/dev/null 2>&1 || true
+  fi
+fi
+fi
 
 CODE_OWNER_BOTS=$(printf '%s\n' "$CODEOWNERS_TEXT" | jq -R -s -c '
   split("\n")
@@ -788,115 +897,25 @@ CI_STATUS=$(echo "$CI_STATUS_JSON" | jq -c '{
 # `.protected` from that same object is what separates "unprotected" from
 # "unreadable" — a distinction no HTTP status makes reliably. Only when BOTH
 # reads fail do we report `unavailable`, which blocks.
-REQUIRED_CONTEXTS_JSON='[]'
-REQUIRED_APPS_JSON='{}'
-REQUIRED_SOURCE="none"
-REQUIRED_ERROR=""
-
-# Extract the context list from either shape. Both carry `contexts`; the
-# protection endpoint additionally carries `checks[].context` (the newer
-# app-scoped form, which is what the UI writes today), so union them. `contexts`
-# alone would miss nothing observed so far, but the union costs one line and
-# fails toward listing MORE required checks, never fewer.
-REQ_CTX_FILTER='
-  if type == "object"
-  then ((( .contexts // [] ) + [ ( .checks // [] )[]? | .context // empty ])
-        | map(select(type == "string" and length > 0)) | unique)
-  else [] end'
-
-# The publisher half of the same answer (issue #1383 review). `checks[]` entries
-# carry an `app_id` alongside the context, and GitHub itself will only accept a
-# check from THAT app for that context — this repo pins `rule-lint` to app_id
-# 15368. Matching on name alone would let a same-named check from any other
-# publisher satisfy a required context, so the gate could report a pass that
-# GitHub would refuse: the required app never verified HEAD. That is the same
-# vacuous pass #1361 exists to close, one axis over.
-#
-# Kept as a SEPARATE {context: app_id} map rather than folded into the context
-# list so the emitted `required_contexts.contexts` stays a plain string array.
-# A null `app_id` means "any app" in GitHub's own semantics, and a context that
-# arrives only via the legacy `contexts` array has no publisher to pin, so both
-# are simply absent from this map and stay name-only.
-REQ_APPS_FILTER='
-  if type == "object"
-  then ([ ( .checks // [] )[]?
-          | select((.context | type) == "string" and (.context | length) > 0)
-          | select(.app_id != null)
-          | {key: .context, value: .app_id} ] | from_entries)
-  else {} end'
-
-BRANCH_READABLE=false
-BRANCH_PROTECTED=""
-BRANCH_CONTEXTS='[]'
-BRANCH_APPS='{}'
-if [[ -n "$BASE_REF" ]]; then
-  BRANCH_JSON=$(gh api "repos/$OWNER/$REPO/branches/$BASE_REF" 2>/dev/null || true)
-  # `has("name")` is the readability sentinel: a 404/403 body is a `{message:…}`
-  # object that would otherwise parse fine and read as an unprotected branch.
-  if [[ -n "$BRANCH_JSON" ]] && echo "$BRANCH_JSON" | jq -e 'type == "object" and has("name")' >/dev/null 2>&1; then
-    BRANCH_READABLE=true
-    BRANCH_PROTECTED=$(echo "$BRANCH_JSON" | jq -r '(.protected // false) | tostring' 2>/dev/null || echo "")
-    BRANCH_CONTEXTS=$(echo "$BRANCH_JSON" | jq -c ".protection.required_status_checks | $REQ_CTX_FILTER" 2>/dev/null || echo '[]')
-    if [[ -z "$BRANCH_CONTEXTS" ]]; then BRANCH_CONTEXTS='[]'; fi
-    BRANCH_APPS=$(echo "$BRANCH_JSON" | jq -c ".protection.required_status_checks | $REQ_APPS_FILTER" 2>/dev/null || echo '{}')
-    if [[ -z "$BRANCH_APPS" ]]; then BRANCH_APPS='{}'; fi
-  fi
-fi
-
-if [[ -z "$BASE_REF" ]]; then
-  # No base branch name means no protection to look up. Report it rather than
-  # silently skipping — this is the same class of gap #1361 is about.
-  REQUIRED_SOURCE="unavailable"
-  REQUIRED_ERROR="PR base branch name unavailable"
-elif [[ "$BRANCH_READABLE" == true && "$BRANCH_PROTECTED" == "false" ]]; then
-  # Unprotected base — there is nothing to require. Pre-#1361 behaviour, and the
-  # cheap path: no protection call at all.
-  REQUIRED_SOURCE="none"
+# Share this read with after-CI review admission so a missing aggregate check
+# cannot look optional in one consumer and required in another (Issue 2316).
+REQUIRED_POLICY="$("$(dirname "$0")/required-checks.sh" --repo "$OWNER/$REPO" --base "$BASE_REF")" || REQUIRED_POLICY=""
+if [[ -n "$REQUIRED_POLICY" ]] && jq -e '
+  (.source | IN("none", "unavailable", "branch_protection", "branch_object"))
+  and (.contexts | type == "array") and (.apps | type == "object")
+  and (.error | type == "string")' >/dev/null 2>&1 <<<"$REQUIRED_POLICY"; then
+  REQUIRED_CONTEXTS_JSON="$(jq -c '.contexts' <<<"$REQUIRED_POLICY")"
+  REQUIRED_APPS_JSON="$(jq -c '.apps' <<<"$REQUIRED_POLICY")"
+  REQUIRED_SOURCE="$(jq -r '.source' <<<"$REQUIRED_POLICY")"
+  REQUIRED_ERROR="$(jq -r '.error' <<<"$REQUIRED_POLICY")"
 else
-  # stdout and stderr are captured together deliberately: on success gh writes
-  # only JSON, on failure only a message, so one capture plus the exit code
-  # classifies both without a temp file.
-  if RSC_RAW=$(gh api "repos/$OWNER/$REPO/branches/$BASE_REF/protection/required_status_checks" 2>&1); then
-    RSC_CONTEXTS=$(printf '%s' "$RSC_RAW" | jq -c "$REQ_CTX_FILTER" 2>/dev/null || true)
-    RSC_APPS=$(printf '%s' "$RSC_RAW" | jq -c "$REQ_APPS_FILTER" 2>/dev/null || true)
-  else
-    RSC_CONTEXTS=""
-    RSC_APPS=""
-  fi
-  if [[ -n "$RSC_CONTEXTS" ]]; then
-    REQUIRED_CONTEXTS_JSON="$RSC_CONTEXTS"
-    if [[ -n "$RSC_APPS" ]]; then REQUIRED_APPS_JSON="$RSC_APPS"; else REQUIRED_APPS_JSON='{}'; fi
-    REQUIRED_SOURCE="branch_protection"
-  elif [[ "$BRANCH_READABLE" == true ]]; then
-    # The protection endpoint refused (403, or a 404 meaning "required status
-    # checks not enabled"), but the branch object answered. An empty list here
-    # is a real answer, not a shrug: the branch is protected by rules that do
-    # not require any status check, which is a common configuration (review-only
-    # protection) and must not wedge every merge in such a repo.
-    REQUIRED_CONTEXTS_JSON="$BRANCH_CONTEXTS"
-    REQUIRED_APPS_JSON="$BRANCH_APPS"
-    if [[ "$(echo "$REQUIRED_CONTEXTS_JSON" | jq 'length' 2>/dev/null || echo 0)" -gt 0 ]]; then
-      REQUIRED_SOURCE="branch_object"
-    else
-      REQUIRED_SOURCE="none"
-      # Protected branch + refused protection endpoint + an empty fallback list.
-      # Almost always review-only protection, which genuinely requires no status
-      # check — but it is the one shape where "no requirement" and "the
-      # requirement is hidden from this token" look identical, so say so rather
-      # than resolve it silently. Not a blocker: treating it as one would wedge
-      # every merge in a review-only-protected repo, a far larger and more
-      # common cost than the narrow ambiguity it would close.
-      if [[ "$BRANCH_PROTECTED" == "true" ]]; then
-        echo "[merge-gate] base $BASE_REF is protected but exposes no required status checks to this token (protection endpoint refused; branch object lists none). Proceeding as 'no required checks' — if this repo does require checks, the token lacks administration:read and required-context verification is not actually running (issue #1361)." >&2
-      fi
-    fi
-  else
-    REQUIRED_SOURCE="unavailable"
-    REQUIRED_ERROR=$(printf '%s' "${RSC_RAW:-no response}" | tr '\n\r\t' '   ' | cut -c1-200)
-  fi
+  REQUIRED_CONTEXTS_JSON='[]'
+  REQUIRED_APPS_JSON='{}'
+  REQUIRED_SOURCE="unavailable"
+  REQUIRED_ERROR="required-context policy unavailable"
 fi
 
-# --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Reviewer resolution
 # --------------------------------------------------------------------------
 resolve_reviewer() {
@@ -1026,13 +1045,20 @@ fi
 MISSING=()
 
 # Authorship guard (issue #733) — the `authorship` field is emitted on every
-# result so read-only callers (/status) can display and separate collaborator
+# result so read-only callers (/pr-status) can display and separate collaborator
 # PRs. A merge is a write, and /wrap + /merge run this gate before `gh pr merge`,
 # so a merge is BLOCKED on a CONFIRMED foreign author. "unknown" (author or
 # viewer unresolvable) does NOT block here — the strict fail-closed lives at the
 # enrolment gate (polling-state-gate --ensure-session) and pr-authorship.sh, so
 # a transient `gh api user` blip cannot wedge merges on the user's own PRs.
-VIEWER_LOGIN="$(gh api user --jq '.login' 2>/dev/null || true)"
+# The login is looked up once per script chain and shared in memory (issue #2442;
+# lib/gh-viewer.sh). A missing library falls back to the plain live call.
+if [[ -r "${SCRIPT_DIR}/lib/gh-viewer.sh" ]] && . "${SCRIPT_DIR}/lib/gh-viewer.sh" 2>/dev/null; then
+  gh_viewer_resolve || true
+  VIEWER_LOGIN="${GH_VIEWER_LOGIN:-}"
+else
+  VIEWER_LOGIN="$(gh api user --jq '.login' 2>/dev/null || true)"
+fi
 AUTHORSHIP="unknown"
 if [[ -n "$VIEWER_LOGIN" && -n "$PR_AUTHOR" ]]; then
   if [[ "$PR_AUTHOR" == "$VIEWER_LOGIN" ]]; then AUTHORSHIP="mine"; else AUTHORSHIP="not_mine"; fi
@@ -1078,24 +1104,29 @@ CI_MISSING_TO=${#MISSING[@]}
 # to run, run". The outage that motivated #1361 is precisely the case where the
 # first question returns a confident yes and the second has never been asked.
 REQUIRED_UNSATISFIED_JSON='[]'
-REQUIRED_COUNT=$(echo "$REQUIRED_CONTEXTS_JSON" | jq 'length' 2>/dev/null || echo 0)
+REQUIRED_COUNT=$(printf '%s\n' "$REQUIRED_CONTEXTS_JSON" | jq -er '
+  if type == "array" and all(.[]; type == "string") then length
+  else error("invalid required check list") end') || REQUIRED_COUNT=invalid
 if [[ "$REQUIRED_SOURCE" == "unavailable" ]]; then
   if [[ "$ALLOW_UNVERIFIED_REQ" == true ]]; then
     echo "[merge-gate] --allow-unverified-required-checks: proceeding without verifying branch-protection required contexts on ${BASE_REF:-<unknown base>} (${REQUIRED_ERROR}) — an absent required check cannot be distinguished from an absent requirement (issue #1361)." >&2
   else
     MISSING+=("cannot read branch-protection required status checks for base ${BASE_REF:-<unknown>} — required-context verification unavailable ($REQUIRED_ERROR); a required check that never reported is indistinguishable from no requirement, so this fails closed (issue #1361). Pass --allow-unverified-required-checks only under an explicit per-PR user override")
   fi
+elif [[ "$REQUIRED_COUNT" == invalid ]]; then
+  REQUIRED_ERROR="required check list is invalid"
+  REQUIRED_CONTEXTS_JSON='[]'
+  MISSING+=("cannot evaluate branch-protection required status checks for base $BASE_REF ($REQUIRED_ERROR) — required-context verification failed closed (issue #1848)")
 elif [[ "$REQUIRED_COUNT" -gt 0 ]]; then
-  # Legacy commit statuses can satisfy a required context just as check-runs can
-  # (Vercel, CircleCI and friends still post them), so a context absent from the
-  # check-run list is not yet absent. Fetched only when there is something to
-  # check, and non-fatal: an unreadable status list simply contributes nothing,
-  # which can withhold a merge but never grant one. Newest-first per the API, so
-  # `first` per context is that context's current state.
-  COMMIT_STATUSES_JSON='[]'
-  if _CS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses?per_page=100" 2>/dev/null); then
-    COMMIT_STATUSES_JSON=$(printf '%s' "$_CS_RAW" | jq -sc 'add // []' 2>/dev/null || echo '[]')
-    if [[ -z "$COMMIT_STATUSES_JSON" ]]; then COMMIT_STATUSES_JSON='[]'; fi
+  # Legacy statuses are required evidence too. When a check and a commit
+  # status share a required name, both must pass. Each API page is an array,
+  # newest first, so the first entry per context is its current state.
+  if ! _CS_RAW=$(pr_snap_list statuses "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses?per_page=100" 2>/dev/null) ||
+     ! COMMIT_STATUSES_JSON=$(printf '%s' "$_CS_RAW" | jq -sec '
+        if length > 0 and all(.[]; type == "array" and
+          all(.[]; type == "object" and (.context | type) == "string"))
+        then add else error("invalid commit status pages") end'); then
+    REQUIRED_ERROR="required commit status evidence is unavailable or invalid"
   fi
 
   # CHECK_RUNS_JSON is already deduped to the newest suite per (app, name), so a
@@ -1104,8 +1135,20 @@ elif [[ "$REQUIRED_COUNT" -gt 0 ]]; then
   # one-name shape work: still-point publishes a `build` from the TestFlight
   # workflow and a `build` from Web Build, both GitHub Actions, both in the same
   # suite. They are matched together here, and the context is satisfied because
-  # neither is blocking — `skipped` is non-blocking by the same rule ci-status.sh
-  # uses, so the skipped leg does not veto its successful sibling.
+  # every leg satisfies it — `skipped` is one of the three conclusions GitHub
+  # itself accepts for a required check, so the skipped leg does not veto its
+  # successful sibling.
+  # Satisfaction is a WHITELIST (sales-kit PR 319, harness issue #1846): a
+  # completed run satisfies a required context only with `success`, `neutral`, or
+  # `skipped` — GitHub's own rule. Everything else is unsatisfied, with the
+  # conclusion as the state: `cancelled` (a required job that GitHub cancelled
+  # before it ran, e.g. a hosted runner never acquired, left five skipped
+  # dependents and a `met: true` gate under the old blacklist), the blocking
+  # set, a missing conclusion, and any value GitHub adds later. This is
+  # deliberately NOT the rule ci-status.sh applies to NON-required checks, where
+  # `cancelled` stays non-blocking (issues #211, #1361): a superseded or
+  # concurrency-cancelled optional run is not a reason to hold a merge, but a
+  # required check that never ran to a verdict is not a pass.
   # Publisher scoping (issue #1383 review): when protection pins a context to an
   # `app_id`, only that app's check-runs count. $named is every run carrying the
   # name; $r narrows to the ones GitHub would actually accept. Runs present under
@@ -1113,56 +1156,34 @@ elif [[ "$REQUIRED_COUNT" -gt 0 ]]; then
   # — because the two have different fixes and "degraded means say so".
   # Commit statuses stay name-only on purpose: they carry no app_id, and the
   # app-scoped `checks[]` shape governs check-runs.
-  REQUIRED_STATE_JSON=$(jq -cn \
-    --argjson req "$REQUIRED_CONTEXTS_JSON" \
-    --argjson apps "$REQUIRED_APPS_JSON" \
-    --argjson runs "$CHECK_RUNS_JSON" \
-    --argjson statuses "$COMMIT_STATUSES_JSON" '
-      def is_blocking: . == "failure" or . == "timed_out" or . == "action_required"
-                       or . == "startup_failure" or . == "stale";
-      $req | map(
-        . as $c
-        | ($apps[$c] // null)                                          as $app
-        | [ $runs.check_runs[]? | select((.name // "") == $c) ]        as $named
-        | (if $app == null then $named
-           else [ $named[] | select((.app.id // null) == $app) ] end)  as $r
-        | ( [ $statuses[]? | select((.context // "") == $c) ] | first ) as $s
-        | (if (($r | length) == 0 and $s == null and ($named | length) > 0) then
-             {context: $c, state: "wrong_app", satisfied: false}
-           elif (($r | length) == 0 and $s == null) then
-             {context: $c, state: "absent", satisfied: false}
-           elif any($r[]; (.status // "") != "completed") then
-             {context: $c,
-              state: ([ $r[] | select((.status // "") != "completed")
-                        | ((.status // "") | if . == "" then "incomplete" else . end) ] | first),
-              satisfied: false}
-           elif any($r[]; ((.conclusion // "") | is_blocking)) then
-             {context: $c,
-              state: ([ $r[] | select(((.conclusion // "") | is_blocking)) | .conclusion ] | first),
-              satisfied: false}
-           elif ($r | length) == 0 and (($s.state // "") != "success") then
-             {context: $c,
-              state: (($s.state // "") | if . == "" then "unknown" else . end),
-              satisfied: false}
-           else
-             {context: $c, state: "passing", satisfied: true}
-           end))' 2>/dev/null || echo '[]')
-  if [[ -z "$REQUIRED_STATE_JSON" ]]; then REQUIRED_STATE_JSON='[]'; fi
-  REQUIRED_UNSATISFIED_JSON=$(echo "$REQUIRED_STATE_JSON" | jq -c '[.[] | select(.satisfied | not)]' 2>/dev/null || echo '[]')
-  if [[ -z "$REQUIRED_UNSATISFIED_JSON" ]]; then REQUIRED_UNSATISFIED_JSON='[]'; fi
-  if [[ "$(echo "$REQUIRED_UNSATISFIED_JSON" | jq 'length')" -gt 0 ]]; then
-    REQUIRED_UNSATISFIED_LIST=$(echo "$REQUIRED_UNSATISFIED_JSON" | jq -r 'map("\(.context) (\(.state))") | join(", ")')
-    MISSING+=("branch protection requires status check(s) not satisfied on HEAD ${HEAD_SHA:0:7}: $REQUIRED_UNSATISFIED_LIST — a required context that never reported is not a pass (issue #1361)")
+  if [[ -n "$REQUIRED_ERROR" ]]; then
+    REQUIRED_UNSATISFIED_JSON='[]'
+  elif ! REQUIRED_STATE_JSON=$(jq -cen -L "$SCRIPT_DIR/lib" \
+      --argjson req "$REQUIRED_CONTEXTS_JSON" \
+      --argjson apps "$REQUIRED_APPS_JSON" \
+      --argjson runs "$CHECK_RUNS_JSON" \
+      --argjson statuses "$COMMIT_STATUSES_JSON" \
+      -f "$SCRIPT_DIR/lib/required-context-state.jq"); then
+    REQUIRED_ERROR="required check state evaluation failed"
+  elif ! REQUIRED_UNSATISFIED_JSON=$(printf '%s\n' "$REQUIRED_STATE_JSON" | jq -ce --argjson req "$REQUIRED_CONTEXTS_JSON" '
+      if type == "array" and map(.context) == $req and all(.[]; (.satisfied | type) == "boolean")
+      then [.[] | select(.satisfied | not)]
+      else error("required check state is invalid") end'); then
+    REQUIRED_ERROR="required check state projection failed"
+    REQUIRED_UNSATISFIED_JSON='[]'
+  fi
+  if [[ -n "$REQUIRED_ERROR" ]]; then
+    MISSING+=("cannot evaluate branch-protection required status checks for base $BASE_REF ($REQUIRED_ERROR) — required-context verification failed closed (issue #1848)")
+  elif [[ "$REQUIRED_UNSATISFIED_JSON" != '[]' ]]; then
+    if REQUIRED_UNSATISFIED_LIST=$(printf '%s\n' "$REQUIRED_UNSATISFIED_JSON" | jq -er 'map("\(.context) (\(.state))") | join(", ")'); then
+      REQUIRED_UNSATISFIED_REASON="branch protection requires status check(s) not satisfied on HEAD ${HEAD_SHA:0:7}: $REQUIRED_UNSATISFIED_LIST — a required context that never reported, never finished, or ended in anything but success/neutral/skipped (cancelled included) is not a pass (issues #1361, #1846)"
+      MISSING+=("$REQUIRED_UNSATISFIED_REASON")
+    else
+      REQUIRED_ERROR="required check state summary failed"
+      MISSING+=("cannot evaluate branch-protection required status checks for base $BASE_REF ($REQUIRED_ERROR) — required-context verification failed closed (issue #1848)")
+    fi
   fi
 fi
-
-REQUIRED_CONTEXTS_OUT=$(jq -cn \
-  --arg source "$REQUIRED_SOURCE" \
-  --arg base "$BASE_REF" \
-  --arg error "$REQUIRED_ERROR" \
-  --argjson contexts "$REQUIRED_CONTEXTS_JSON" \
-  --argjson unsatisfied "$REQUIRED_UNSATISFIED_JSON" \
-  '{source: $source, base: $base, contexts: $contexts, unsatisfied: $unsatisfied, error: $error}')
 
 # Universal unresolved-thread gate (#211) — applies to all paths regardless of
 # author. Catches threads from any reviewer (CR, BugBot, Greptile, Copilot,
@@ -2452,11 +2473,24 @@ else
   MET=false
 fi
 
+# Admit a retry only after every other gate check has reported its blocker.
+CANCELLED_RETRY=null
+if [[ "$AUTHORSHIP" == mine && "$MERGEABLE" == MERGEABLE && "$MERGE_STATE" != DRAFT &&
+      "$PR_READY" == true && "${#MISSING[@]}" -eq 1 &&
+      -n "${REQUIRED_UNSATISFIED_REASON:-}" && "${MISSING[0]}" == "$REQUIRED_UNSATISFIED_REASON" ]]; then
+  CANCELLED_RETRY=$(printf '%s\n' "$REQUIRED_UNSATISFIED_JSON" | jq -c '
+    if length == 1 then .[0].cancelled_check // null else null end') || CANCELLED_RETRY=null
+fi
+REQUIRED_CONTEXTS_OUT=$(jq -cn \
+  --arg source "$REQUIRED_SOURCE" --arg base "$BASE_REF" --arg error "$REQUIRED_ERROR" \
+  --argjson contexts "$REQUIRED_CONTEXTS_JSON" --argjson unsatisfied "$REQUIRED_UNSATISFIED_JSON" \
+  --argjson cancelled_retry "$CANCELLED_RETRY" \
+  '{source:$source,base:$base,contexts:$contexts,unsatisfied:$unsatisfied,error:$error,cancelled_retry:$cancelled_retry}')
+
 # Stale bot CHANGES_REQUESTED (wrong SHA) — dismiss via dismiss-stale-bot-changes.sh
 # or /wrap recovery; emitted as JSON for orchestration (#452 / issue #426).
-# graphite-app[bot]: retired 2026-11-03 (#1889); kept so a leftover stale review still counts.
 STALE_BOT_CHANGES_COUNT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
-  def allow: ["coderabbitai[bot]","cursor[bot]","greptile-apps[bot]","codeant-ai[bot]","graphite-app[bot]"];
+  def allow: ["coderabbitai[bot]","cursor[bot]","greptile-apps[bot]","codeant-ai[bot]"];
   [.[]?
     | select(.state == "CHANGES_REQUESTED")
     | select((.commit_id // "") != "" and .commit_id != $sha)

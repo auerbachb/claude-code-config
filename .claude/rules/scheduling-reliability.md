@@ -4,7 +4,7 @@
 > **Ask first:** Never — scheduling reliability is autonomous.
 > **Never:** Use `CronCreate`, dynamic `/loop`, or chained one-shot `ScheduleWakeup` calls for a recurring user-facing poll. Promise to "check back in N minutes" without an active `Monitor`. Exit a wake-up turn without confirming the monitor is live and the last tick fired. Leave background work running with no ceiling armed.
 
-This file covers between-turn polling. **Background work in flight is a polling context** — that wait is between turns too. In-turn silence is default (CLAUDE.md #3); the bgwork-ceiling backstop is the liveness signal.
+This file covers between-turn polling; **background work in flight is a polling context too**. In-turn silence is default (CLAUDE.md #3); the bgwork-ceiling backstop is the liveness signal.
 
 ## Tool Selection Decision Tree
 
@@ -18,7 +18,7 @@ This file covers between-turn polling. **Background work in flight is a polling 
 
 ## Declared Leave Times
 
-Routing only — `/leave-by` owns the source gate, countermand, and check-in wording; do not restate them here.
+Routing only; `/leave-by` owns the source gate, countermand, and check-in wording.
 
 - Route a wall-clock stop stated in chat to `/leave-by`, from **any** orchestration thread. Arming one is not becoming a `/pm` thread. Only a live user message arms, changes, or cancels one; a message during the runway **re-plans**.
 - **With none armed, ask** (#1679): attended threads elicit it via `/leave-by --elicit` before the first new-pipeline launch; an overrun asks once per issue per deadline. Never headless, in `/pm day`/`--window`, or at phase transitions.
@@ -29,7 +29,7 @@ Mechanism and rationale: `.claude/reference/leave-time.md`.
 
 ## PM Monitoring Primitive
 
-Division of responsibility (`.claude/reference/pm-monitoring-decision.md`):
+Division (`.claude/reference/pm-monitoring-decision.md`):
 
 - `/pm` creates no polls; `/pm day` owns one repo `Monitor`, excluding `/pr-monitor-and-manage`.
 - `/pr-monitor-and-manage` owns PR-fleet between-message polling (persistent `Monitor`, including `--auto-wake`).
@@ -49,12 +49,12 @@ Before any polling turn ends (`Monitor`, legacy one-shot, or a turn ending with 
    - `Monitor`: verify its task is active and its command emitted the latest expected tick.
    - Legacy `ScheduleWakeup`: confirm this turn made the next-tick call and it returned cleanly. Never chain it for recurrence; switch to `Monitor`.
    - Background work: `bgwork-ceiling.sh --check` passes; if not, arm it (`--arm-command` → `Monitor`). The Stop hook blocks the turn otherwise.
-2. **Any explicit status request, owner-action blocker, safety event, decision, verified stall, unknown health, or stopped/exhausted recovery?** Surface it immediately, even when the owner cannot repair the underlying service. Honor requested periodic reports; otherwise stay silent. Record and handle recoverable failures. The clean merge line still emits; file-write counts, refill picks, first/resume ticks, and table age alone never trigger output (`decision-only-output.md`).
+2. **Any explicit status request, owner-action blocker, safety event, decision, verified stall, unknown health, or stopped/exhausted recovery?** Surface it immediately, even when the owner cannot repair the underlying service. Honor requested periodic reports; otherwise stay silent. Record and handle recoverable failures. The clean merge line still emits; file-write counts, refill picks, first/resume ticks never trigger output; TABLE FLOOR lines do (`decision-only-output.md`).
 3. **Monitoring state recorded?** Update `~/.claude/session-state.json` with tick time, next expected tick, and watermarks (last review ID, last HEAD SHA, etc.). See `handoff-files.md`.
 
 ## Stable-State Backoff
 
-Hash each tick's `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_conclusions_sorted, blocker_kind)` into `prs.{N}.digest_streak` (free-text `blocker` excluded). Widen at streak ≥3 to `max(15m, 3×base)`; stop the poll at ≥9 (`/pm day` pauses resumably instead) or on `blocker_kind == "user_input"`. Resume at base cadence after a user message or a changed digest. Enforced by `polling-backoff-warn.sh`. Backoff never reaches the ceiling watch — it widens or stops the poll; the watch is a `Monitor`.
+Hash each tick's `(head_sha, cr_state, bugbot_state, greptile_state, ci_blocking_conclusions_sorted, blocker_kind)` into `prs.{N}.digest_streak` (exclude free text). Widen at ≥3 to `max(15m, 3×base)`. At ≥9, keep polling pending CI/review, stop known frozen PRs, and pause `/pm day` resumably. Stop on user input required. Cap the next tick at `eligible_at` while `window_running`. Resume base cadence on progress. The advisory hook sees Bash calls only. Ceiling watches stay separate.
 
 ## Failure Recovery
 

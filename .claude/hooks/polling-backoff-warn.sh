@@ -3,7 +3,8 @@
 #
 # The scheduling rule owns the behavior; this hook is a non-blocking safety net
 # for compaction drift. It only inspects Bash calls that look like polling work
-# or poll-lifecycle writes, then injects additionalContext when the PR state has
+# or poll-lifecycle writes. It cannot see commands inside a Monitor. It
+# injects additionalContext when the PR state has
 # stayed stable long enough to require backoff or pause.
 # Backoff thresholds and formula: .claude/rules/scheduling-reliability.md §Stable-State Backoff
 
@@ -73,6 +74,10 @@ pr_jq=".prs[\"${pr_number}\"]"
 streak=$("$state_helper" --get "${pr_jq}.digest_streak // 0" 2>/dev/null || printf '0')
 blocker=$("$state_helper" --get "${pr_jq}.blocker // empty" 2>/dev/null || true)
 blocker_kind=$("$state_helper" --get "${pr_jq}.blocker_kind // empty" 2>/dev/null || true)
+# An active legacy watcher owns the observation even before it writes a class.
+# Do not inherit an older PR-level blocker in that case.
+watch_kind=$("$state_helper" --get "${pr_jq}.babysit | select(.active == true) | .classification // \"unknown\"" 2>/dev/null || true)
+effective_kind="${watch_kind:-$blocker_kind}"
 last_cron_type=$("$state_helper" --get "${pr_jq}.last_cron_action.type // empty" 2>/dev/null || true)
 last_cron_interval=$("$state_helper" --get "${pr_jq}.last_cron_action.interval // empty" 2>/dev/null || true)
 base_min=$("$state_helper" --get "${pr_jq}.babysit.cadence_base_minutes // 5" 2>/dev/null || printf '5')
@@ -101,7 +106,9 @@ if (( streak < 3 )) && (( user_blocker == 0 )); then
   exit 0
 fi
 
-if (( user_blocker == 1 || streak >= 9 )); then
+# An absent marker cannot distinguish a legacy gate wait from a frozen state.
+if (( user_blocker == 1 )) ||
+   { (( streak >= 9 )) && [[ -n "$effective_kind" && "$effective_kind" != waiting-on-bots && "$effective_kind" != unknown ]]; }; then
   [[ "$last_cron_type" == "delete" ]] && exit 0
   emit_context "STOP - PR #${pr_number} is stable-blocked (digest_streak=${streak}, blocker_kind=${blocker_kind:-null}). Stop the poll before exiting this turn - stop this poll's recorded Monitor task with TaskStop, atomically clear its monitor_task_id + monitor_generation only after success, and leave unrelated Monitor tasks alone. Do not heartbeat again until the user nudges or the digest changes."
   exit 0
@@ -112,7 +119,7 @@ if (( streak >= 3 )); then
   if [[ "$last_cron_type" == "update" && "$last_cron_interval" == "${WIDE_MIN}m" ]]; then
     exit 0
   fi
-  emit_context "WIDEN (do NOT stop the poll) - PR #${pr_number} has ${streak} identical polling ticks. The poll must KEEP RUNNING at a slower cadence: stop its recorded Monitor task with TaskStop, generate a fresh monitor_generation, arm the replacement at ${WIDE_MIN}m with that generation in every emitted tick, atomically persist the new monitor_task_id + monitor_generation + effective cadence, then update prs.${pr_number}.last_cron_action and suppress duplicate heartbeat noise. Stopping without replacement is only for the streak>=9 / user-blocked branch."
+  emit_context "WIDEN (do NOT stop the poll) - PR #${pr_number} has ${streak} identical polling ticks. The poll must KEEP RUNNING at a slower cadence: stop its recorded Monitor task with TaskStop, generate a fresh monitor_generation, arm the replacement at ${WIDE_MIN}m with that generation in every emitted tick, atomically persist the new monitor_task_id + monitor_generation + effective cadence, then update prs.${pr_number}.last_cron_action and suppress duplicate heartbeat noise. A pending gate keeps its poll after widening. Carry any current no-review deadline into the replacement Monitor."
 fi
 
 exit 0

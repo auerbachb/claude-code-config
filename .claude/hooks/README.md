@@ -327,11 +327,11 @@ Registered on **`PreToolUse`** with matcher **`AskUserQuestion`** and a 15 s tim
 
 - Asks the store (`desk/bin/human-queue.sh control-status`) whether a live desk exists: a registered control session whose last tick is at most 15 minutes old (`live_desk_max_tick_age_min` in `desk/policy.json` overrides it).
 - **No live desk:** does nothing; the menu renders as it always has. This is the state until the `/desk` session (#1779) registers and ticks, so the hook is inert at rollout.
-- **Live desk:** writes each question as a Decision (`human-queue.sh add`, with the options, the recommended default, and the asking session as the return address). The desk's own session still sees its menu; any other session gets the call denied with `Queued as D-<n>. Print exactly: question D-<n> sent to human queue. Then proceed on your recommended default or park and wait for a wake-up.`
+- **Live desk:** writes each question as a Decision (`human-queue.sh add`, with the options, the recommended default, and the asking session as the return address). The desk's own session still sees its menu; any other session gets the call denied with `Queued as D-<n>. Print exactly: question D-<n> sent to human queue. Then proceed on your recommended default or park and wait for a wake-up.` followed by one sentence telling a parking thread to arm `phone-push-wait.sh` first (Issue #2291).
 - Finds `HUMAN_QUEUE_DATABASE_URL` even when the app's environment lacks it: from an owner-only `~/.config/human-queue/database_url`, else a literal `export` line in the shell profile (read, never run). Never prints it.
 - **Fails open:** any failure (no URL, store unreachable, CLI missing, timeout, bad input) allows the menu with one `human-queue-capture:` line on stderr. Always exits `0`.
 
-**Contract:** `desk/README.md`, "Capture hook". **Tests:** `desk/tests/capture-offline.test.sh` (offline, CI) and `desk/tests/capture.test.sh` (live, throwaway schema).
+**Contract:** [Capture hook](../../desk/docs/capture-hook.md). **Tests:** `desk/tests/capture-offline.test.sh` (offline, CI) and `desk/tests/capture.test.sh` (live, throwaway schema).
 
 ---
 
@@ -351,6 +351,30 @@ Registered on **`Stop`** with a 5 s timeout.
 
 **Contract:** `desk/hooks/README.md`, "The prose-question nudge". **Tests:** `desk/tests/question-leak-warn.test.sh`.
 
+## stoppage-log.sh
+
+Logs an unplanned work stoppage to the desk's private database (Issue #2292). A **symlink** to `desk/hooks/stoppage.sh`; contract and gates: `desk/docs/stoppages.md`.
+
+Registered on **`Stop`** and **`UserPromptSubmit`** with a 10 s timeout each.
+
+**What it does:**
+
+- **Stop:** writes one entry (`human-queue.sh stoppage record`) only on an `issue-N-*` branch with no planned stop (`/pause`, `/end`, a declared leave time), nothing running or armed, and unfinished work. Any doubt means no entry.
+- **Stop continued by another hook** (`stop_hook_active`): the entry the first Stop opened is withdrawn (`stoppage withdraw`, deleted rather than closed), then the real end is judged like any Stop.
+- **UserPromptSubmit:** closes the thread's open entry with the idle time (`stoppage resume`); without an open marker it is one file test.
+- **Fails open:** no jq, bad input, a database that is down or unmigrated — nothing printed, exit `0`. A down database keeps the entry under `~/.claude/desk-stoppages` and sends it later. Never writes to GitHub or to a repository file.
+
+**Tests:** `desk/tests/stoppage-offline.test.sh`.
+
+## unattended-question-guard.sh + unattended-digest.sh
+
+Unattended mode (Issue #2283): while the operator has declared himself away (`unattended.sh on`), no menu opens and nothing waits on him.
+
+- **`unattended-question-guard.sh`** (PreToolUse on `AskUserQuestion|mcp__ccd_session__start_session`, 15 s): while unattended, records each question of an `AskUserQuestion` call in the repo's questions file and denies the call with the receipt to print; denies `start_session` with a reason that says to use a sub-agent. Attended: prints nothing. Fails open without `jq` or `unattended.sh`.
+- **`unattended-digest.sh`** (UserPromptSubmit, 10 s): injects every unresolved question on the operator's next message and marks nothing: a question stays listed until it is answered or dismissed (`unattended.sh answer|dismiss`, issue #2352), a question the session already saw in full this return is one summary line with a count, and the shown record is written only after the output was printed. Issue #2294: on an automated prompt it notices an expired presence window (`presence.sh expire`: one notice for all threads); on the operator's message after a window ran out it returns him (`presence.sh return`), lists every repo's unresolved questions first, and asks the presence dialog once after them. The guard also runs `expire` before deciding, and a window that ran out stays away handling until he speaks. A hook killed at any point before it prints loses nothing (`presence-windows.md` §Listing the saved questions); a failed return is reported to the model. Tests: `.claude/hooks/tests/presence-expiry.test.sh`, `.claude/hooks/tests/presence-delivery.test.sh`.
+
+**Contract:** `.claude/reference/unattended-mode.md`. **Tests:** `.claude/hooks/tests/unattended-mode.test.sh`.
+
 ## quota-reserve-guard.sh + quota-reserve-turn.sh
 
 Pause autonomous work on a Claude account that is nearly out of weekly allowance (issue #1863). Detail: `.claude/reference/quota-reserve.md`.
@@ -360,3 +384,7 @@ Pause autonomous work on a Claude account that is nearly out of weekly allowance
 - **Fails open:** no marker, a stale marker, an unknown reading, an unreadable account file, or a missing script all allow the call.
 
 **Tests:** `.claude/hooks/tests/quota-reserve-hooks.test.sh`.
+
+## issue-claim-guard.sh
+
+Blocks starting work on an `issue-N-*` branch unless the claim verdict for issue N is `mine` (Issue #2287). It acts only on positive evidence: a creating command (`git worktree add -b|-B`, `git checkout -b|-B|--orphan`, `git switch -c|-C|--create|--orphan`, `gh pr create` on the current branch, `--head`, or a switched-to branch) whose literal branch name contains `issue-<digits>`. Command words are recognised by basename (`/usr/bin/git`, `/opt/homebrew/bin/gh`) behind `command`, `env` or `VAR=x`. Plain switching to an existing branch is not checked (outside the acceptance criterion). Heredoc bodies, comment lines and text that merely mentions git are ignored; dynamic names (`$X`, globs, `-` or `$(...)` in a cd or -C path) are allowed except that a literal `issue-N` branch behind an unresolvable directory fails closed (GUARD FAILED). Holder candidates, in order: `CLAUDE_CLAIM_HOLDER` (else `CLAUDE_SESSION_ID`), the holder recorded at claim time in session state (`.repos["<owner/name>"].pipelines["<N>"].claim_holder`), and the helper default. Any `mine` allows; a failed session-state read blocks with GUARD FAILED unless another candidate reads `mine`. Helper missing, helper faults and unreadable output block with GUARD FAILED, and so does a missing helper for an identified issue (Claude threads stop: start nothing). Override: `~/.claude/issue-claim-overrides/<owner>__<repo>/<N>` contains the creation time in epoch seconds (`date +%s > FILE`, written only after the user names the issue in chat). It lets one CLAIMED issue through for that repo and number, expires after 4 hours, and any other content does not allow. Tests: `.claude/hooks/tests/issue-claim-guard.test.sh`. It is not visible to the session's EnterWorktree tool, which is not a Bash call.

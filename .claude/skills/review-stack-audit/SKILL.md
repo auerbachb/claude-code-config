@@ -21,10 +21,7 @@ This skill is the recurring version of that check.
 > actions are the user's alone — this skill says "this looks like a bill with no
 > return", never "cancelled it for you".
 
-**Sibling to `/harness-audit`, not part of it.** That audit asks whether the
-harness already does natively what we automate by hand — an internal-redundancy
-axis. This one asks whether external spend still buys value. Same cadence, same
-advisory posture, same issue-filing discipline; different question.
+**Advisory and monthly.** This audit asks whether external spend still buys value. Same cadence, same advisory posture, same issue-filing discipline; different question.
 
 Resolve the repository locator before either engine runs:
 
@@ -57,10 +54,8 @@ for the three in this skill, `.claude/scripts/tests/report-path.test.sh` for
 | `scorecard.sh` | this skill | Snapshot + vendor claims page + snapshot directory → the report's value-per-dollar table, claims-vs-observed table, and study-window line (Step 7). Renders only; reaches no verdict and files nothing. |
 | `report-path.sh` | `.claude/scripts/` — **shared** | Where this run's report goes, guaranteed not to be a path something already occupies (Step 7). Pure function of the target directory. Writes nothing. |
 
-> **`report-path.sh` is not this skill's private engine.** `/harness-audit` writes
-> a monthly report on the same cadence and had the identical collision (#1519), so
-> the script lives in `.claude/scripts/` and both audits call it with their own
-> `--series`. Change it with both callers in mind, and never give `--series` a
+> **`report-path.sh` is a shared engine.** It lives in `.claude/scripts/` (#1519)
+> so any monthly audit can call it with its own `--series`. Never give `--series` a
 > default: a forgotten flag would file one skill's report under the other's name.
 
 Run `--help` on any of them for its full contract. Do not reimplement their
@@ -123,7 +118,7 @@ MEASURE="$SKILL_DIR/measure.sh"
 DRIFT="$SKILL_DIR/drift.sh"
 SCORECARD="$SKILL_DIR/scorecard.sh"
 CLAIMS="$REPO_ROOT/.claude/reference/ai-review-vendor-claims.md"   # vendor claims (Step 7)
-REPORT_PATH="$REPO_ROOT/.claude/scripts/report-path.sh"   # shared with /harness-audit
+REPORT_PATH="$REPO_ROOT/.claude/scripts/report-path.sh"   # shared helper (#1519)
 DEDUP="$REPO_ROOT/.claude/scripts/issue-dedup.sh"
 STATE_DIR="$HOME/.claude/review-stack-audit"
 WATERMARK="$STATE_DIR/last-run.json"
@@ -290,7 +285,7 @@ same unresolved drift re-found next month produces a byte-identical string.
 - **Body marker:** the finding's `marker` field, e.g.
   `<!-- review-stack-audit: bugbot/D3 -->`
 - **Compare the fully-substituted marker by client-side string equality, never
-  the `<!-- review-stack-audit:` prefix.** `/harness-audit` learned this on its
+  the `<!-- review-stack-audit:` prefix.** An earlier audit learned this on its
   first live run: any issue *documenting* the convention contains the template
   text, and a prefix match reads that as an existing filing for every tool. This
   file contains such text too.
@@ -396,8 +391,7 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
 > which is precisely what the guard above is testing *against*: the third
 > condition passes only when the current tree is **not** that path. The
 > destination must be the tree the guard just validated, so both derive from the
-> same `$WORKTREE_ROOT`. The sibling `/harness-audit` recipe writes to the
-> current tree for the same reason.
+> same `$WORKTREE_ROOT`.
 
 Refuse otherwise, explain why, and fall back to the default directory. When it
 does land in-repo, add the one-line entry under **"Audits and research

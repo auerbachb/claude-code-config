@@ -2,8 +2,8 @@
 
 Consumed by Step 9b to produce the tier statement and model step-up warning in
 the inline-run offer, and the `**Model:**` and `**Effort:**` lines for the
-on-request chip/fallback block. This is a **trimmed single-issue** version of `/prompt`'s
-Heavy/Standard/Light mapping (`prompt/SKILL.md` Steps 4–5): no batch
+on-request chip/fallback block. This is the **single-issue** form of the
+Heavy/Standard/Light mapping: no batch
 aggregation, no dependency counting, no Fable step-up.
 
 ## Signals to compute from the body drafted in Step 5
@@ -22,7 +22,7 @@ aggregation, no dependency counting, no Fable step-up.
 
 | Tier | Trigger (any is sufficient) | Model / effort |
 |------|-----------------------------|----------------|
-| **Heavy** | `touches_rules`, `touches_claude_md`, `has_orchestration_keywords`, or `file_count > 5` | Opus, Extra (step up to Max for correctness-critical work — see `prompt/SKILL.md` Step 5) |
+| **Heavy** | `touches_rules`, `touches_claude_md`, `has_orchestration_keywords`, or `file_count > 5` | Opus, Extra (step up to Max for correctness-critical work) |
 | **Standard** | not Heavy, and (`file_count` 2–5, `ac_count > 3`, or `touches_skill`) | Opus, High |
 | **Light** | not Heavy/Standard, **and** a positive Light signal: any `scope_keywords` present, or `file_count ≤ 1` with a clear single-file scope | Sonnet, Low |
 

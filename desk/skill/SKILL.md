@@ -11,7 +11,7 @@ argument-hint: "[--cadence Nm]"
 
 # /desk — the human queue's control session
 
-The desk is the operator's single point of contact (`desk/DESIGN.md` 2.3, 2.6). Worker threads' questions are captured into the store by the capture hook (`desk/README.md`, "Capture hook") and render **only here**, as the same clickable menus a normal session shows. Answers go to the store; the asking thread gets a pointer and reads the store.
+The desk is the operator's single point of contact (`desk/DESIGN.md` 2.3, 2.6). Worker threads' questions are captured into the store by the capture hook (`desk/docs/capture-hook.md`) and render **only here**, as the same clickable menus a normal session shows. Answers go to the store; the asking thread gets a pointer and reads the store.
 
 The hook queues a question only while a desk is **live**: a registered control session whose last tick is at most 15 minutes old. Running `/desk` is what makes it live, so the steps below are exact — a desk that believes it is ticking and is not leaves every worker's questions with nobody to show them to.
 
@@ -35,6 +35,9 @@ The hook queues a question only while a desk is **live**: a registered control s
 | `attention.md` | The weekly attention report: `report` (`report <YYYY-MM-DD>` for another week), one page from the events table, offered once a week after Friday's end-of-day sweep | #1771 |
 | `todo.md` | The operator's own to-do layer on items: `tag`, `untag`, `note`, `unnote`, `snooze … until\|for …`, `unsnooze`, `mine D-<n> 1-5\|off`, and `my list` (by personal priority, then age; snoozed items hidden until their time). Not `/pm`'s priorities | #1769 |
 | `checkin.md` | The morning check-in (the `morning` event, `check-in`, or a new plan with none today): hours at the desk, energy, plans, and yesterday's measured pace set today's reading budget; `budget?` | #1770 |
+| `export.md` | Paper: `export` (after a sweep, that sweep's set), `export decisions`, `export reviews` (`level 1`, `today`), `export D-43 R-9 …`, any of them `… to <path>.pdf`: a numbered PDF whose numbers are a set's, Markdown when no PDF renderer is installed | #1759 |
+| `import.md` | Paper replies: `import <scan.pdf>`, preview before confirming marked answers and comments | #1764 |
+| `quiz.md` | `quiz` after reviewing a batch, an opt-in comprehension check from cached summaries | #1772 |
 
 ## The prelude (every Bash call)
 
@@ -67,11 +70,13 @@ done
 
 1. **Prelude.** `DESK` or `SID` empty → say so in one line and stop. Nothing is armed.
 2. **Policy and cadence.** Capture the policy’s `interrupt_rule` once as this desk’s `<DEFAULT>` (`everything` or `away`; missing/invalid means `everything`, matching the policy parser). Keep it in this conversation and carry it into `.desk.interrupt_default` in step 7. A policy edit applies at the next `/desk`; a re-arm retains the captured default. Read `desk/policy.json` first (`interrupts.md`, "The policy": block `desk-policy`); a warning line it prints goes in the start report, once. `--cadence Nm`, a whole number of minutes, default the policy's `tick_cadence_min` (5), and **shorter than the live-desk bound**: the capture hook queues only while the last tick is at most that old (15 minutes unless `desk/policy.json` sets `live_desk_max_tick_age_min`), so a cadence at or past it leaves the desk stale between ticks and worker menus render in their own threads again. `desk-tick.sh` enforces it (1 to 60, and below the bound it reads through the hook's own policy parser): step 5 passes the cadence, so a bad one stops the start there with exit 4 and one line naming the bound. Anything that is not a whole number → one line naming the range, and stop.
-3. **Migrate, validate the initial hold, then register** this session. Do the read before registration, stopping an earlier loop or stamping a tick: a failed hold read leaves the earlier desk working and creates no fresh capture target without a Monitor.
+3. **Account and queue, migrate, validate the initial hold, then register** this session. Do the read before registration, stopping an earlier loop or stamping a tick: a failed hold read leaves the earlier desk working and creates no fresh capture target without a Monitor. The account check is first, so an unbound account is refused before the store is touched.
 
    <!-- test-anchor: desk-start -->
 
    ```bash
+   ACCOUNT_LINE=$("$HQ" bindings --current) || exit "$?"
+   printf '%s\n' "$ACCOUNT_LINE"
    "$HQ" migrate || exit "$?"
    START_HOLD=$("$HQ" interrupt get --session "$SID" --default "<DEFAULT>" --json) || exit "$?"
    HELD_FLAG=$(printf '%s' "$START_HOLD" | jq -er 'if type == "object" and (.held | type) == "boolean" then (if .held then "--held" else "" end) else error("invalid held") end' 2>/dev/null) || {
@@ -85,6 +90,7 @@ done
    A failed/malformed hold read exits before control registration; use the not-started report below and stop. On success, retain `HELD_FLAG` from the receipt for step 6. A held seed covers focus expiry before the first persistent observation.
 
    - `migrate` is idempotent and applies any migration a merge added (the desk needs `005_wake_events.sql` and `006_answer_parked.sql`, the Reviews view `007_reviews_summary_l1.sql`, and feedback tags `008_event_session.sql`).
+   - `bindings --current` exit 4 → `Desk not started: this account has no desk queue; bind it with the command the CLI printed.` and stop. Exit 7 → `Desk not started: the queue registry is unreadable (<the CLI's one line>).` and stop. The start line is `account: <name>  queue: <schema>`; it is printed before the first tick. Only the registry is read here, so no store is contacted.
    - Exit 7 → `Desk not started: the store is unreachable (<the CLI's one line>).` and stop. Exit 1 or 4 → the same shape with that line. **Do not arm anything** and never say the desk is live.
    - `control session <SID> (replaces <OTHER>)` → another desk was registered; it stops ticking on its own at its next cycle (`desk-tick.sh` exits on `replaced`). Mention it in the start line.
 4. **Stop an earlier loop of this session** (a second `/desk` in the same thread): read `.desk` with `"$SESSION_STATE_SH" --get-json .desk` (with `SESSION_STATE_SH` empty, skip the read and use the task id this conversation holds, if any). When its `session` is `SID` and it names a `monitor_task_id`, `TaskStop` that task first. A `TaskStop` failure on a task that no longer exists is fine; any other failure → keep the old identity, say so in one line, and stop.
@@ -133,6 +139,8 @@ Each stdout line of the loop arrives as a notification. A line whose generation 
 |------|----|
 | `desk-tick <GEN> new D-43 D-44` | Load `decisions.md` and follow "Showing items" for those ids. While a long-form prompt waits for its reply, hold them instead (`longform.md`, "Tick events while a prompt waits") |
 | `desk-tick <GEN> released` | A known hold ended. If step 8's initial backlog read still waits, do that read once, even when nothing changed in the store; apply the existing held/longform rules and shown-item deduplication. If it was already read, do nothing |
+| `desk-tick <GEN> mobile D-43 D-44` | An [opt-in mobile reply](mobile.md) is already stored. Re-read each exact ID with `get --json`; while it is still `answered`, follow `decisions.md`'s existing first wake path for the current return address. Send only the pointer. |
+| `desk-tick <GEN> mobile-unavailable` | Say once that the phone inbox could not sync. Keep the desktop desk and its normal wake flow running. |
 | `desk-tick <GEN> retry D-43 D-44` | Answers whose last wake-up failed, each due a retry. Load `wakeups.md` and follow "A `retry` event" at once, even while a long-form prompt waits: a retry shows nothing unless an answer parks |
 | `desk-tick <GEN> eod` | The end of the working day (`eod_time`), once a day. Load `sweep.md` and follow "The sweep", then "Friday" (the weekly report's offer); during a hold, or while a long-form prompt waits, keep it and show it after (`sweep.md`, "Held like a Decision") |
 | `desk-tick <GEN> morning` | The first tick of the day (from 04:00 until `eod_time`), once a day. Load `checkin.md` and show the card; during a hold, or while a long-form prompt waits, keep it and show it after (`checkin.md`, "Held like a Decision") |
@@ -151,7 +159,10 @@ Read each operator message in this order:
    **A priority command** (`top: #a #b`, `bump #N`, `park #N until <date>`, `drop #N`, `priorities`, each optionally ending `in <repo>`), as the whole message → load `priorities.md`. The same holds: any time, and nothing goes to the store.
    **A Reviews verb** as the whole message — `reviews` (`reviews since <YYYY-MM-DD>`), `open R-<n>`, `diff R-<n> [path]`, `reviewed` (`reviewed R-<n>`, `reviewed all today`), `flag R-<n> "…"`, or `follow up R-<n>` (`follow up R-<n> again`) → load `reviews.md`. Also at any time; a waiting long-form prompt keeps waiting and is shown again after.
    **A drill-down verb** as the whole message — `outline R-<n>`, `open R-<n>` followed by one or more node ids (`open R-<n> 2.3`, `open R-<n> 2 T1`; `open R-<n>` alone stays the Reviews view's level 2), or `ask R-<n>: <question>` → load `drilldown.md`. Also at any time, and nothing goes to the store.
-   **A plan verb** as the whole message — `plan`, `plan?`, `plan off`, or `plan: …` — → load `plan.md`; **`sweep`**, or **`export`** after a sweep → load `sweep.md`. The day plan and the end-of-day sweep (#1784) work at any time too; a waiting long-form prompt keeps waiting and is shown again after.
+   **A plan verb** as the whole message — `plan`, `plan?`, `plan off`, or `plan: …` — → load `plan.md`; **`sweep`** → load `sweep.md`. The day plan and the end-of-day sweep (#1784) work at any time too; a waiting long-form prompt keeps waiting and is shown again after.
+   **An export verb** as the whole message — `export` (after a sweep: its set), `export decisions`, `export reviews` (`level 1`, `today`), or `export D-<n> R-<n> …`, any of them ending `to <path>.pdf` — → load `export.md` (#1759). Any time, the same way.
+   **`import <scan.pdf>`** (also `/inbox import <scan.pdf>`) → load `import.md`. While a scan confirmation waits, route only an explicit confirmation or correction for that preview to the import workflow.
+   **`quiz`** → load `quiz.md`. Route replies to the active quiz menu before ordinary typed Decision replies. Continue to process the desk's other explicit verbs and tick events.
    **`report`** (`report <YYYY-MM-DD>` for the week holding that day), as the whole message → load `attention.md`: the weekly attention report (#1771). Any time, like `history`, and nothing goes to the store.
    **An interrupt verb** as the whole message — `away`, `available` (`back` outside a discussion), `focus until <time>`, `focus for <N> min`, `focus off`, or `interrupts?` — or **feedback tags**, a message whose every pair is `<n|D-id>: not important`, `should have defaulted`, or `good interrupt` → load `interrupts.md`. Also at any time, and checked before any typed reply or long-form answer: a tag is never an answer.
    **A to-do verb** as the whole message — `tag`, `untag`, `note`, `unnote`, `snooze`, `unsnooze`, or `mine` followed by an item id (`D-<n>` or `R-<n>`), or `my list` (`my list all`, `my list snoozed`, `my list tag <word>`) → load `todo.md`. Also at any time; a waiting long-form prompt keeps waiting and is shown again after, and a to-do verb is never an answer.

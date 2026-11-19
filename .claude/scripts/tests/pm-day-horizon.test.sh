@@ -3,7 +3,7 @@
 # catalog: tests — Tests `/pm` day mode's usage-horizon reflex against the real fenced bash in the skill
 #
 # WHAT IS UNDER TEST
-#   The REAL fenced bash in `.claude/skills/pm/SKILL.md`, pulled out at run time
+#   The real fenced Bash in the PM day modules, pulled out at run time
 #   by `lib/skill-bash.sh` through the `<!-- test-anchor: … -->` markers and
 #   executed against a stubbed `usage-horizon.sh` and a real `session-state.sh`
 #   driven by a throwaway $HOME. Nothing below is a transcription: edit the
@@ -38,7 +38,6 @@ set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
-SKILL="$REPO_ROOT/.claude/skills/pm/SKILL.md"
 PAUSE="$REPO_ROOT/.claude/skills/pause/SKILL.md"
 PAUSE_RESUME="$REPO_ROOT/.claude/skills/pause-resume/SKILL.md"
 SCHEMA="$REPO_ROOT/.claude/reference/session-state-schema.json"
@@ -113,17 +112,17 @@ refute_text() {
 
 # Extract every anchored block once; a failed extraction is fatal, never skipped
 # (a suite that silently runs zero lines of skill bash passes green forever).
-BLOCK_D2="$(extract_skill_bash "$SKILL" pm-day-d2-horizon-branch)" || exit 1
-BLOCK_CLAIM="$(extract_skill_bash "$SKILL" pm-day-2d7-park-claim)" || exit 1
-BLOCK_RECORD="$(extract_skill_bash "$SKILL" pm-day-2d7-park-record)" || exit 1
-BLOCK_2D6="$(extract_skill_bash "$SKILL" pm-day-2d6-park-claim)" || exit 1
-BLOCK_RELEASE="$(extract_skill_bash "$SKILL" pm-day-2d7-park-release)" || exit 1
-BLOCK_WAKE="$(extract_skill_bash "$SKILL" pm-day-2d7-wake-publish)" || exit 1
-BLOCK_REC_SNAPSHOT="$(extract_skill_bash "$SKILL" pm-day-park-snapshot)" || exit 1
+BLOCK_D2="$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-tick.md" pm-day-d2-horizon-branch)" || exit 1
+BLOCK_CLAIM="$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" pm-day-2d7-park-claim)" || exit 1
+BLOCK_RECORD="$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" pm-day-2d7-park-record)" || exit 1
+BLOCK_2D6="$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" pm-day-2d6-park-claim)" || exit 1
+BLOCK_RELEASE="$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" pm-day-2d7-park-release)" || exit 1
+BLOCK_WAKE="$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" pm-day-2d7-wake-publish)" || exit 1
+BLOCK_REC_SNAPSHOT="$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-preconditions.md" pm-day-park-snapshot)" || exit 1
 BLOCK_REC_PREP="$(extract_skill_bash "$WAKE_RECOVERY_DOC" pm-day-wake-recovery-prepare)" || exit 1
 BLOCK_REC_AUTH="$(extract_skill_bash "$WAKE_RECOVERY_DOC" pm-day-wake-recovery-authorize)" || exit 1
 BLOCK_REC_PUBLISH="$(extract_skill_bash "$WAKE_RECOVERY_DOC" pm-day-wake-recovery-publish)" || exit 1
-BLOCK_PROBE="$(extract_skill_bash "$SKILL" pm-day-2d7-probe-fire)" || exit 1
+BLOCK_PROBE="$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" pm-day-2d7-probe-fire)" || exit 1
 
 # `TaskStop` is a harness tool, not a binary, so the wake-publish block cannot
 # run without a stand-in. Two shapes are needed: one that stops the Monitor
@@ -396,7 +395,7 @@ fi
 # The fallback branch is unreachable in this harness, so the line above models the
 # skill's expression rather than running it. Anchor the model to the source, or a
 # changed SKILL.md fallback leaves this suite green while asserting nothing.
-require_text "the documented fallback is the four-draw %04x form this shape check models" "$SKILL" \
+require_text "the documented fallback is the four-draw %04x form this shape check models" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" \
   '%04x%04x%04x%04x'
 OLD_FALLBACK_NONCE="${RANDOM:-0}${RANDOM:-0}${RANDOM:-0}"
 if [[ ! "$OLD_FALLBACK_NONCE" =~ ^[0-9a-f]{16}$ ]]; then
@@ -655,8 +654,16 @@ check_eq "probe: still-critical fire continues" "PROBE=continue" "$(run_probe "$
 check_eq "probe: bound decremented"             "11"             "$(day_get limit_probe_fires_remaining)"
 
 seed_probe_state 12
-check_eq "probe: replenished window resumes" "PROBE=resume" "$(run_probe "$GEN" clear | tail -1)"
-check_eq "probe: resume spends no fire"      "12"           "$(day_get limit_probe_fires_remaining)"
+CLEAR_OUT=$(run_probe "$GEN" clear)
+check_eq "probe: replenished window reserves a resume" PROBE=resume "$(printf '%s\n' "$CLEAR_OUT" | tail -1)"
+CLEAR_GENERATION=$(printf '%s\n' "$CLEAR_OUT" | sed -n 's/^PROBE_RESUME_GENERATION=//p')
+check_eq "probe: resume publishes the fresh exact generation" \
+  "$CLEAR_GENERATION" "$(day_get limit_resume_generation)"
+[[ "$CLEAR_GENERATION" =~ ^probe-resume-[0-9a-f]{32}$ ]] ||
+  { echo "FAIL — a clear probe did not mint a resume generation"; exit 1; }
+check_eq "probe: resume spends no fire" 12 "$(day_get limit_probe_fires_remaining)"
+check_eq "the previous wake cannot spend after resume is reserved" PROBE=stale \
+  "$(run_probe "$GEN" critical | tail -1)"
 
 # `approaching` is a partial refill, not a recovery — resuming there walks back
 # into the wall the thrash guard exists to prevent.
@@ -703,49 +710,187 @@ jq -n --arg k "$REPO_KEY" '{repos: {($k): {day: {limit_probe_fires_remaining: "t
   limit_resume_generation: "g1", limit_resume_task_id: "t1"}}}}' > "$STATE_FILE"
 check_eq "probe: non-integer bound fails closed" "PROBE=fail-closed" "$(run_probe g1 clear | tail -1)"
 
+seed_probe_state 3
+PROBE_BARRIER="$TMP_HOME/probe-barrier"
+mkdir -p "$PROBE_BARRIER"
+PROBE_BARRIER_HELPER="$STUB_DIR/probe-barrier-state.sh"
+cat > "$PROBE_BARRIER_HELPER" <<'BARRIER'
+#!/usr/bin/env bash
+[[ -x "${ACTUAL_STATE_HELPER:-}" && "$ACTUAL_STATE_HELPER" != "$0" ]] || exit 2
+if [[ "$1" == --get-json && ! -e "$PROBE_BARRIER/$PROBE_SIDE" ]]; then
+  snapshot=$("$ACTUAL_STATE_HELPER" "$@") || exit $?
+  : > "$PROBE_BARRIER/$PROBE_SIDE"
+  for ((i=0; i<200; i++)); do
+    if [[ -e "$PROBE_BARRIER/first" && -e "$PROBE_BARRIER/second" ]]; then
+      printf '%s\n' "$snapshot"
+      exit 0
+    fi
+    sleep 0.05
+  done
+  exit 6
+fi
+exec "$ACTUAL_STATE_HELPER" "$@"
+BARRIER
+chmod +x "$PROBE_BARRIER_HELPER"
+run_parallel_probe() {
+  local state_helper="$SESSION_STATE_SH"
+  ACTUAL_STATE_HELPER="$state_helper" SESSION_STATE_SH="$PROBE_BARRIER_HELPER" \
+    PROBE_BARRIER="$PROBE_BARRIER" PROBE_SIDE="$1" REPO_KEY="$REPO_KEY" \
+    TICK_GENERATION="$GEN" HORIZON_STATUS="${2:-critical}" bash -c "$BLOCK_PROBE" 2>/dev/null
+}
+run_parallel_probe first > "$TMP_HOME/probe-first.log" & FIRST_PROBE_PID=$!
+run_parallel_probe second > "$TMP_HOME/probe-second.log" & SECOND_PROBE_PID=$!
+wait "$FIRST_PROBE_PID" || exit 1
+wait "$SECOND_PROBE_PID" || exit 1
+check_eq "first concurrent probe continues" PROBE=continue "$(tail -1 "$TMP_HOME/probe-first.log")"
+check_eq "second concurrent probe retries and continues" PROBE=continue "$(tail -1 "$TMP_HOME/probe-second.log")"
+check_eq "both concurrent probes consume a fire" 1 "$(day_get limit_probe_fires_remaining)"
+
+seed_probe_state 2
+rm -f "$PROBE_BARRIER/first" "$PROBE_BARRIER/second"
+run_parallel_probe first > "$TMP_HOME/probe-first.log" & FIRST_PROBE_PID=$!
+run_parallel_probe second > "$TMP_HOME/probe-second.log" & SECOND_PROBE_PID=$!
+wait "$FIRST_PROBE_PID" || exit 1
+wait "$SECOND_PROBE_PID" || exit 1
+check_eq "the final two fires produce one continue and one exhaustion" \
+  $'PROBE=continue\nPROBE=exhausted' \
+  "$(tail -q -n 1 "$TMP_HOME/probe-first.log" "$TMP_HOME/probe-second.log" | sort)"
+check_eq "the final two fires leave no usable bound" 0 "$(day_get limit_probe_fires_remaining)"
+
+seed_probe_state 3
+rm -f "$PROBE_BARRIER/first" "$PROBE_BARRIER/second"
+run_parallel_probe first > "$TMP_HOME/probe-first.log" & FIRST_PROBE_PID=$!
+for ((probe_wait=0; probe_wait<100; probe_wait++)); do
+  [ ! -e "$PROBE_BARRIER/first" ] || break
+  kill -0 "$FIRST_PROBE_PID" 2>/dev/null || break
+  sleep 0.05
+done
+check_eq "stale probe captured its first snapshot" 0 "$(test -e "$PROBE_BARRIER/first"; echo "$?")"
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=\"replacement-task\"" >/dev/null
+PROBE_REPLACEMENT=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day")
+: > "$PROBE_BARRIER/second"
+wait "$FIRST_PROBE_PID" || exit 1
+check_eq "a changed task under the old generation makes the probe stale" \
+  PROBE=stale "$(tail -1 "$TMP_HOME/probe-first.log")"
+check_eq "stale probe leaves the full replacement unchanged" \
+  "$PROBE_REPLACEMENT" "$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day")"
+
+seed_probe_state 1
+rm -f "$PROBE_BARRIER/first" "$PROBE_BARRIER/second"
+run_parallel_probe first clear > "$TMP_HOME/probe-first.log" & FIRST_PROBE_PID=$!
+for ((probe_wait=0; probe_wait<100; probe_wait++)); do
+  [ ! -e "$PROBE_BARRIER/first" ] || break
+  kill -0 "$FIRST_PROBE_PID" 2>/dev/null || break
+  sleep 0.05
+done
+check_eq "the clear probe captured the final positive count" 0 "$(test -e "$PROBE_BARRIER/first"; echo "$?")"
+check_eq "a concurrent non-clear probe spends the final count" PROBE=exhausted \
+  "$(run_probe "$GEN" critical | tail -1)"
+: > "$PROBE_BARRIER/second"
+wait "$FIRST_PROBE_PID" || exit 1
+check_eq "the clear probe cannot reserve resume after exhaustion" PROBE=exhausted \
+  "$(tail -1 "$TMP_HOME/probe-first.log")"
+check_eq "exhaustion leaves the prior wake generation" "$GEN" "$(day_get limit_resume_generation)"
+
+seed_probe_state 0
+check_eq "zero never resumes even with a clear window" PROBE=exhausted "$(run_probe "$GEN" clear | tail -1)"
+seed_probe_state 2
+ENTROPY_OUT=$(SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" TICK_GENERATION="$GEN" \
+  HORIZON_STATUS=clear bash -c 'od() { return 1; }'$'\n'"$BLOCK_PROBE")
+check_eq "entropy failure holds the clear probe" PROBE=fail-closed "$(printf '%s\n' "$ENTROPY_OUT" | tail -1)"
+ENTROPY_BINDING=$(printf '%s\n' "$ENTROPY_OUT" | sed -n 's/^PROBE_BINDING=//p')
+check_eq "entropy failure retains the exact wake for verified retirement" "task-abc $GEN" \
+  "$(jq -r '[.limit_resume_task_id,.limit_resume_generation] | join(" ")' <<< "$ENTROPY_BINDING")"
+check_eq "entropy failure does not spend a probe" 2 "$(day_get limit_probe_fires_remaining)"
+
+# A confirmed stop of the previous wake cannot clear a replacement.
+seed_probe_state 1
+PROBE_OUT=$(run_probe "$GEN" critical)
+PROBE_BINDING=$(printf '%s\n' "$PROBE_OUT" | sed -n 's/^PROBE_BINDING=//p')
+BLOCK_PROBE_RETIRE=$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" pm-day-2d7-probe-retire-wake)
+run_probe_retire() {
+  SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" PROBE_BINDING="$PROBE_BINDING" \
+    PROBE_STOP_RESPONSE="$1" bash -c "$BLOCK_PROBE_RETIRE" >/dev/null 2>&1
+}
+PROBE_RC=0
+run_probe_retire '{"task_id":"other","task_type":"monitor"}' || PROBE_RC=$?
+check_eq "wrong native stop proof cannot clear a wake" 4 "$PROBE_RC"
+run_probe_retire '{"task_id":"task-abc","task_type":"monitor"}' || exit 1
+check_eq "matching proof clears the wake identity" null "$(day_get limit_resume_generation)"
+check_eq "matching proof retains the spent park" 0 "$(day_get limit_probe_fires_remaining)"
+seed_probe_state 3 probe-replacement
+PROBE_RC=0
+run_probe_retire '{"task_id":"task-abc","task_type":"monitor"}' || PROBE_RC=$?
+check_eq "old proof cannot clear a replacement" 7 "$PROBE_RC"
+check_eq "replacement wake survives the old cleanup" probe-replacement "$(day_get limit_resume_generation)"
+check_eq "replacement bound survives the old cleanup" 3 "$(day_get limit_probe_fires_remaining)"
+
+BLOCK_PRIOR_HITS=$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" pm-day-2d6-prior-hits)
+run_prior_hits() {
+  SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" bash -c \
+    "$BLOCK_PRIOR_HITS"$'\n''printf "NEW_HITS=%s\n" "$NEW_HITS"'
+}
+seed_probe_state 3
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=null" >/dev/null
+check_eq "absent hit count still starts at one" NEW_HITS=1 "$(run_prior_hits)"
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=2" >/dev/null
+check_eq "valid hit count still reaches the thrash threshold" NEW_HITS=3 "$(run_prior_hits)"
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=\"2\"" >/dev/null
+check_eq "legacy decimal hit count still reaches the threshold" NEW_HITS=3 "$(run_prior_hits)"
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=\"\"" >/dev/null
+check_eq "legacy empty hit count still starts at one" NEW_HITS=1 "$(run_prior_hits)"
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=\"bad\"" >/dev/null
+HITS_BEFORE=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day")
+HITS_TEST_RC=0
+HITS_RESULT=$(run_prior_hits) || HITS_TEST_RC=$?
+check_eq "an invalid hit count stops the top-level Bash block" 4 "$HITS_TEST_RC"
+check_eq "the next command after the invalid read never runs" \
+  'Parked (usage limit) — consecutive_limit_hits unreadable (rc=4); staying parked to avoid thrash. Resume manually.' "$HITS_RESULT"
+check_eq "the failed count read leaves the park unchanged" \
+  "$HITS_BEFORE" "$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day")"
+
 # ---------------------------------------------------------------------------
 echo "== Contract: teardown, recovery, schema, scope (AC 2, 5, 6, 7) =="
 # ---------------------------------------------------------------------------
 
-require_text "2D.7 exists as its own sub-step" "$SKILL" '^### 2D\.7: Usage-horizon pre-emptive park'
-require_text "2D.6 is still its own sub-step"  "$SKILL" '^### 2D\.6: Usage-limit park and wake'
-require_text "critical is the only park trigger" "$SKILL" 'Trigger:.*HORIZON_PARK=true.*critical'
-require_text "park reuses the execution gate"  "$SKILL" 'execution-pause\.sh --activate --command pause --window-minutes'
-require_text "park skips the refill.paused write" "$SKILL" 'skipping only Step 1.s `\.refill\.paused` write'
-require_text "wake never passes --resume-refill"  "$SKILL" 'Never pass `--resume-refill`'
-require_text "probe monitor is persistent"        "$SKILL" '/pm day --probe-wake --day-generation'
-require_text "probe defaults are 30m / 12 fires"  "$SKILL" 'CLAUDE_HORIZON_PROBE_CADENCE_MINUTES'
-require_text "probe fire bound knob documented"   "$SKILL" 'CLAUDE_HORIZON_PROBE_MAX_FIRES'
+require_text "2D.7 exists as its own sub-step" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" '^### 2D\.7: Usage-horizon pre-emptive park'
+require_text "2D.6 is still its own sub-step"  "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" '^### 2D\.6: Usage-limit park and wake'
+require_text "critical is the only park trigger" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'Trigger:.*HORIZON_PARK=true.*critical'
+require_text "park reuses the execution gate"  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'execution-pause\.sh --activate --command pause --window-minutes'
+require_text "park skips the refill.paused write" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'skipping only Step 1.s `\.refill\.paused` write'
+require_text "wake never passes --resume-refill"  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'Never pass `--resume-refill`'
+require_text "probe monitor is persistent"        "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" '/pm day --probe-wake --day-generation'
+require_text "probe defaults are 30m / 12 fires"  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'CLAUDE_HORIZON_PROBE_CADENCE_MINUTES'
+require_text "probe fire bound knob documented"   "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'CLAUDE_HORIZON_PROBE_MAX_FIRES'
 # A zero cadence would make the Monitor's `sleep 0` a hot loop, and a zero bound
 # arms a wake that can only ever stop itself; a zero WINDOW is legal and is how
 # reactive parity is requested. The knobs therefore validate differently.
 # These three assert the DOCUMENTATION only — the behaviour they describe is
 # proven in the "Knob validation" and "rc propagation" sections below. A grep for
 # a sentence is not coverage of the rule that sentence describes.
-require_text "probe knobs documented as > 0" "$SKILL" 'and `> 0`'
-require_text "window knob documented as 0-legal" "$SKILL" '`0` is legal.*reactive parity'
-require_text "hot-loop rationale is stated"  "$SKILL" 'sleep 0.* hot loop'
+require_text "probe knobs documented as > 0" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'and `> 0`'
+require_text "window knob documented as 0-legal" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" '`0` is legal.*reactive parity'
+require_text "hot-loop rationale is stated"  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'sleep 0.* hot loop'
 # A wake whose TaskStop failed — or whose registry could not be read — must keep
 # its identity: nulling it strands a ticking Monitor that nothing can name.
 # #1622 replaced 2D.6's TaskStop-then-overwrite guard with the same cause CAS
 # 2D.7 and the subagent leg use. Assert the NEW shape, and refute the old one —
 # a presence-only check would still pass if the override sentence came back.
-require_text "2D.6 claims the slot by compare-and-set" "$SKILL" \
+require_text "2D.6 claims the slot by compare-and-set" "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" \
   '\-\-cas .*day\.limit_cause=.*reactive.* \-\-expect null'
-require_text "2D.6 adopts on a lost claim" "$SKILL" 'PARK_CLAIM=adopted'
-require_text "2D.6 states why the identity nulls are safe" "$SKILL" 'safe no-op'
-refute_text "the TaskStop-first override is gone" "$SKILL" 'ADOPT_ABORT'
-require_text "known reset arms the one-shot instead" "$SKILL" "arm 2D\.6's sleep-until-reset one-shot verbatim"
-require_text "reactive path tags its cause"       "$SKILL" 'day\.limit_cause=..reactive'
-refute_text "reactive path no longer stops the wake first" "$SKILL" 'Stop it BEFORE the write nulls its ID'
-require_text "recovery re-arms with remaining fires" "$SKILL" 'not a fresh bound'
+require_text "2D.6 adopts on a lost claim" "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" 'PARK_CLAIM=adopted'
+require_text "2D.6 states why the identity nulls are safe" "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" 'safe no-op'
+refute_text "the TaskStop-first override is gone" "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" 'ADOPT_ABORT'
+require_text "known reset arms the one-shot instead" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" "arm 2D\.6's sleep-until-reset one-shot verbatim"
+require_text "reactive path tags its cause"       "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" 'day\.limit_cause=..reactive'
+refute_text "reactive path no longer stops the wake first" "$REPO_ROOT/.claude/skills/pm/modules/day-park-reactive.md" 'Stop it BEFORE the write nulls its ID'
 # Restart recovery compares parked_until against `date -u +%s`, so its BSD
 # fallback must parse the Z timestamp as UTC. A bare `date -j -f` there reads
 # every park four hours long on an ET machine — silently, with no error.
-require_text "restart recovery parses parked_until as UTC" "$SKILL" \
+require_text "restart recovery parses parked_until as UTC" "$REPO_ROOT/.claude/skills/pm/modules/day-preconditions.md" \
   "date -u -j -f '%Y-%m-%dT%H:%M:%SZ'"
-require_text "weekly caps stay manual-resume"     "$SKILL" 'weekly caps remain the reactive path.s business and stay manual-resume'
-require_text "credit budget still gates refill"   "$SKILL" 'credit-budget\.sh --check` exits 0'
+require_text "weekly caps stay manual-resume"     "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'weekly caps remain the reactive path.s business and stay manual-resume'
+require_text "credit budget still gates refill"   "$REPO_ROOT/.claude/skills/pm/modules/day-tick.md" 'credit-budget\.sh --check` exits 0'
 # #1619 narrowed this boundary; #1444 closed it. The monitor-loop reflex is in
 # scope (a subagent-running thread reads the same horizon and claims the same
 # repo park slot), and /pr-monitor-and-manage and /babysit-pr now read the same
@@ -753,14 +898,14 @@ require_text "credit budget still gates refill"   "$SKILL" 'credit-budget\.sh --
 # Assert BOTH halves, and refute the retired out-of-scope wording: dropping the
 # assertion when the sentence changed would have retired the only check that the
 # boundary is stated at all.
-require_text "the monitor-loop reflex is now in scope (#1619)" "$SKILL" 'Now in scope elsewhere'
+require_text "the monitor-loop reflex is now in scope (#1619)" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'Now in scope elsewhere'
 require_text "  and names the shared compare-and-set that prevents double-parking" \
-  "$SKILL" 'compare-and-set on `limit_cause`'
+  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'compare-and-set on `limit_cause`'
 require_text "/pmm and /babysit-pr are named as readers only (#1444)" \
-  "$SKILL" 'Also in scope, as readers only.*pr-monitor-and-manage'
+  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'Also in scope, as readers only.*pr-monitor-and-manage'
 refute_text "  and are no longer called out of scope" \
-  "$SKILL" 'Still out of scope:.*pr-monitor-and-manage'
-require_text "park surfaces at most two lines"    "$SKILL" 'Two lines on park, one on resume'
+  "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'Still out of scope:.*pr-monitor-and-manage'
+require_text "park surfaces at most two lines"    "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'Two lines on park, one on resume'
 
 require_text "pause teardown covers the probe wake" "$PAUSE" 'both wake shapes'
 # -1, not null: the field is three-valued since #1445, and `null` means "reset
@@ -966,7 +1111,7 @@ chmod +x "$FAULT_SH"
 
 seed_probe_state 12
 PROBE_OUT=$(SESSION_STATE_SH="$FAULT_SH" STATE_FILE="$STATE_FILE" REPO_KEY="$REPO_KEY" \
-  TICK_GENERATION="$GEN" HORIZON_STATUS=critical FAULT_ON=set FAULT_RC=6 \
+  TICK_GENERATION="$GEN" HORIZON_STATUS=critical FAULT_ON=cas FAULT_RC=6 \
   bash -c "$BLOCK_PROBE" 2>/dev/null | tail -1)
 check_eq "probe: failed decrement fails closed, not 'continue'" "PROBE=fail-closed" "$PROBE_OUT"
 check_eq "probe: failed decrement left the bound untouched" "12" "$(day_get limit_probe_fires_remaining)"
@@ -975,14 +1120,14 @@ check_eq "probe: failed decrement left the bound untouched" "12" "$(day_get limi
 # it as `stale` exits silently AND spends no fire, so the bound never advances.
 seed_probe_state 12
 PROBE_OUT=$(SESSION_STATE_SH="$FAULT_SH" STATE_FILE="$STATE_FILE" REPO_KEY="$REPO_KEY" \
-  TICK_GENERATION="$GEN" HORIZON_STATUS=critical FAULT_ON=get FAULT_RC=6 \
+  TICK_GENERATION="$GEN" HORIZON_STATUS=critical FAULT_ON=getjson FAULT_RC=6 \
   bash -c "$BLOCK_PROBE" 2>/dev/null | tail -1)
 check_eq "probe: lock timeout on generation read fails closed, not 'stale'" "PROBE=fail-closed" "$PROBE_OUT"
 
 # rc 3 (no state file has ever been written) IS legitimately "no generation".
 seed_probe_state 12
 PROBE_OUT=$(SESSION_STATE_SH="$FAULT_SH" STATE_FILE="$STATE_FILE" REPO_KEY="$REPO_KEY" \
-  TICK_GENERATION="$GEN" HORIZON_STATUS=critical FAULT_ON=get FAULT_RC=3 \
+  TICK_GENERATION="$GEN" HORIZON_STATUS=critical FAULT_ON=getjson FAULT_RC=3 \
   bash -c "$BLOCK_PROBE" 2>/dev/null | tail -1)
 check_eq "probe: rc 3 on generation read is stale, not fail-closed" "PROBE=stale" "$PROBE_OUT"
 
@@ -1011,45 +1156,72 @@ check_eq "record: failed record write wrote no probe bound" "null" \
 # ---------------------------------------------------------------------------
 echo "== Greptile round: expired-but-unresolved park, and CAS interleaving =="
 # ---------------------------------------------------------------------------
-# P1: an unknown-reset park sets parked_until to exactly cadence x fires ahead,
-# which is the same instant the last probe fires — so a spent bound always sits
-# fractionally in the PAST. Both recovery sites must consult the bound before the
-# expiry shortcut, or they call a standing park "resolved", erase the
-# manual-resume state, and arm a loop the still-closed execution gate then blocks.
-require_text "2D.1(b+) checks the spent bound before expiry" "$SKILL" \
-  'spent bound outlives its own deadline'
-require_text "2D.5 checks the spent bound before expiry" "$SKILL" \
-  'Read that pair before applying the expiry test'
-require_text "spent bound stays parked whatever parked_until says" "$SKILL" \
-  'stays parked whatever `parked_until` says'
-require_text "spent-bound recovery names the manual resume" "$SKILL" \
-  'probe bound spent.*resume manually with /pause-resume'
-# Non-vacuity for the ordering claim. The finding is ORDER, not presence: each
-# recovery paragraph is one long line, so take the line carrying the expiry
-# phrase and assert the bound check sits at a smaller offset WITHIN THAT LINE.
-# A test that merely greps both strings would pass with the guard written after
-# the shortcut it is supposed to qualify — i.e. with the bug still in place.
-assert_bound_precedes_expiry() {
-  local desc="$1" marker="$2" line off_bound off_expiry
-  line=$(grep -F -- "$marker" "$SKILL" | head -1)
-  if [ -z "$line" ]; then
-    FAIL=$((FAIL + 1)); echo "FAIL — $desc (no line carrying '$marker')"; return
-  fi
-  local before="${line%%probe bound spent*}"
-  if [ "$before" = "$line" ]; then
-    FAIL=$((FAIL + 1)); echo "FAIL — $desc (that paragraph never checks the spent bound)"; return
-  fi
-  off_bound=${#before}
-  local before_e="${line%%$marker*}"
-  off_expiry=${#before_e}
-  if [ "$off_bound" -lt "$off_expiry" ]; then
-    PASS=$((PASS + 1)); echo "ok   — $desc (bound at $off_bound, expiry at $off_expiry)"
-  else
-    FAIL=$((FAIL + 1)); echo "FAIL — $desc (bound at $off_bound is NOT before expiry at $off_expiry)"
-  fi
+require_text "2D.1(b+) includes the shared route" "$REPO_ROOT/.claude/skills/pm/modules/day-preconditions.md" \
+  'test-anchor: pm-day-park-route'
+require_text "2D.5 runs the shared route" "$REPO_ROOT/.claude/skills/pm/modules/day-recovery.md" \
+  'pm-day-park-route'
+
+BLOCK_PARK_ROUTE=$(extract_skill_bash "$REPO_ROOT/.claude/skills/pm/modules/day-preconditions.md" pm-day-park-route) || exit 1
+park_route() {
+  "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day=$1" >/dev/null || return
+  SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" WEEKLY_FIXTURE="${2:-false}" \
+    bash -c "$BLOCK_REC_SNAPSHOT"$'\n''date() {
+      if [ "$#" -eq 2 ] && [ "$1" = -u ] && [ "$2" = +%s ]; then
+        printf "%s\n" 1767225600
+      else
+        command date "$@"
+      fi
+    }
+    case "$WEEKLY_FIXTURE" in
+      true) PM_DAY_WEEKLY_RESUMED_SNAPSHOT="$DAY_SNAPSHOT" ;;
+      stale) PM_DAY_WEEKLY_RESUMED_SNAPSHOT="{}" ;;
+    esac'$'\n'"$BLOCK_PARK_ROUTE"
 }
-assert_bound_precedes_expiry "2D.1(b+) qualifies its expiry shortcut" 'the park resolved or never existed'
-assert_bound_precedes_expiry "2D.5 qualifies its expiry shortcut"     'may recovery continue normally'
+for day_deadline in 2025-12-31T23:59:59Z 2026-01-01T00:00:00Z 2026-01-01T00:00:01Z; do
+  route_day=$(jq -nc --arg deadline "$day_deadline" '{
+    parked_until:$deadline, limit_kind:"rolling_window", limit_cause:"preemptive",
+    limit_probe_fires_remaining:2}')
+  check_eq "old pre-emptive park with a probe bound is retired (#2416) at $day_deadline" PARK_ROUTE=retire:preemptive "$(park_route "$route_day")"
+  route_day=$(jq -c '.limit_probe_fires_remaining = 0' <<< "$route_day")
+  check_eq "old pre-emptive park with a spent bound is retired (#2416) at $day_deadline" PARK_ROUTE=retire:preemptive "$(park_route "$route_day")"
+  route_day=$(jq -c '.limit_probe_fires_remaining = -1' <<< "$route_day")
+  check_eq "old pre-emptive park with no bound is retired (#2416) at $day_deadline" PARK_ROUTE=retire:preemptive "$(park_route "$route_day")"
+done
+check_eq "an old pre-emptive park without a deadline is retired (#2416)" PARK_ROUTE=retire:preemptive \
+  "$(park_route '{"limit_kind":"rolling_window","limit_cause":"preemptive","limit_probe_fires_remaining":2}')"
+check_eq "positive bound on a weekly park needs manual recovery" PARK_ROUTE=manual:weekly \
+  "$(park_route '{"parked_until":"2025-12-31T23:59:59Z","limit_kind":"weekly","limit_cause":"preemptive","limit_probe_fires_remaining":2}')"
+check_eq "a REACTIVE park with a bound is not retired by the pre-emptive rule" PARK_ROUTE=recover:oneshot \
+  "$(park_route '{"parked_until":"2026-01-01T00:00:01Z","limit_kind":"rolling_window","limit_cause":"reactive"}')"
+check_eq "no cause field is not retired as pre-emptive (#2416)" PARK_ROUTE=recover:oneshot \
+  "$(park_route '{"parked_until":"2026-01-01T00:00:01Z","limit_kind":"rolling_window"}')"
+check_eq "a wrongly-cased cause is not retired as pre-emptive (#2416)" PARK_ROUTE=recover:oneshot \
+  "$(park_route '{"parked_until":"2026-01-01T00:00:01Z","limit_kind":"rolling_window","limit_cause":"Preemptive"}')"
+check_eq "a pre-emptive cause with no recognised kind is not retired (#2416)" PARK_ROUTE=manual:unverified \
+  "$(park_route '{"parked_until":"2026-01-01T00:00:01Z","limit_cause":"preemptive"}')"
+check_eq "a malformed cause fails closed, not retired (#2416)" PARK_ROUTE=manual:unreadable \
+  "$(park_route '{"parked_until":"2026-01-01T00:00:01Z","limit_kind":"rolling_window","limit_cause":7}')"
+check_eq "unfinished claim precedes bound and expiry" PARK_ROUTE=manual:unfinished \
+  "$(park_route '{"parked_until":"2025-12-31T23:59:59Z","park_claim_token":"in-flight","limit_probe_fires_remaining":2}')"
+check_eq "invalid deadline fails closed" PARK_ROUTE=manual:unreadable \
+  "$(park_route '{"parked_until":"invalid"}')"
+check_eq "expired reactive park without a bound allows ordinary arming" PARK_ROUTE=normal \
+  "$(park_route '{"parked_until":"2025-12-31T23:59:59Z","limit_kind":"rolling_window","limit_cause":"reactive"}')"
+check_eq "future rolling park without a bound selects one-shot recovery" PARK_ROUTE=recover:oneshot \
+  "$(park_route '{"parked_until":"2026-01-01T00:00:01Z","limit_kind":"rolling_window","limit_cause":"reactive"}')"
+check_eq "missing park allows ordinary arming" PARK_ROUTE=normal "$(park_route '{}')"
+WEEKLY_EXPIRED='{"parked_until":"2025-12-31T23:59:59Z","limit_kind":"weekly","limit_cause":"reactive"}'
+check_eq "expired weekly park requires explicit end resume" PARK_ROUTE=manual:weekly \
+  "$(park_route "$WEEKLY_EXPIRED")"
+check_eq "explicit end resume can release an expired weekly park for arming" PARK_ROUTE=normal \
+  "$(park_route "$WEEKLY_EXPIRED" true)"
+check_eq "manual resume proof cannot release a replacement weekly park" PARK_ROUTE=manual:weekly \
+  "$(park_route "$WEEKLY_EXPIRED" stale)"
+WEEKLY_FUTURE=$(jq -c '.parked_until="2026-01-01T00:00:01Z"' <<< "$WEEKLY_EXPIRED")
+check_eq "explicit end resume does not bypass a future weekly deadline" PARK_ROUTE=manual:weekly \
+  "$(park_route "$WEEKLY_FUTURE" true)"
+check_eq "weekly park with missing deadline cannot be cleared by arming" PARK_ROUTE=manual:weekly \
+  "$(park_route '{"limit_kind":"weekly"}' true)"
 
 # P1: the cause CAS and the metadata write used to be two lock holds, so a
 # reactive kill landing between them could leave a record mixing both paths'
@@ -1270,6 +1442,19 @@ for REC_KIND in '"weekly"' null '"unrecognized"' 42; do
   check_eq "future park kind $REC_KIND stays parked" "$REC_ORIGINAL" "$(recovery_read)"
 done
 
+
+seed_recovery preemptive 2 null
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.parked_until=\"2020-01-01T00:00:00Z\"" >/dev/null
+REC_PREP=$(recovery_prepare "")
+check_eq "delayed positive probe can recover past the nominal deadline" empty "$(recovery_json "$REC_PREP" .route)"
+REC_AUTH=$(recovery_authorize "$REC_PREP" "" null)
+check_eq "delayed recovery retains its positive count" 2 "$(recovery_json "$REC_AUTH" .binding.limit_probe_fires_remaining)"
+REC_PUB=$(recovery_publish "$REC_AUTH" delayed-task delayed-generation)
+check_eq "delayed bounded probe publishes its new wake" armed "$(recovery_json "$REC_PUB" .status)"
+seed_recovery preemptive null null
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.parked_until=\"2020-01-01T00:00:00Z\"" >/dev/null
+check_eq "an expired known reset still refuses replacement" manual "$(recovery_json "$(recovery_prepare "")" .route)"
+
 seed_recovery preemptive 0 null
 check_eq "spent probe stays parked" manual "$(recovery_json "$(recovery_prepare "")" .route)"
 seed_recovery preemptive null null
@@ -1321,7 +1506,7 @@ seed_day_state
 NOTOK_TOK="$(claim_and_token)"
 check_eq "release: an empty token fails closed" "PARK_RELEASE=error rc=token" "$(run_release "" | tail -1)"
 check_eq "release token guard: the claim survives" "$NOTOK_TOK" "$(day_get park_claim_token)"
-require_text "the release is keyed on the claim token, not the timestamp or the cause" "$SKILL" \
+require_text "the release is keyed on the claim token, not the timestamp or the cause" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" \
   'Gate the release on your claim token, not on your own timestamp and not on `limit_cause`'
 
 # Exit 6 is a lock timeout and documented as retryable, so the release retries it
@@ -1354,7 +1539,7 @@ NORETRY_OUT="$(SESSION_STATE_SH="$RETRY_STUB_DIR/session-state.sh" REPO_KEY="$RE
 check_eq "release retry: a retried non-owner still stands down" "PARK_RELEASE=superseded" "$NORETRY_OUT"
 check_eq "release retry control: the real claim survives it" "$NORETRY_TOK" "$(day_get park_claim_token)"
 rm -rf "$RETRY_STUB_DIR"
-require_text "the release retries a documented-retryable lock timeout" "$SKILL" \
+require_text "the release retries a documented-retryable lock timeout" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" \
   'Exit 6 is a lock timeout and documented as retryable'
 
 # ---------------------------------------------------------------------------
@@ -1390,9 +1575,7 @@ check_eq "probe: the sentinel is left untouched" "-1" "$(day_get limit_probe_fir
 
 # Recovery and teardown must know the third value, or -1 silently falls into the
 # null branch and re-arms the very wake the teardown stopped.
-require_text "2D.1(b+) handles the -1 sentinel"  "$SKILL" 'is the third value'
-require_text "2D.5 handles the -1 sentinel"      "$SKILL" 'zero, .-1., or unreadable'
-require_text "the bound is documented three-valued" "$SKILL" 'bound field is three-valued'
+require_text "the bound is documented three-valued" "$REPO_ROOT/.claude/skills/pm/modules/day-park-preemptive.md" 'bound field is three-valued'
 require_text "schema documents the three-valued bound" "$SCHEMA" 'THREE-VALUED'
 require_text "day-mode doc records the sentinel"  "$DAY_MODE_DOC" 'probe bound is three-valued'
 
@@ -1498,6 +1681,210 @@ if [[ -n "$CTRL_DIR" ]]; then
     "WAKE_PUBLISH=failed" "$CTRL_WAKE_OUT"
   check_eq "control: and no task id was published" "null" "$(day_get limit_resume_task_id)"
 fi
+
+
+echo "== Saved day goal and digest streak =="
+
+DAY_ARM="$REPO_ROOT/.claude/skills/pm/modules/day-arm.md"
+DAY_TICK="$REPO_ROOT/.claude/skills/pm/modules/day-tick.md"
+BLOCK_SAVED_GOAL=$(extract_skill_bash "$DAY_ARM" pm-day-arm-prior-goal)
+BLOCK_GOAL_INIT=$(extract_skill_bash "$DAY_ARM" pm-day-arm-init)
+BLOCK_DIGEST_STREAK=$(extract_skill_bash "$DAY_TICK" pm-day-tick-digest-streak)
+BLOCK_DIGEST_CADENCE=$(extract_skill_bash "$DAY_TICK" pm-day-tick-effective-cadence)
+DAY_PATH=".repos[\"$REPO_KEY\"].day"
+run_goal_arm() {
+  local state_helper="${2:-$SESSION_STATE_SH}" reservation
+  reservation=$("$SESSION_STATE_SH" --get-json "$DAY_PATH") || return
+  DAY_ARM_GENERATION=goal-test DAY_RESERVATION="$reservation" PMM_EXPECTED=false \
+  SESSION_STATE_SH="$state_helper" REPO_KEY="$REPO_KEY" BUSINESS_GOAL="$1" \
+    COMPETING_GOAL="${3:-}" NOW=2026-11-11T19:30:00Z DAY_CADENCE_MIN=5 \
+    MAX_PIPELINE_FAILURES=3 PRIOR_HITS=0 bash -u -c \
+    "$BLOCK_SAVED_GOAL"$'\n''if [ -n "$COMPETING_GOAL" ]; then
+      "$SESSION_STATE_SH" --set "$DAY_STATE_PATH.goal=$COMPETING_GOAL" || exit 99
+    fi'$'\n'"$BLOCK_GOAL_INIT"$'\n''exit "$INIT_RC"'
+}
+read_goal() { "$SESSION_STATE_SH" --get-json "$DAY_PATH.goal"; }
+write_goal() { "$SESSION_STATE_SH" --set "$DAY_PATH.goal=$1" >/dev/null; }
+
+seed_day_state
+"$SESSION_STATE_SH" --set '.pmm_active=false' --set "$DAY_PATH.active=true" \
+  --set "$DAY_PATH.stop_requested=false" --set "$DAY_PATH.monitor_generation=\"goal-test\"" \
+  --set "$DAY_PATH.monitor_task_id=null" >/dev/null
+run_goal_arm "" || exit 1
+check_eq "an absent saved goal remains JSON null" null "$(read_goal)"
+write_goal '"stabilize incoming work"'
+run_goal_arm "" || exit 1
+check_eq "plain saved goal survives resume" '"stabilize incoming work"' "$(read_goal)"
+SAVED_GOAL=$(jq -cn --arg goal $'  quotes " and backslash \\; line\nUTF-8 π\n\n' '$goal')
+write_goal "$SAVED_GOAL"
+run_goal_arm "" || exit 1
+check_eq "resume preserves whitespace, escapes and trailing newlines" "$SAVED_GOAL" "$(read_goal)"
+write_goal '"null"'
+run_goal_arm "" || exit 1
+check_eq "literal null remains a string" '"null"' "$(read_goal)"
+run_goal_arm $'override\n' || exit 1
+check_eq "an explicit goal wins without losing trailing whitespace" '"override\n"' "$(read_goal)"
+write_goal '"older saved goal"'
+GOAL_RC=0
+run_goal_arm "" "$SESSION_STATE_SH" '"newer explicit goal"' >/dev/null 2>&1 || GOAL_RC=$?
+check_eq "a newer state write defeats stale resume initialization" 7 "$GOAL_RC"
+check_eq "the stale resume leaves the newer explicit goal" '"newer explicit goal"' "$(read_goal)"
+write_goal '{"wrong":"type"}'
+GOAL_RC=0
+GOAL_BEFORE=$("$SESSION_STATE_SH" --get-json "$DAY_PATH")
+run_goal_arm 'new goal' || GOAL_RC=$?
+check_eq "an unreadable saved goal holds initialization" 4 "$GOAL_RC"
+check_eq "unreadable goal leaves the original state intact" "$GOAL_BEFORE" "$("$SESSION_STATE_SH" --get-json "$DAY_PATH")"
+
+GOAL_RETRY_WRAPPER="$STUB_DIR/goal-retry-state.sh"
+cat > "$GOAL_RETRY_WRAPPER" <<'GOAL_RETRY'
+#!/usr/bin/env bash
+[[ -x "${ACTUAL_STATE_HELPER:-}" && "$ACTUAL_STATE_HELPER" != "$0" ]] || exit 2
+if [[ "$1" == --get-json ]]; then
+  first=false
+  [[ -e "$GOAL_READ_LOG" ]] || first=true
+  printf '%s\n' read >> "$GOAL_READ_LOG"
+  [[ "$first" != true && "$GOAL_LOCK_PERSISTS" != true ]] || exit 6
+fi
+exec "$ACTUAL_STATE_HELPER" "$@"
+GOAL_RETRY
+chmod +x "$GOAL_RETRY_WRAPPER"
+write_goal '"keep on retry"'
+ACTUAL_STATE_HELPER="$SESSION_STATE_SH" GOAL_READ_LOG="$STUB_DIR/goal-read-retry" \
+  GOAL_LOCK_PERSISTS=false run_goal_arm "" "$GOAL_RETRY_WRAPPER" || exit 1
+check_eq "a transient lock timeout triggers one retry" 2 "$(grep -c '^read$' "$STUB_DIR/goal-read-retry")"
+check_eq "successful retry preserves the goal" '"keep on retry"' "$(read_goal)"
+GOAL_BEFORE=$("$SESSION_STATE_SH" --get-json "$DAY_PATH")
+GOAL_RC=0
+ACTUAL_STATE_HELPER="$SESSION_STATE_SH" GOAL_READ_LOG="$STUB_DIR/goal-read-timeout" \
+  GOAL_LOCK_PERSISTS=true run_goal_arm "override" "$GOAL_RETRY_WRAPPER" || GOAL_RC=$?
+check_eq "a persistent read timeout stops after one retry" 2 "$(grep -c '^read$' "$STUB_DIR/goal-read-timeout")"
+check_eq "persistent timeout remains the original read error" 6 "$GOAL_RC"
+check_eq "persistent timeout leaves state intact" "$GOAL_BEFORE" "$("$SESSION_STATE_SH" --get-json "$DAY_PATH")"
+
+echo "== Atomic day startup reservation =="
+
+DAY_PRE="$REPO_ROOT/.claude/skills/pm/modules/day-preconditions.md"
+BLOCK_START_FRESH=$(extract_skill_bash "$DAY_PRE" pm-day-start-freshness) || exit 1
+BLOCK_START_OWNER=$(extract_skill_bash "$DAY_PRE" pm-day-start-ownership) || exit 1
+BLOCK_START_PUBLISH=$(extract_skill_bash "$DAY_ARM" pm-day-start-publish) || exit 1
+run_start() {
+  SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" \
+    DAY_SNAPSHOT="$1" DAY_SNAPSHOT_RC=0 PMM_EXPECTED=false DAY_CADENCE_MIN=5 \
+    NOW=2026-01-01T00:00:00Z MAX_PIPELINE_FAILURES=3 PRIOR_HITS=0 \
+    bash -u -c "$BLOCK_START_OWNER"$'\n'"$2"
+}
+start_route() {
+  DAY_SNAPSHOT="$1" DAY_SNAPSHOT_RC=0 bash -u -c \
+    'date() { printf "%s\n" 1767225600; }'$'\n'"$BLOCK_START_FRESH"
+}
+
+START_INACTIVE='{"active":false,"goal":"retained"}'
+"$SESSION_STATE_SH" --set ".pmm_active=false" --set "$DAY_PATH=$START_INACTIVE" >/dev/null
+START_SNAPSHOT=$("$SESSION_STATE_SH" --get-json "$DAY_PATH")
+START_ATTEMPT='rc=0; pm_day_claim_start || rc=$?; printf "%s %s\n" "$rc" "$DAY_ARM_GENERATION"'
+run_start "$START_SNAPSHOT" "$START_ATTEMPT" > "$TMP_HOME/start-first.log" & START_FIRST_PID=$!
+run_start "$START_SNAPSHOT" "$START_ATTEMPT" > "$TMP_HOME/start-second.log" & START_SECOND_PID=$!
+wait "$START_FIRST_PID" || exit 1
+wait "$START_SECOND_PID" || exit 1
+check_eq "exactly one simultaneous day reservation wins" $'0\n7' \
+  "$(cut -d ' ' -f1 "$TMP_HOME/start-first.log" "$TMP_HOME/start-second.log" | sort)"
+START_WINNER=$(awk '$1 == 0 {print $2}' "$TMP_HOME/start-first.log" "$TMP_HOME/start-second.log")
+START_WINNER_DAY=$("$SESSION_STATE_SH" --get-json "$DAY_PATH")
+check_eq "the loser leaves the winner and its empty task slot intact" \
+  "$START_WINNER null retained" \
+  "$(jq -r '[.monitor_generation, (.monitor_task_id | tostring), .goal] | join(" ")' <<< "$START_WINNER_DAY")"
+
+# A park can arrive after the normal route and before the startup claim.
+"$SESSION_STATE_SH" --set "$DAY_PATH=$START_INACTIVE" >/dev/null
+START_SNAPSHOT=$("$SESSION_STATE_SH" --get-json "$DAY_PATH")
+"$SESSION_STATE_SH" --set "$DAY_PATH.parked_until=\"2026-01-01T00:10:00Z\"" \
+  --set "$DAY_PATH.limit_kind=\"rolling_window\"" >/dev/null
+PARK_AFTER_ROUTE=$("$SESSION_STATE_SH" --get-json "$DAY_PATH")
+START_LOST=$(run_start "$START_SNAPSHOT" "$START_ATTEMPT" | cut -d ' ' -f1)
+check_eq "a park created after normal routing defeats the claim" 7 "$START_LOST"
+check_eq "failed claim preserves the new park" "$PARK_AFTER_ROUTE" \
+  "$("$SESSION_STATE_SH" --get-json "$DAY_PATH")"
+
+START_STALE='{"active":true,"last_tick_at":"2025-12-31T23:40:00Z","cadence_effective_minutes":5,"goal":"retained"}'
+check_eq "a stale day is reclaimable" DAY_START_ROUTE=stale "$(start_route "$START_STALE")"
+START_AGED=$(jq -c '.monitor_generation="day-0123456789abcdef0123456789abcdef" |
+  .monitor_task_id=null' <<< "$START_STALE")
+check_eq "an aged unpublished startup still owns dispatch" DAY_START_ROUTE=reserved \
+  "$(start_route "$START_AGED")"
+START_PUBLISHED=$(jq -c '.monitor_task_id="native-monitor"' <<< "$START_AGED")
+check_eq "a stale published loop keeps the usual recovery route" DAY_START_ROUTE=stale \
+  "$(start_route "$START_PUBLISHED")"
+FLEET_RESERVE=$(extract_skill_bash "$REPO_ROOT/.claude/skills/pr-monitor-and-manage/SKILL.md" \
+  pm-fleet-day-reservation) || exit 1
+fleet_reservation() {
+  "$SESSION_STATE_SH" --set "$DAY_PATH=$1" >/dev/null || return
+  SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" bash -u -c "$FLEET_RESERVE"
+}
+check_eq "the fleet also holds on an aged day startup" DAY_RESERVATION_STATE=reserved \
+  "$(fleet_reservation "$START_AGED")"
+check_eq "the fleet keeps ordinary stale published-loop checks" DAY_RESERVATION_STATE=ordinary \
+  "$(fleet_reservation "$START_PUBLISHED")"
+check_eq "the fleet holds on unreadable reservation evidence" DAY_RESERVATION_STATE=unreadable \
+  "$(fleet_reservation '[]')"
+check_eq "a widened cadence preserves a live day" DAY_START_ROUTE=live \
+  "$(start_route "$(jq -c '.cadence_effective_minutes=30' <<< "$START_STALE")")"
+"$SESSION_STATE_SH" --set "$DAY_PATH=$START_STALE" >/dev/null
+START_SNAPSHOT=$("$SESSION_STATE_SH" --get-json "$DAY_PATH")
+START_RACE=$(run_start "$START_SNAPSHOT" 'pm_day_claim_start || exit $?
+  "$SESSION_STATE_SH" --set ".pmm_active=true" || exit $?
+  renewed=0; pm_day_renew_start || renewed=$?
+  pm_day_release_start || exit $?
+  printf "%s\n" "$renewed"')
+check_eq "stale recovery claims but a fleet conflict stops dispatch" 7 "$START_RACE"
+check_eq "fleet-conflict release keeps the saved goal" '[false,null,"retained"]' \
+  "$("$SESSION_STATE_SH" --get-json "$DAY_PATH" | jq -c '[.active,.monitor_generation,.goal]')"
+
+"$SESSION_STATE_SH" --set '.pmm_active=false' --set "$DAY_PATH=$START_INACTIVE" >/dev/null
+START_SNAPSHOT=$("$SESSION_STATE_SH" --get-json "$DAY_PATH")
+START_REPLACED=$(run_start "$START_SNAPSHOT" 'pm_day_claim_start || exit $?
+  "$SESSION_STATE_SH" --set "$DAY_STATE_PATH.monitor_generation=\"new-owner\"" \
+    --set "$DAY_STATE_PATH.monitor_task_id=\"new-task\"" || exit $?
+  renew_rc=0; pm_day_renew_start || renew_rc=$?
+  release_rc=0; pm_day_release_start || release_rc=$?
+  printf "%s %s\n" "$renew_rc" "$release_rc"')
+check_eq "a replacement defeats both renewal and cleanup" "7 7" "$START_REPLACED"
+check_eq "replacement identity is preserved" '["new-owner","new-task"]' \
+  "$("$SESSION_STATE_SH" --get-json "$DAY_PATH" | jq -c '[.monitor_generation,.monitor_task_id]')"
+
+"$SESSION_STATE_SH" --set "$DAY_PATH=$START_INACTIVE" >/dev/null
+START_SNAPSHOT=$("$SESSION_STATE_SH" --get-json "$DAY_PATH")
+START_INIT='pm_day_claim_start || exit $?
+  pm_day_renew_start || exit $?'$'\n'"$BLOCK_SAVED_GOAL"$'\n'"$BLOCK_GOAL_INIT"$'\n''[ "$INIT_RC" -eq 0 ] || exit "$INIT_RC"'
+START_PUBLISH=$(run_start "$START_SNAPSHOT" "$START_INIT"$'\n''MONITOR_TASK_ID=own-task'$'\n'"$BLOCK_START_PUBLISH"$'\n''printf "%s %s\n" "$PUBLISH_RC" "$DAY_GENERATION"')
+check_eq "the owned initialization publishes exactly its task and generation" \
+  "0 $("$SESSION_STATE_SH" --get "$DAY_PATH.monitor_generation")" "$START_PUBLISH"
+check_eq "the task and goal remain bound to the published day" '["own-task","retained"]' \
+  "$("$SESSION_STATE_SH" --get-json "$DAY_PATH" | jq -c '[.monitor_task_id,.goal]')"
+
+"$SESSION_STATE_SH" --set "$DAY_PATH=$START_INACTIVE" >/dev/null
+START_SNAPSHOT=$("$SESSION_STATE_SH" --get-json "$DAY_PATH")
+START_AFTER_INIT=$(run_start "$START_SNAPSHOT" "$START_INIT"$'\n''
+  "$SESSION_STATE_SH" --set "$DAY_STATE_PATH.monitor_generation=\"new-owner\"" \
+    --set "$DAY_STATE_PATH.monitor_task_id=\"new-task\"" || exit $?
+  MONITOR_TASK_ID=own-task'$'\n'"$BLOCK_START_PUBLISH"$'\n''
+  release_rc=0; pm_day_release_start || release_rc=$?
+  printf "%s %s\n" "$PUBLISH_RC" "$release_rc"')
+check_eq "replacement between initialization and publication wins" '7 7' "$START_AFTER_INIT"
+check_eq "failed publication leaves the replacement wake untouched" '["new-owner","new-task"]' \
+  "$("$SESSION_STATE_SH" --get-json "$DAY_PATH" | jq -c '[.monitor_generation,.monitor_task_id]')"
+
+run_digest_case() {
+  local prior_streak="$1" new_digest="$2" base="$3"
+  "$SESSION_STATE_SH" --set "$DAY_PATH.digest=\"sha256:same\"" \
+    --set "$DAY_PATH.digest_streak=$prior_streak" --set "$DAY_PATH.cadence_base_minutes=$base" >/dev/null
+  SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" DAY_DIGEST="$new_digest" \
+    bash -u -c "$BLOCK_DIGEST_STREAK"$'\n'"$BLOCK_DIGEST_CADENCE"$'\n''printf "%s %s\n" "$DAY_STREAK" "$DAY_EFF_MIN"'
+}
+check_eq "same digest advances at base cadence" '2 4' "$(run_digest_case 1 sha256:same 4)"
+check_eq "third equal digest widens cadence to its floor" '3 15' "$(run_digest_case 2 sha256:same 4)"
+check_eq "ninth equal digest reaches the freeze threshold" '9 18' "$(run_digest_case 8 sha256:same 6)"
+check_eq "different digest resets streak and cadence" '0 6' "$(run_digest_case 8 sha256:different 6)"
 
 echo
 echo "passed: $PASS   failed: $FAIL"
