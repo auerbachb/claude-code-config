@@ -453,6 +453,53 @@ out="$(run_hook 'GH_REPO=env-owner/env-repo gh pr create -R flag-owner/flag-repo
 expect_deny "#2366 -R overrides GH_REPO" "$out" "--claim --repo flag-owner/flag-repo"
 out="$(run_hook 'gh pr create -R github.com/host-owner/host-repo --head issue-208-x' "$TMP/pr-feature")"
 expect_deny "#2366 -R HOST/OWNER/REPO is the target" "$out" "--claim --repo host-owner/host-repo"
+out="$(run_hook 'gh pr create -Ratt-owner/att-repo --head issue-208-x' "$TMP/pr-feature")"
+expect_deny "#2366 attached -ROWNER/REPO is the target" "$out" "--claim --repo att-owner/att-repo"
+
+# An expanded or foreign-host target never falls back to the checkout's repo:
+# issue 220 reads mine there, so any fallback would allow.
+set_verdict 220 mine
+for c in 'gh pr create --repo "$R" --head issue-220-x' \
+         'gh pr create --repo="$R" --head issue-220-x' \
+         'gh pr create -R $(echo o/r) --head issue-220-x' \
+         'gh -R "$R" pr create --head issue-220-x' \
+         'GH_REPO=$(cat f) gh pr create --head issue-220-x' \
+         'GH_REPO="$R" gh pr create --head issue-220-x' \
+         'export GH_REPO=$R && gh pr create --head issue-220-x' \
+         'GH_HOST="$H" gh pr create --head issue-220-x'; do
+  out="$(run_hook "$c" "$TMP/pr-feature")"
+  expect_deny "#2366 unresolvable target blocks: $c" "$out" "cannot resolve"
+done
+for c in 'gh pr create -R ghe.example.com/o/r --head issue-220-x' \
+         'GH_HOST=ghe.example.com gh pr create -R o/r --head issue-220-x' \
+         'export GH_HOST=ghe.example.com && gh pr create --head issue-220-x'; do
+  out="$(run_hook "$c" "$TMP/pr-feature")"
+  expect_deny "#2366 non-github.com host blocks: $c" "$out" "other than github.com"
+done
+out="$(run_hook 'gh pr create --repo "$R" --head issue-220-x --title "unbalanced' "$TMP/pr-feature")"
+expect_deny "#2366 unparsed command with a repo target blocks" "$out" "cannot resolve"
+out="$(run_hook 'gh pr create -R https://github.com/url-owner/url-repo.git --head issue-220-x' "$TMP/pr-feature")"
+expect_allow "#2366 a github.com URL target resolves" "$out"
+out="$(run_hook 'gh pr create --repo "$R" --head feature-x' "$TMP/pr-feature")"
+expect_allow "#2366 an unresolvable target on a non-issue branch is not evidence" "$out"
+
+# Commands the parser used to miss.
+set_verdict 221 claimed
+for c in 'if git checkout -b issue-221-k; then :; fi' \
+         '! git checkout -b issue-221-k' \
+         '( git checkout -b issue-221-k )' \
+         'bash -c "git checkout -b issue-221-k"' \
+         'sh -ec "git checkout -b issue-221-k"' \
+         'eval "git checkout -b issue-221-k"' \
+         'gh pr "create" --head issue-221-k' \
+         'echo x >&2 && git checkout -b issue-221-k 2>&1'; do
+  out="$(run_hook "$c" "$WORK")"
+  expect_deny "#2366 parsed: $c" "$out" "claimed by another holder"
+done
+out="$(run_hook '(cd "'"$PR_REPO"'" && gh pr create --title t)' "$TMP/pr-feature")"
+expect_deny "#2366 subshell cd is followed" "$out" "issue #112"
+out="$(run_hook '(cd "'"$PR_REPO"'" && true) && gh pr create --title t' "$TMP/pr-feature")"
+expect_allow "#2366 a subshell cd ends with the subshell" "$out"
 set_verdict 216 claimed
 out="$(run_hook 'X=$(a $(b)) gh pr create --head issue-216-n --title t' "$TMP/pr-feature")"
 expect_deny "#2366 a nested substitution prefix never hides gh" "$out" "claimed by another holder"

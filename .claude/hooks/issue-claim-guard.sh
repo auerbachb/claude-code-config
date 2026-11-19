@@ -52,6 +52,7 @@ FALLBACK_VERB = re.compile(r"git\s+worktree\s+add\b|git\s+(?:checkout|switch)\b|
 FALLBACK_CREATE = re.compile(r"\s-[bBcC]|\s--(?:create|force-create)\b")
 FALLBACK_FLAG_ARG = ("-b", "-B", "-c", "-C", "--create", "--force-create", "--orphan")
 FALLBACK_ATTACHED = re.compile(r"-[bBcC](.+)$|--(?:create|force-create)=(.+)$")
+FALLBACK_TARGET = re.compile(r"(?:^|\s)(?:-R|--repo)|GH_REPO=|GH_HOST=")
 
 BASE = os.getcwd()
 recs = []
@@ -110,29 +111,51 @@ def seg_holder(seg, i, exported):
     return found or "-"
 
 
-def norm_repo(v):
-    # [HOST/]OWNER/REPO, as gh accepts it, to OWNER/REPO; None when not literal.
-    if not v:
-        return None
-    parts = v.split("/")
+DEFAULT_HOSTS = ("github.com", "www.github.com")
+
+
+def resolve_target(v, host=None):
+    # The repository a gh command targets, from its -R/--repo or GH_REPO value
+    # ([HOST/]OWNER/REPO, or a URL) and the GH_HOST it runs with:
+    #   "-"          no target given: the checkout's repository applies
+    #   OWNER/REPO   a literal repository on github.com
+    #   "HOST"       a literal repository or GH_HOST on another host; the
+    #                helper reads github.com only, so it cannot check it
+    #   "DYN"        a target that is present but not literal (a variable, a
+    #                command substitution, an empty or unparseable value)
+    # The shell part blocks on HOST and DYN: a target the guard cannot resolve
+    # never falls back to the checkout's repository.
+    hostv = None
+    if host is not None:
+        if host == "" or DYN_RE.search(host):
+            return "DYN"
+        hostv = host.lower()
+    if v is None:
+        if hostv is not None and hostv not in DEFAULT_HOSTS:
+            return "HOST"
+        return "-"
+    if v == "" or DYN_RE.search(v):
+        return "DYN"
+    m = re.match(r"^(?:https?://|ssh://git@|git@)?(.*?)(?:\.git)?/*$", v)
+    parts = (m.group(1) if m else v).replace(":", "/").split("/")
     if len(parts) == 3:
-        v = parts[1] + "/" + parts[2]
-    return v if REPO_OK.match(v) else None
+        if parts[0].lower() not in DEFAULT_HOSTS:
+            return "HOST"
+        parts = parts[1:]
+    elif hostv is not None and hostv not in DEFAULT_HOSTS:
+        return "HOST"
+    v = "/".join(parts)
+    return v if REPO_OK.match(v) else "DYN"
 
 
-def repo_value(v):
-    return norm_repo(v) or "-"
-
-
-def gh_repo_env(seg, i, exported):
-    # The GH_REPO the gh command word at seg[i] runs with ([HOST/]OWNER/REPO):
-    # the nearest prefix assignment, else the exported value. None when unset
-    # or not a literal repository.
+def env_value(seg, i, name, exported):
+    # The value of NAME the command word at seg[i] runs with: the nearest
+    # prefix assignment, else the exported value (None when unset).
     found = exported
     for tok in seg[:i]:
-        if tok.startswith("GH_REPO="):
-            found = tok[len("GH_REPO="):]
-    return norm_repo(found)
+        if tok.startswith(name + "="):
+            found = tok[len(name) + 1:]
+    return found
 
 
 def prep(cmd):
@@ -150,51 +173,99 @@ def prep(cmd):
     return "\n".join(l for l in s.split("\n") if not re.match(r"\s*#", l))
 
 
+WRAPPERS = ("command", "env", "exec", "nohup", "time", "!", "(", "{",
+            "if", "then", "elif", "else", "do", "while", "until")
+SHELLS = ("bash", "sh", "zsh", "dash", "ksh")
+# Redirections (>&, &>, >>, <<, >|) stay one token, so their & is no separator.
+PUNCT = re.compile(r"&&|\|\||;;|>&|<&|&>>|&>|>>|<<|>\||[();|&<>]")
+
+
 def cmd_pos(seg, i):
-    # A command word: only wrappers (command, env, exec, VAR=x, options) may precede it.
-    return all(tok in ("command", "env", "exec") or "=" in tok or tok.startswith("-") for tok in seg[:i])
+    # A command word: only wrappers (command, env, exec, shell keywords, a
+    # subshell or group opener, VAR=x, options) may precede it.
+    return all(tok in WRAPPERS or "=" in tok or tok.startswith("-") for tok in seg[:i])
 
 
-def analyse_full(src):
+def split_punct(toks):
+    # shlex joins adjacent operators (");", ")&&"); split them back apart.
+    out = []
+    for t in toks:
+        if t and all(c in "();|&<>" for c in t):
+            out.extend(PUNCT.findall(t))
+        else:
+            out.append(t)
+    return out
+
+
+def analyse_full(src, base=None, depth=0):
     lex = shlex.shlex(src.replace("\n", " ; "), posix=True, punctuation_chars=True)
     lex.whitespace_split = True
     lex.commenters = ""
-    toks = list(lex)
+    toks = split_punct(list(lex))
     segs, cur = [], []
     for t in toks:
-        if t in ("&&", "||", ";", "|", "&"):
+        if t in ("&&", "||", ";", ";;", "|", "&"):
             segs.append(cur)
             cur = []
         else:
             cur.append(t)
     segs.append(cur)
-    dir_t = BASE
+    dir_t = BASE if base is None else base
+    dir_stack = []
     switch_targets = []
     exported = None
-    exported_gh = None
+    exported_env = {"GH_REPO": None, "GH_HOST": None}
     for seg in segs:
-        if seg and seg[0] == "export":
-            for tok in seg[1:]:
+        # A subshell keeps its own directory: "(" saves it, ")" restores it.
+        lead = 0
+        while lead < len(seg) and seg[lead] in WRAPPERS:
+            if seg[lead] == "(":
+                dir_stack.append(dir_t)
+            lead += 1
+        core = seg[lead:]
+        closes = 0
+        while core and core[-1] in (")", "}"):
+            if core[-1] == ")":
+                closes += 1
+            core = core[:-1]
+        if core and core[0] == "export":
+            for tok in core[1:]:
                 if tok.startswith(HOLDER_VAR + "="):
                     exported = holder_value(tok)
-                elif tok.startswith("GH_REPO="):
-                    exported_gh = tok[len("GH_REPO="):]
-        elif seg and seg[0] == "unset":
-            if HOLDER_VAR in seg[1:]:
+                for name in exported_env:
+                    if tok.startswith(name + "="):
+                        exported_env[name] = tok[len(name) + 1:]
+        elif core and core[0] == "unset":
+            if HOLDER_VAR in core[1:]:
                 exported = None
-            if "GH_REPO" in seg[1:]:
-                exported_gh = None
+            for name in exported_env:
+                if name in core[1:]:
+                    exported_env[name] = None
         for k, tok in enumerate(seg):
             if os.path.basename(tok) == "issue-claim.sh" and "--claim" in seg[k + 1:]:
                 for a in seg[k + 1:]:
                     if re.match(r"^[1-9][0-9]*$", a):
                         CLAIMS.add(a)
                         break
-        if seg and seg[0] in ("cd", "pushd"):
-            dir_t = join(dir_t, seg[1]) if len(seg) > 1 else "DYN"
-        elif seg and seg[0] == "popd":
+        if core and core[0] in ("cd", "pushd"):
+            dir_t = join(dir_t, core[1]) if len(core) > 1 else "DYN"
+        elif core and core[0] == "popd":
             dir_t = "DYN"
         for i, t in enumerate(seg):
+            # A command string run by a shell (-c) or by eval is analysed too.
+            if depth < 3 and cmd_pos(seg, i):
+                inner = None
+                if os.path.basename(t) in SHELLS:
+                    for k in range(i + 1, len(seg) - 1):
+                        if re.match(r"^-[a-z]*c[a-z]*$", seg[k]):
+                            inner = seg[k + 1]
+                            break
+                        if not seg[k].startswith("-"):
+                            break
+                elif t == "eval" and i + 1 < len(seg):
+                    inner = " ".join(seg[i + 1:])
+                if inner is not None:
+                    analyse_full(prep(inner), dir_t, depth + 1)
             if os.path.basename(t) == "git" and cmd_pos(seg, i):
                 hold = seg_holder(seg, i, exported)
                 gdir = dir_t
@@ -259,13 +330,18 @@ def analyse_full(src):
             if os.path.basename(t) == "gh" and cmd_pos(seg, i):
                 # gh's global -R/--repo may precede the subcommand; either
                 # flag overrides GH_REPO, as in gh itself.
-                j, target = i + 1, gh_repo_env(seg, i, exported_gh)
+                gh_env = env_value(seg, i, "GH_REPO", exported_env["GH_REPO"])
+                gh_host = env_value(seg, i, "GH_HOST", exported_env["GH_HOST"])
+                j, target = i + 1, (gh_env if gh_env != "" else None)
                 while j < len(seg) and seg[j].startswith("-"):
-                    if seg[j] in ("-R", "--repo") and j + 1 < len(seg):
-                        target = seg[j + 1]
+                    if seg[j] in ("-R", "--repo"):
+                        target = seg[j + 1] if j + 1 < len(seg) else ""
                         j += 2
                     elif seg[j].startswith("--repo="):
                         target = seg[j].split("=", 1)[1]
+                        j += 1
+                    elif seg[j].startswith("-R"):
+                        target = seg[j][2:].lstrip("=")
                         j += 1
                     else:
                         j += 1
@@ -278,12 +354,14 @@ def analyse_full(src):
                         head = args[k + 1]
                     elif a.startswith("--head="):
                         head = a.split("=", 1)[1]
-                    elif a in ("--repo", "-R") and k + 1 < len(args):
-                        target = args[k + 1]
+                    elif a in ("--repo", "-R"):
+                        target = args[k + 1] if k + 1 < len(args) else ""
                     elif a.startswith("--repo="):
                         target = a.split("=", 1)[1]
+                    elif a.startswith("-R") and len(a) > 2:
+                        target = a[2:].lstrip("=")
                 hold = seg_holder(seg, i, exported)
-                repo = repo_value(target)
+                repo = resolve_target(target, gh_host)
                 if head is not None:
                     add_branch(dir_t, head.split(":", 1)[1] if ":" in head else head, hold, repo)
                 elif switch_targets:
@@ -292,6 +370,9 @@ def analyse_full(src):
                             add_branch(dir_t, s, hold, repo)
                 else:
                     recs.append(("CURRENT", dir_t, "-", "-", hold, repo))
+        for _ in range(closes):
+            if dir_stack:
+                dir_t = dir_stack.pop()
 
 
 def analyse_fallback(src):
@@ -302,6 +383,9 @@ def analyse_fallback(src):
         rest = seg[m.end():]
         toks = [x.strip("'\"") for x in rest.split()]
         if m.group(0).startswith("gh"):
+            # Unparsed: a repo or host target is unresolvable, never the
+            # checkout's repository.
+            tgt = "DYN" if FALLBACK_TARGET.search(src) else "-"
             for k, a in enumerate(toks):
                 head = None
                 if a in ("--head", "-H") and k + 1 < len(toks):
@@ -309,7 +393,7 @@ def analyse_fallback(src):
                 elif a.startswith("--head="):
                     head = a.split("=", 1)[1]
                 if head is not None:
-                    add_branch(BASE, head.split(":", 1)[1] if ":" in head else head)
+                    add_branch(BASE, head.split(":", 1)[1] if ":" in head else head, "-", tgt)
             continue
         if not FALLBACK_CREATE.search(" " + rest):
             continue
@@ -331,7 +415,7 @@ def main():
         return
     ti = d.get("tool_input")
     cmd = ti.get("command") if isinstance(ti, dict) else None
-    if not isinstance(cmd, str) or not re.search(r"worktree|checkout|switch|pr\s+create", cmd):
+    if not isinstance(cmd, str) or not re.search(r"worktree|checkout|switch|create", cmd):
         return
     global BASE
     cwd = d.get("cwd")
@@ -672,6 +756,14 @@ main() {
         continue
       fi
     fi
+    case "$trepo" in
+      DYN)
+        deny "BLOCKED: this command targets a repository the issue-claim guard cannot resolve: its -R/--repo, GH_REPO or GH_HOST value is a variable, a command substitution or otherwise not a literal. The claim on issue #$n cannot be checked in that repository, and the guard never falls back to this checkout's repository. Rerun with a literal target, for example: gh pr create --repo OWNER/REPO ... (branch ${br:-current branch})."
+        ;;
+      HOST)
+        deny "BLOCKED: this command targets a GitHub host other than github.com (an -R/--repo HOST/OWNER/REPO value or GH_HOST). The issue-claim helper reads claims on github.com only, so the claim on issue #$n cannot be checked there (branch ${br:-current branch}). Check the claim on that host by hand; only the user can allow the command, by naming issue #$n in chat."
+        ;;
+    esac
     key=" $n|$dirv "
     case "$checked" in
       *"$key"*) continue ;;
