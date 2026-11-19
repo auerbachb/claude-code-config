@@ -120,10 +120,22 @@ if [ -x "$HERE/session-state.sh" ]; then
   REPO=$(cd "$CWD" 2>/dev/null && "$HERE/session-state.sh" --repo-key 2>/dev/null) || REPO=""
 fi
 [ "$REPO" != "_unknown" ] || REPO=""
+# unattended.sh keys an origin-less checkout as _local/<toplevel with / as _>; match questions on that
+# key too, or this thread's own questions there would never count as mine.
+QREPO="$REPO"
+if [ -z "$QREPO" ]; then
+  qtop=$(cd "$CWD" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null) || qtop=""
+  QREPO="_local/$(printf '%s' "${qtop:-$CWD}" | tr '/' '_')"
+fi
 
 SINCE_SOURCE=flag
 if [ -z "$SINCE" ]; then
-  SINCE=$("$JQ" -r '.unattended.since_epoch // empty | numbers' "$STATE_FILE" 2>/dev/null) || SINCE=""
+  SINCE=""
+  if [ -f "$STATE_FILE" ] && ! SINCE=$("$JQ" -r '.unattended.since_epoch // empty | numbers' "$STATE_FILE" 2>/dev/null); then
+    # A read failure is not "no declaration": name it, so the 24-hour fallback is not taken as the truth.
+    SINCE=""
+    unreadable "away declaration" "the session state could not be read; the last 24 hours were used"
+  fi
   SINCE_SOURCE=declared
   if [ -z "$SINCE" ] || [ "$SINCE" -gt "$NOW" ]; then SINCE=$(( NOW - 86400 )); SINCE_SOURCE=default-24h; fi
 fi
@@ -147,7 +159,7 @@ if [ -x "$HERE/unattended.sh" ]; then
   Q=$(cd "$CWD" 2>/dev/null && "$HERE/unattended.sh" list --all --json 2>/dev/null) || Q=""
 fi
 if [ -n "$Q" ] && printf '%s' "$Q" | "$JQ" -e 'type == "array"' >/dev/null 2>&1; then
-  printf '%s' "$Q" | "$JQ" -c --arg scope "$SCOPE" --arg repo "$REPO" --arg sid "$SID" "$SCOPE_JQ"'
+  printf '%s' "$Q" | "$JQ" -c --arg scope "$SCOPE" --arg repo "$QREPO" --arg sid "$SID" "$SCOPE_JQ"'
     [.[] | select(.status == "open")] as $open
     | {in: [$open[] | select($scope == "all" or mine($repo; $sid; .session))
              | {id, repo, question, options, recommended, did, session, at}] | sort_by(.at),
