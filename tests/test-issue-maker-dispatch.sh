@@ -910,8 +910,10 @@ set_log() {
     r=run(setup+'SOURCE_ASK=q\n'+open_set); assert r.returncode!=0 and log.read_bytes()==before
     print('ok workflow: a two-issue batch closes its set silently; an open set is reused only to continue its own filing, and a foreign one is refused')
     seed([]); run(setup+'SOURCE_ASK="three things"\n'+open_set); sid=state()['active_set']['set_id']
-    for n in (1,2,3): file_member(n)
+    for n in (1,2): file_member(n)
     file_member(9,member=False); assert state()['issues'][-1]['set_id'] is None
+    r=run(setup+gate); assert r.returncode==0 and r.stdout=='' and state()['active_set']['set_id']==sid and 'coherence_runs' not in state(),(r.stdout,r.stderr)
+    file_member(3)
     r=run(setup+gate); assert r.returncode==0 and r.stdout.strip()=='COHERENCE=run SET_ID='+sid,(r.stdout,r.stderr)
     r=run(setup+'SET_ID='+sid+'\n'+begin); assert r.returncode==0 and state()['active_set']['review']['status']=='pending',r.stderr
     assert [m['number'] for m in json.loads(r.stdout.strip().splitlines()[-1])['members']]==[1,2,3],r.stdout
@@ -923,7 +925,7 @@ set_log() {
     before=log.read_bytes()
     r=run(setup+gate); assert r.returncode==0 and r.stdout=='' and log.read_bytes()==before
     r=run(setup+'SET_ID='+sid+'\n'+begin); assert r.returncode==0 and 'COHERENCE=done' in r.stdout and 'Gap: export lands nowhere' in r.stdout and log.read_bytes()==before,(r.stdout,r.stderr)
-    print('ok workflow: a three-issue batch runs the pass once, keeps a standalone issue out of its set, and records each fix by issue and kind; recovery reprints the stored report and never reruns it')
+    print('ok workflow: a three-issue batch runs the pass once, keeps a standalone issue out of its set and its gate from closing it early, and records each fix by issue and kind; recovery reprints the stored report and never reruns it')
     seed([]); run(setup+'SOURCE_ASK="one chain"\nIS_CHAIN_SET=true\n'+open_set); sid=state()['active_set']['set_id']
     for n in (1,2): file_member(n,dict(chain_id='c',position=n,total=2))
     r=run(setup+gate); assert r.returncode==0 and r.stdout.strip()=='COHERENCE=run SET_ID='+sid,(r.stdout,r.stderr)

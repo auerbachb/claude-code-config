@@ -149,13 +149,16 @@ For a **large gap** (e.g. Heavy batch on a Haiku or Sonnet thread), additionally
 
 ### Step 9b2: Read a finished set back before the offer
 
-Run this once, right after the **last** member of a batch or chain has its per-issue summary and decision points and the `/update #N` / `close #N` reminder, and before the Step 9c offer. The last member is the final request of a batch (every increment included, when a request became a chain) or the final position of a standalone chain. With no open set — a single issue — skip this step silently.
+Run this once, right after the **last** member of a batch or chain has its per-issue summary and decision points and the `/update #N` / `close #N` reminder, and before the Step 9c offer. The last member is the final request of a batch (every increment included, when a request became a chain) or the final position of a standalone chain. With no open set — a single issue — skip this step silently; the gate also does nothing when the issue just recorded is not a member of the open set, so a standalone issue filed while an earlier set is unfinished leaves that set open for its own last member.
 
 <!-- test-anchor: issue-maker-coherence-gate -->
 ```bash
 # jq -e: 0 = true, 1 = false; anything else is an unreadable log and stops here.
 OPEN_RC=0
-jq -e --arg repo "$REPO" '.active_set != null and .active_set.repository == $repo' "$LOG" >/dev/null || OPEN_RC=$?
+# Open in this repo AND the row just recorded is one of its members: a standalone
+# issue filed while an unfinished set is open neither closes nor runs that set.
+jq -e --arg repo "$REPO" "$MINE_DEF"'.active_set != null and .active_set.repository == $repo
+  and ([.issues[] | select(same_repo)] | last | .set_id) == .active_set.set_id' "$LOG" >/dev/null || OPEN_RC=$?
 case "$OPEN_RC" in 0|1) ;; *) echo "ERROR: could not read $LOG for the coherence gate; stop before the offer" >&2; exit 1 ;; esac
 if [ "$OPEN_RC" -eq 0 ]; then
   SET_ID=$(jq -er '.active_set.set_id' "$LOG") || exit 1
