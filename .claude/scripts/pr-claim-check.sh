@@ -23,7 +23,18 @@
 #   GFM: an opener or closer is indented at most three spaces (a tab or four
 #   spaces is not a fence), and a backtick opener whose info string holds a
 #   backtick is not a fence.
-#   Overall skipped: bot author (bot_author), or no closing keyword (no_linked_issue).
+#   Overall skipped: a PR that is not open (pr_not_open: merged or closed, so
+#   finished work never draws a comment), a bot author (bot_author), no closing
+#   keyword (no_linked_issue), or closing keywords that all name another
+#   repository (cross_repo_issue).
+#   PR state policy: closed -> skipped/pr_not_open; open -> continue; a missing
+#   or unexpected state -> unverifiable/pr_read_failed (never a silent skip).
+#
+# CROSS-REPOSITORY KEYWORDS
+#   A keyword such as `Closes owner/name#12` that names another repository is
+#   NOT verified: the workflow token may not read that repository. It is listed
+#   in `skipped_references` ({repo, issue, reason: cross_repo_issue}). It never
+#   hides a local outcome: with local issues present the local verdict stands.
 #
 # NEVER PRINTS THE RAW HOLDER
 #   A foreign result names the holder's provider, device and label only. The
@@ -147,19 +158,33 @@ RESULT_REPO="${REPO:-unknown}"
 finish() {
   OVERALL="$1"; OVERALL_REASON="$2"
   jq -cn \
+    --argjson skipped "$(skipped_refs_json)" \
     --argjson pr "$PR" \
     --arg repo "$RESULT_REPO" \
     --arg verdict "$1" \
     --arg reason "$2" \
     --argjson claim_line "$3" \
     --argjson issues "$4" \
-    '{pr: $pr, repo: $repo, verdict: $verdict, reason: $reason, claim_line: $claim_line, issues: $issues}'
+    '{pr: $pr, repo: $repo, verdict: $verdict, reason: $reason, claim_line: $claim_line, issues: $issues, skipped_references: $skipped}'
   # Every exit path (including unverifiable early exits) goes through the CI
   # mapping, so a failed read warns in --report mode instead of passing silently.
   if [[ "$REPORT" -eq 1 ]]; then
     report_outcome
   fi
   exit 0
+}
+
+# Cross-repository closing keywords collect here as "repo#N" (lowercase repo).
+SKIPPED_REFS=()
+LINKED=""
+skipped_refs_json() {
+  if [[ "${#SKIPPED_REFS[@]}" -eq 0 ]]; then
+    printf '[]'
+    return 0
+  fi
+  printf '%s\n' "${SKIPPED_REFS[@]}" | jq -R -s -c \
+    'split("\n") | map(select(length > 0) | capture("^(?<repo>.+)#(?<issue>[0-9]+)$")
+       | {repo: .repo, issue: (.issue | tonumber), reason: "cross_repo_issue"})' 2>/dev/null || printf '[]'
 }
 
 # Issue objects accumulate here as JSON texts, joined into an array at the end.
@@ -202,6 +227,15 @@ if ! gh api "repos/$REPO/pulls/$PR" >"$TMPD/pr.json" 2>"$TMPD/err"; then
   finish unverifiable pr_read_failed false '[]'
   exit 0
 fi
+# A merged or closed PR is finished work: stop before anything else so an edit
+# to its description can never post a comment. The API reports both merged and
+# unmerged PRs as "closed". Anything but open/closed is an unreadable state.
+PR_STATE="$(jq -r '.state // ""' "$TMPD/pr.json" 2>/dev/null)" || PR_STATE=""
+case "$PR_STATE" in
+  closed) finish skipped pr_not_open false '[]'; exit 0 ;;
+  open) ;;
+  *) finish unverifiable pr_read_failed false '[]'; exit 0 ;;
+esac
 AUTHOR="$(jq -r '.user.login // ""' "$TMPD/pr.json" 2>/dev/null)" || AUTHOR=""
 AUTHOR_TYPE="$(jq -r '.user.type // ""' "$TMPD/pr.json" 2>/dev/null)" || AUTHOR_TYPE=""
 if [[ -z "$AUTHOR" ]] || ! jq -e '.body == null or (.body | type == "string")' "$TMPD/pr.json" >/dev/null 2>&1; then
@@ -306,13 +340,25 @@ while IFS= read -r REF; do
   [[ "$REF" =~ ([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#([0-9]+)$ ]] || continue
   QUAL="${BASH_REMATCH[1]}"
   QUAL_LC="$(printf '%s' "$QUAL" | tr '[:upper:]' '[:lower:]')"
-  # A reference qualified to another repository names an issue this check cannot read.
-  if [[ -n "$QUAL" && "$QUAL_LC" != "$REPO_LC" ]]; then continue; fi
+  # A reference qualified to another repository names an issue this check cannot
+  # read: record it as skipped (cross_repo_issue) instead of dropping it silently.
+  if [[ -n "$QUAL" && "$QUAL_LC" != "$REPO_LC" ]]; then
+    XREF="$QUAL_LC#${BASH_REMATCH[2]}"
+    case " ${SKIPPED_REFS[*]:-} " in
+      *" $XREF "*) ;;
+      *) SKIPPED_REFS+=("$XREF") ;;
+    esac
+    continue
+  fi
   NUMS="$NUMS${BASH_REMATCH[2]}
 "
 done <<<"$REFS"
 LINKED="$(printf '%s' "$NUMS" | LC_ALL=C grep -E '^[0-9]+$' | LC_ALL=C sort -n -u)" || LINKED=""
 
+if [[ -z "$LINKED" && "${#SKIPPED_REFS[@]}" -gt 0 ]]; then
+  finish skipped cross_repo_issue "$CLAIM_LINE_PRESENT" '[]'
+  exit 0
+fi
 if [[ -z "$LINKED" ]]; then
   finish skipped no_linked_issue "$CLAIM_LINE_PRESENT" '[]'
   exit 0
@@ -396,8 +442,16 @@ finish "$OVERALL" "$OVERALL_REASON" "$CLAIM_LINE_PRESENT" "$(issues_json)"
 # ---- 7. --report: CI mapping, deduplicated comment ----------------------------
 # Called only from finish(), so it always sees the final OVERALL and issue list.
 report_outcome() {
+  # Cross-repository keywords are never verified: say so, whatever the verdict.
+  SKIP_TEXT="$(skipped_refs_json | jq -r 'map("\(.repo)#\(.issue) (\(.reason))") | join(", ")' 2>/dev/null)" || SKIP_TEXT=""
+  if [[ -n "$SKIP_TEXT" ]]; then
+    echo "::notice::pr-claim-check: not verified, closing keyword names another repository: $SKIP_TEXT"
+    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+      printf 'pr-claim-check: not verified, closing keyword names another repository: %s\n' "$SKIP_TEXT" >>"$GITHUB_STEP_SUMMARY"
+    fi
+  fi
   if [[ "$OVERALL" == "skipped" || "$OVERALL" == "match" || "$OVERALL" == "pass_unclaimed" ]]; then
-    LINE="pr-claim-check: $OVERALL on PR #$PR"
+    LINE="pr-claim-check: $OVERALL ($OVERALL_REASON) on PR #$PR"
     echo "$LINE"
     if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then printf '%s\n' "$LINE" >>"$GITHUB_STEP_SUMMARY"; fi
     exit 0

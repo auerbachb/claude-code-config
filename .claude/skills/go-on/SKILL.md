@@ -835,7 +835,7 @@ PR_NUM=$(printf '%s' "$PR_JSON" | jq -r '.number // empty')
 
 Pipe with `printf '%s'`, never `echo` — zsh's builtin `echo` interprets the escape sequences in the PR body and corrupts the JSON, so `jq` errors and `PR_NUM` comes back empty, which reads as "no PR exists" (issue #574).
 
-- If a PR exists and is open: `[DONE]` — PR #$PR_NUM exists. Additionally, always update the `**Local review coverage:**` line in the PR body: if coverage is `both`, remove any existing label (clearing stale degraded markers from prior runs); if coverage is degraded, replace the line if present or append it if missing. Fetch the PR body, apply the change, then `gh pr edit "$PR_NUM" --body "$UPDATED_BODY"`.
+- If a PR exists and is open: `[DONE]` — PR #$PR_NUM exists. Additionally, always update the `**Local review coverage:**` line in the PR body: if coverage is `both`, remove any existing label (clearing stale degraded markers from prior runs); if coverage is degraded, replace the line if present or append it if missing. Fetch the PR body, apply the change, then `gh pr edit "$PR_NUM" --body "$UPDATED_BODY"`. In the same edit, derive the issue number from the branch name (`ISSUE_NUM=$(echo "$BRANCH" | grep -oE 'issue-([0-9]+)' | grep -oE '[0-9]+')`; it is not set yet on this path), and when it is non-empty and this thread recovered its claim holder from its receipt, replace any existing `<!-- claim-holder: ... -->` line in the body with the output of `pr-claim-line.sh "$ISSUE_NUM" --holder "<recovered holder>"` (resolved as in the creation step below), or append it when missing, so a resumed PR never keeps a missing or stale claim-holder line.
 - If no PR exists: `[ACTION]` — Create one.
   - Look for an issue number from the branch name (pattern: `issue-N-*`):
     ```bash
@@ -846,7 +846,7 @@ Pipe with `printf '%s'`, never `echo` — zsh's builtin `echo` interprets the es
     ```bash
     gh issue view $ISSUE_NUM --json title,body 2>/dev/null
     ```
-  - Create the PR with a proper body (including `Closes #N` if issue was found) and a Test plan section. Include a `**Local review coverage:** <level>` labeled line when coverage is anything other than `both` (mandatory for `none` and single-CLI cases). After creation, capture the PR number:
+  - Create the PR with `gh pr create` and a proper body (including `Closes #N` if issue was found) and a Test plan section. When `ISSUE_NUM` is set and this thread recovered its claim holder from its receipt, also put the output of `pr-claim-line.sh "$ISSUE_NUM" --holder "<recovered holder>"` (resolve it to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/pr-claim-line.sh`, `$HOME/.claude/scripts/pr-claim-line.sh`, `.claude/scripts/pr-claim-line.sh` (skip the installed candidates when `HOME` is unset or empty)) on its own line of the body, also when the PR is opened through the REST API (`gh api repos/{owner}/{repo}/pulls`); with no issue or no recovered holder, omit the line. Include a `**Local review coverage:** <level>` labeled line when coverage is anything other than `both` (mandatory for `none` and single-CLI cases). After creation, capture the PR number:
     ```bash
     PR_NUM=$(gh pr view --json number --jq '.number')
     ```

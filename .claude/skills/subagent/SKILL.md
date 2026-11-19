@@ -1187,7 +1187,7 @@ Issue #{NUMBER} is already claimed for this pipeline with holder `{CLAIM_HOLDER}
    - `Closes #{NUMBER}` in the body
    - A **Test plan** section with acceptance criteria checkboxes from the issue
    - A `**Local review coverage:** <level>` labeled line (e.g. `**Local review coverage:** none — both CLIs unavailable, self-review only`). This is mandatory for `none` and `cr-only`/`codeant-only`; omit only when coverage is `both`.
-   - The output of `pr-claim-line.sh {NUMBER}` (resolve it with the same three-path order as the other helpers in this skill) on its own line, so the PR-side claim check can match the PR to the issue claim it was built under.
+   - The output of `pr-claim-line.sh {NUMBER} --holder {CLAIM_HOLDER_QUOTED}` (resolve it with the same three-path order as the other helpers in this skill) on its own line, so the PR-side claim check can match the PR to the issue claim it was built under. This applies whether you open the PR with `gh pr create` or, when GraphQL is rate-limited, through the REST API (`gh api repos/{owner}/{repo}/pulls`). When the Claim section above was omitted (no recorded holder), leave the line out; never call the helper bare.
 8. Write the handoff through the literal locked operations below so the
    write is serialized under the shared state-lock.sh advisory lock (issue #682) **and** lands
    on the scoped path Phase B and Phase C read (issue #1302). Never write inline with

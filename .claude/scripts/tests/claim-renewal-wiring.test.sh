@@ -12,6 +12,9 @@
 #   * the Form B claim bullet is byte-identical in chip-launching.md and
 #     /start-issue, and the canonical Form A bullet keeps direct and delegated pickup separate.
 #
+#   * every skill that tells a thread to open an issue PR also names the
+#     `pr-claim-line.sh <N> --holder` line (issue #2356).
+#
 # Run from repo root: bash .claude/scripts/tests/claim-renewal-wiring.test.sh
 set -uo pipefail
 
@@ -126,6 +129,28 @@ if [[ "$FORMA" == *'only check ownership read-only for each issue'* &&
 else
   bad "Form A can claim on behalf of a delegated pipeline"
 fi
+
+# --- PR claim line on every issue-PR path (issue #2356) ----------------------
+GOON="$REPO_ROOT/.claude/skills/go-on/SKILL.md"
+LAUNCH="$REPO_ROOT/.claude/skills/pm/modules/flow/launch.md"
+PMCFG="$REPO_ROOT/.claude/skills/pm/modules/shared/config.md"
+for f in "$GOON" "$LAUNCH" "$PMCFG"; do
+  [[ -r "$f" ]] || bad "readable: ${f#"$REPO_ROOT"/}"
+done
+has "/subagent Phase A names gh pr create"        "$SUBAGENT" 'Create the PR via `gh pr create`'
+has "/subagent Phase A passes the recorded holder" "$SUBAGENT" 'pr-claim-line.sh {NUMBER} --holder {CLAIM_HOLDER_QUOTED}'
+has "/subagent Phase A covers the REST path"       "$SUBAGENT" 'gh api repos/{owner}/{repo}/pulls'
+has "/subagent Phase A never calls the helper bare" "$SUBAGENT" 'never call the helper bare'
+has "/start-issue Constraints names gh pr create"  "$START" 'when you run `gh pr create`'
+has "/start-issue Constraints passes the holder"   "$START" 'pr-claim-line.sh <N> --holder "{CLAIM_HOLDER}"'
+has "/start-issue Constraints covers the REST path" "$START" 'gh api repos/<owner>/<repo>/pulls'
+has "/go-on names gh pr create"                    "$GOON" 'Create the PR with `gh pr create`'
+has "/go-on passes the recovered holder"           "$GOON" 'pr-claim-line.sh "$ISSUE_NUM" --holder'
+has "/go-on omits the line without a holder"       "$GOON" 'omit the line'
+has "/pm launch template names gh pr create"       "$LAUNCH" 'run `gh pr create`'
+has "/pm launch template passes the holder"        "$LAUNCH" 'pr-claim-line.sh {N} --holder'
+has "/pm launch template covers the REST path"     "$LAUNCH" 'gh api repos/{owner}/{repo}/pulls'
+has "/pm config prompt names the claim line"       "$PMCFG" 'the output of `pr-claim-line.sh N --holder'
 
 # --- rule --------------------------------------------------------------------
 has "issue-planning step 0 names --renew --holder" "$RULE" '`--renew --holder <token>`'
