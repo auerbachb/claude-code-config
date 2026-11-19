@@ -43,5 +43,21 @@ bash .claude/scripts/resolve-review-threads.sh "$PR" --thread-ids-file touched.t
 bash .claude/scripts/resolve-review-threads.sh "$PR" --thread-ids-file touched.txt --verify-only
 ```
 
-`--verify-only` performs no mutations; it exits non-zero if any expected id is missing or still
-`isResolved: false`. With an **empty** thread-id file, it prints `[VERIFY] addressed=0 resolved=0 dangling=0` and exits 0 (CI-only pushes with no review threads).
+`--verify-only` performs no mutations; it exits non-zero if any expected id is missing or does not
+read `isResolved: true` (a `false`, `null`, or absent value is dangling). With an **empty** thread-id file, it prints `[VERIFY] addressed=0 resolved=0 dangling=0` and exits 0 (CI-only pushes with no review threads).
+
+**Thread IDs, not comment IDs (issue #2431).** Pass the thread's own id from
+`reviewThreads.nodes[].id` — usually `PRRT_…`, but GitHub IDs are opaque and legacy Base64 IDs
+are valid, so the resolver does no prefix check. Before any mutation (and in `--dry-run` /
+`--verify-only`) it classifies every explicit id against the PR inventory, with a read-only
+`node(id:) { __typename }` lookup for ids absent from it. A review-comment node id (`PRRC_…`), a
+numeric `databaseId`, or any other non-thread node is refused with one `ERROR:` line per id naming
+the expected shape — plus `thread for this comment: <id>` when the comment opens a thread on the
+PR — and exit `2`; no id in the set is mutated. Correct the set and re-run; never fall back to an
+inline mutation. A thread on another PR or an id that is not found stays dangling (exit `1`) with
+`thread is not on PR #N` / `node not found or inaccessible` as its `[STUCK]` reason. A failed
+lookup exits `4` before any mutation.
+
+**Already resolved is success.** An explicit id that is resolved in the first fetch prints
+`[ALREADY-RESOLVED] <id> <url> (no mutation)` and is not mutated; the run exits `0` with
+`[VERIFY] addressed=N resolved=N dangling=0` when the final fetch still reads `isResolved: true`.
