@@ -893,7 +893,8 @@ _state_lock_install_trap() {
 #     the same inode, and still older than the grace.
 # Files are removed one by one, then `rmdir` — never `rm -rf`, never a
 # followed symlink. Anything else is retained and reported with its reason.
-# Candidates beyond max-candidates (default 500) are counted unexamined.
+# Glob matches beyond max-candidates (default 500), malformed names
+# included, are counted unexamined.
 # Never touches acquire or release; costs nothing on the lock hot path.
 #
 # stdout: one `<outcome>\t<reason>\t<path>` line per candidate (outcome:
@@ -930,13 +931,15 @@ state_lock_sweep_asides() (
     case "$n" in owner|.owner.*) ;; *) echo "unexpected entry $n" ;; esac
   }
   for c in "$dir/$base".lock.rel.* "$dir/$base".lock.stale.*; do
-    name="$(basename -- "$c")"
-    [[ "$name" =~ ^.+\.lock\.(rel|stale)\.[0-9]+-[0-9]+$ && "${name%.lock.*}" == "$base" ]] || {
-      retained=$((retained + 1)); report retained "name does not match the aside pattern" "$c"; continue; }
+    # The cap counts every glob match, malformed names included, so no class
+    # of entry can make one sweep examine or print an unbounded number.
     if (( examined >= cap )); then
       unexamined=$((unexamined + 1)); report unexamined "over the candidate cap ($cap)" "$c"; continue
     fi
     examined=$((examined + 1))
+    name="$(basename -- "$c")"
+    [[ "$name" =~ ^.+\.lock\.(rel|stale)\.[0-9]+-[0-9]+$ && "${name%.lock.*}" == "$base" ]] || {
+      retained=$((retained + 1)); report retained "name does not match the aside pattern" "$c"; continue; }
     reason=""
     if [[ -L "$c" ]]; then reason="symlink"
     elif [[ ! -d "$c" ]]; then reason="not a directory"

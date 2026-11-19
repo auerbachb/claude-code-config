@@ -920,6 +920,14 @@ again="$(bash "$SWEEP" --apply)"
 check_eq "second apply is idempotent" "removed=0 removable=0 retained=6 failed=0 unexamined=0" "$(grep '^totals' <<<"$again" | cut -f2)"
 capped="$(bash "$SWEEP" --max 2)"
 check_eq "candidates beyond --max are unexamined, not zero" "4" "$(grep -c '^unexamined' <<<"$capped")"
+# CodeAnt 4630497918: malformed names that match the glob count toward --max
+# too, so they cannot make one sweep examine past the cap.
+for i in $(seq 1 20); do mkdir -p "$STATE_FILE.lock.rel.bad-$i-x"; done
+malformed="$(bash "$SWEEP" --max 3)"
+check_eq "malformed names count toward --max" "removed=0 removable=0 retained=3 failed=0 unexamined=23" \
+  "$(grep '^totals' <<<"$malformed" | cut -f2)"
+check_eq "only --max entries examined among malformed names" "3" "$(grep -c '^retained' <<<"$malformed")"
+for i in $(seq 1 20); do rmdir "$STATE_FILE.lock.rel.bad-$i-x"; done
 check_eq "bad --max is a usage error" "2" "$(bash "$SWEEP" --max x >/dev/null 2>&1; echo $?)"
 other="$HOME/other-2402.json"; mkdir -p "$other.lock.rel.1-1"; touch -t "$OLD" "$other.lock.rel.1-1"
 multi="$(bash "$SWEEP" --apply --state-file "$STATE_FILE" --state-file "$other")"

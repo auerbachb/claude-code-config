@@ -182,5 +182,80 @@ fi
 : > "$RELEASE"; wait "$HOLDER" 2>/dev/null || true
 if [[ ! -e "$STATE.lock" ]]; then pass; else fail "holder did not release the lock"; fi
 
+# --- activation racing the lock-free status (CodeAnt 4630476552) ---------------
+# (1) Activation blocked behind another lock holder: it has started but cannot
+# take the lock. The marker must already be published, so status says active.
+# Before the fix the marker came after acquisition and status read inactive.
+reset; write_state "$(repo_state "$(jq -nc --arg s "$SID" '{execution_pauses:{($s):{active:false}}}')")"
+READY="$TMP/race1.ready"; RELEASE="$TMP/race1.release"; rm -f "$READY" "$RELEASE"
+(
+  # shellcheck source=../state-lock.sh
+  source "$ROOT/.claude/scripts/state-lock.sh"
+  state_lock_acquire "$STATE" 5 || exit 1
+  : > "$READY"
+  while [[ ! -e "$RELEASE" ]]; do sleep 0.05; done
+  state_lock_release
+) &
+HOLDER=$!
+for _ in $(seq 1 100); do [[ -e "$READY" ]] && break; sleep 0.05; done
+if [[ -e "$READY" ]]; then
+  CLAUDE_STATE_LOCK_TIMEOUT=20 "$GATE" --repo "$REPO" --activate --session "$SID" \
+    --command pause --window-minutes 5 >/dev/null 2>&1 &
+  ACTIVATOR=$!
+  for _ in $(seq 1 100); do [[ -f "$(marker_of "$SID")" ]] && break; sleep 0.05; done
+  if [[ -f "$(marker_of "$SID")" ]]; then pass; else fail "activation waiting on the lock published no marker"; fi
+  if [[ "$(jq -c --arg s "$SID" '.repos["owner/repo"].execution_pauses[$s].active' "$STATE")" == false ]]; then
+    pass
+  else
+    fail "activation wrote state without holding the lock"
+  fi
+  for mode in 0 1; do
+    got="$(run_status 0 "$mode" "$SID")"
+    if [[ "$got" == "0|active" ]]; then pass; else fail "status during activation waiting on the lock (launch=$mode): got [$got]"; fi
+  done
+  : > "$RELEASE"; wait "$HOLDER" 2>/dev/null || true
+  if wait "$ACTIVATOR"; then pass; else fail "activation failed after the lock freed"; fi
+  got="$(run_status 0 1 "$SID")"
+  if [[ "$got" == "0|active" ]]; then pass; else fail "status after activation: got [$got]"; fi
+else
+  fail "race lock holder never became ready"; : > "$RELEASE"; wait "$HOLDER" 2>/dev/null || true
+fi
+
+# (2) Activation holding the lock, stopped before its state write: a copy of
+# the gate whose session-state.sh blocks every --set until released.
+reset; write_state "$(repo_state "$(jq -nc --arg s "$SID" '{execution_pauses:{($s):{active:false}}}')")"
+STUB="$TMP/stubbed-scripts"; mkdir -p "$STUB"
+cp "$GATE" "$ROOT/.claude/scripts/state-lock.sh" "$STUB/"
+REAL_SS="$ROOT/.claude/scripts/session-state.sh"
+cat > "$STUB/session-state.sh" <<STUBEOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [[ "\$a" == --set ]]; then
+    : > "$TMP/race2.entered"
+    while [[ ! -e "$TMP/race2.release" ]]; do sleep 0.05; done
+    break
+  fi
+done
+exec "$REAL_SS" "\$@"
+STUBEOF
+chmod +x "$STUB/session-state.sh" "$STUB/execution-pause.sh"
+"$STUB/execution-pause.sh" --repo "$REPO" --activate --session "$SID" \
+  --command pause --window-minutes 5 >/dev/null 2>&1 &
+ACTIVATOR=$!
+for _ in $(seq 1 200); do [[ -e "$TMP/race2.entered" ]] && break; sleep 0.05; done
+if [[ -e "$TMP/race2.entered" && -d "$STATE.lock" ]]; then
+  pass
+  for mode in 0 1; do
+    got="$(run_status 0 "$mode" "$SID")"
+    if [[ "$got" == "0|active" ]]; then pass; else fail "status while activation holds the lock (launch=$mode): got [$got]"; fi
+  done
+else
+  fail "stubbed activation never reached its state write under the lock"
+fi
+: > "$TMP/race2.release"
+if wait "$ACTIVATOR"; then pass; else fail "stubbed activation failed"; fi
+got="$(run_status 0 0 "$SID")"
+if [[ "$got" == "0|active" ]]; then pass; else fail "status after stubbed activation: got [$got]"; fi
+
 echo "execution-pause-status: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

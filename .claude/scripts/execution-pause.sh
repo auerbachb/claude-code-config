@@ -235,8 +235,9 @@ legacy_launch_held() {
 # markers. Writers publish the state by atomic rename, so one open of the file
 # is one consistent snapshot. Every marker check happens AFTER the snapshot,
 # which keeps half-applied transitions conservative:
-#   - activation publishes the marker before the state: a snapshot taken
-#     before the state write still sees the marker afterwards -> active;
+#   - activation publishes the marker before it even takes the lock, and so
+#     before the state: a snapshot taken before the state write still sees
+#     the marker afterwards -> active;
 #   - clear writes inactive state before removing the marker: `inactive` needs
 #     an inactive snapshot AND a missing marker afterwards, i.e. a clear that
 #     had already finished removing it.
@@ -347,6 +348,54 @@ if [[ "$MODE" == status && "${CLAUDE_EXECUTION_PAUSE_STATUS_LOCKED:-}" != 1 ]]; 
   exit $?
 fi
 
+# Activation publishes its marker BEFORE taking the state lock (issue #2402,
+# CodeAnt 4630476552). The lock-free `--status` never waits on the lock, so a
+# marker published only after acquisition left a window — lock held or still
+# being waited for, marker not yet written — where status read `inactive` for
+# an activation already under way; the locked read would have waited and said
+# `active`. Publishing first makes every status that starts after this point
+# see the pause. If the lock is never acquired the marker survives and keeps
+# launches blocked until an explicit clear (same fail-closed stance as a
+# failed state write below).
+publish_marker() {
+  local tmp
+  mkdir -p "$MARKER_DIR" 2>/dev/null || {
+    echo "execution-pause.sh: could not create marker directory $MARKER_DIR" >&2
+    return 1
+  }
+  if [[ "$MARKER_DIR_IS_DEFAULT" == 1 ]]; then
+    chmod 700 "$MARKER_DIR" 2>/dev/null || {
+      echo "execution-pause.sh: could not secure marker directory $MARKER_DIR" >&2
+      return 1
+    }
+  fi
+  tmp="$(mktemp "$MARKER_DIR/.execution-pause.XXXXXX")" || {
+    echo "execution-pause.sh: could not create marker temp file in $MARKER_DIR" >&2
+    return 1
+  }
+  printf '%s\n' "$VALUE" > "$tmp" || {
+    rm -f "$tmp"
+    echo "execution-pause.sh: could not write marker temp file $tmp" >&2
+    return 1
+  }
+  mv "$tmp" "$MARKER" || {
+    rm -f "$tmp"
+    echo "execution-pause.sh: could not publish marker $MARKER" >&2
+    return 1
+  }
+}
+
+if [[ "$MODE" == activate ]]; then
+  NOW="$(date -u +%FT%TZ)"
+  DEADLINE_EPOCH=$(( $(date -u +%s) + WINDOW * 60 ))
+  GENERATION="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')" || exit 5
+  [[ "$GENERATION" =~ ^[0-9a-f]{32}$ ]] || exit 5
+  VALUE="$(jq -nc --arg command "$COMMAND_NAME" --arg session "$SESSION_ID" --arg at "$NOW" \
+    --argjson window "$WINDOW" --argjson deadline "$DEADLINE_EPOCH" --arg generation "$GENERATION" \
+    '{generation:$generation,active:true,command:$command,session_id:$session,window_minutes:$window,deadline_epoch:$deadline,at:$at,cleared_at:null}')" || exit 5
+  publish_marker || exit 5
+fi
+
 # Marker and session-state are one lifecycle invariant. Hold the canonical
 # state lock across activation, clearing, and the legacy proofs so a
 # concurrent resume never observes a half-applied transition. The nested
@@ -366,37 +415,9 @@ case "$MODE" in
     legacy_resume_scope || exit $?
     ;;
   activate)
-    NOW="$(date -u +%FT%TZ)"
-    DEADLINE_EPOCH=$(( $(date -u +%s) + WINDOW * 60 ))
-    GENERATION="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')" || exit 5
-    [[ "$GENERATION" =~ ^[0-9a-f]{32}$ ]] || exit 5
-    VALUE="$(jq -nc --arg command "$COMMAND_NAME" --arg session "$SESSION_ID" --arg at "$NOW" \
-      --argjson window "$WINDOW" --argjson deadline "$DEADLINE_EPOCH" --arg generation "$GENERATION" \
-      '{generation:$generation,active:true,command:$command,session_id:$session,window_minutes:$window,deadline_epoch:$deadline,at:$at,cleared_at:null}')" || exit 5
-    mkdir -p "$MARKER_DIR" 2>/dev/null || {
-      echo "execution-pause.sh: could not create marker directory $MARKER_DIR" >&2
-      exit 5
-    }
-    if [[ "$MARKER_DIR_IS_DEFAULT" == 1 ]]; then
-      chmod 700 "$MARKER_DIR" 2>/dev/null || {
-        echo "execution-pause.sh: could not secure marker directory $MARKER_DIR" >&2
-        exit 5
-      }
-    fi
-    MARKER_TMP="$(mktemp "$MARKER_DIR/.execution-pause.XXXXXX")" || {
-      echo "execution-pause.sh: could not create marker temp file in $MARKER_DIR" >&2
-      exit 5
-    }
-    printf '%s\n' "$VALUE" > "$MARKER_TMP" || {
-      rm -f "$MARKER_TMP"
-      echo "execution-pause.sh: could not write marker temp file $MARKER_TMP" >&2
-      exit 5
-    }
-    mv "$MARKER_TMP" "$MARKER" || {
-      rm -f "$MARKER_TMP"
-      echo "execution-pause.sh: could not publish marker $MARKER" >&2
-      exit 5
-    }
+    # Re-publish under the lock: a clear that ran between the pre-lock publish
+    # and this acquisition removed the marker, and this activation is newer.
+    publish_marker || exit 5
     # Publish state only after durable positive marker evidence exists. If the
     # state write fails, the surviving marker deliberately keeps launches
     # blocked until an explicit clear/recovery.
