@@ -326,7 +326,7 @@ export FIXTURE_RECORD_FAIL=1
 TXT_RC=0; TXT_OUT="$(cd "$WORK" && bash "$SCRIPT" "$PR" 2>/dev/null)" || TXT_RC=$?
 check_eq "text mode: exit 0 and the warning is surfaced" "0:yes" \
   "$TXT_RC:$(grep -q 'could not log it in the free-reviewer request log' <<<"$TXT_OUT" && echo yes || echo no)"
-check_eq "  the summary line is still last" "yes" "$(tail -1 <<<"$TXT_OUT" | grep -q '^PREFLIGHT_SUMMARY:' && echo yes || echo no)"
+check_eq "  the summary line is still last" "yes" "$(grep -q '^PREFLIGHT_SUMMARY:' <<<"$(tail -1 <<<"$TXT_OUT")" && echo yes || echo no)"
 
 echo "== the real review-availability.sh writes .review_requests (#2276) =="
 cp "$REPO_ROOT/.claude/scripts/review-availability.sh" "$S/"

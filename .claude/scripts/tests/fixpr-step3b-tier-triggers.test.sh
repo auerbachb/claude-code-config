@@ -288,7 +288,7 @@ step3b
 check_eq "exit 0" "0" "$RC"
 check_eq "both free reviewers still posted, one record attempt each" "@coderabbitai full review;@codeant-ai review;:2" "$(posted):$(records)"
 check_eq "  [REVIEWERS] lines and the mode line intact" "yes:yes" \
-  "$(says '[REVIEWERS] coderabbit: missing'):$(tail -1 <<<"$OUT" | grep -qx 'TRIGGER_MODE=legacy' && echo yes || echo no)"
+  "$(says '[REVIEWERS] coderabbit: missing'):$(grep -qx 'TRIGGER_MODE=legacy' <<<"$(tail -1 <<<"$OUT")" && echo yes || echo no)"
 check_eq "  the failure is named on stderr" "2" "$(grep -c 'could not log it in the free-reviewer request log' "$TMP/err" | tr -d ' ')"
 reset "$(tier_json present ci+codeant-one-round)"
 export FIXTURE_RECORD_FAIL=1
