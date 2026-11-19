@@ -2125,8 +2125,15 @@ if [[ "$MODE" == "cas" ]]; then
   # as a plain statement so it exits 4 directly.
   enforce_field_type_contract "$CAS_OUT_TMP"
 
-  # Lock integrity — same stolen-lock guard as --set (issue #930).
-  if ! state_lock_assert_held; then
+  # Lock integrity — same stolen-lock guard as --set (issue #930). The
+  # ownership check and the mv run together under the commit gate inside
+  # state_lock_commit, so a stale break cannot land between them (#2460).
+  _commit_rc=0
+  _commit_err="$(state_lock_commit "$CAS_OUT_TMP" "$STATE_FILE" 2>&1)" || _commit_rc=$?
+  # exit 6 = unchanged, retry (lock lost or gate busy); anything else is a
+  # real write failure whose diagnostic must reach the operator.
+  (( _commit_rc == 0 || _commit_rc == STATE_LOCK_EXIT_TIMEOUT )) || [[ -z "$_commit_err" ]] || printf '%s\n' "$_commit_err" >&2
+  if (( _commit_rc == STATE_LOCK_EXIT_TIMEOUT )); then
     _n="${CLAUDE_STATE_RMW_RETRY:-0}"; _max="${CLAUDE_STATE_RMW_MAX_RETRY:-8}"
     if (( _n < _max )); then
       export CLAUDE_STATE_RMW_RETRY=$(( _n + 1 ))
@@ -2140,7 +2147,7 @@ if [[ "$MODE" == "cas" ]]; then
     exit "$STATE_LOCK_EXIT_TIMEOUT"
   fi
 
-  if ! mv "$CAS_OUT_TMP" "$STATE_FILE" 2>/dev/null; then
+  if (( _commit_rc != 0 )); then
     echo "session-state.sh: could not write $STATE_FILE" >&2
     exit 5
   fi
@@ -2262,7 +2269,14 @@ enforce_field_type_contract "$OUT_TMP"
 # unprotected. Rather than fail outright, redo the whole read-modify-write
 # against the current file; re-exec is the cheapest correct reset, and the
 # retry budget keeps a persistently-stolen lock from spinning forever.
-if ! state_lock_assert_held; then
+# The check and the mv run together under the commit gate inside
+# state_lock_commit, so a stale break cannot land between them (#2460).
+_commit_rc=0
+_commit_err="$(state_lock_commit "$OUT_TMP" "$STATE_FILE" 2>&1)" || _commit_rc=$?
+# exit 6 = unchanged, retry (lock lost or gate busy); anything else is a
+# real write failure whose diagnostic must reach the operator.
+(( _commit_rc == 0 || _commit_rc == STATE_LOCK_EXIT_TIMEOUT )) || [[ -z "$_commit_err" ]] || printf '%s\n' "$_commit_err" >&2
+if (( _commit_rc == STATE_LOCK_EXIT_TIMEOUT )); then
   _n="${CLAUDE_STATE_RMW_RETRY:-0}"; _max="${CLAUDE_STATE_RMW_MAX_RETRY:-8}"
   if (( _n < _max )); then
     export CLAUDE_STATE_RMW_RETRY=$(( _n + 1 ))
@@ -2277,7 +2291,7 @@ if ! state_lock_assert_held; then
   exit "$STATE_LOCK_EXIT_TIMEOUT"
 fi
 
-if ! mv "$OUT_TMP" "$STATE_FILE" 2>/dev/null; then
+if (( _commit_rc != 0 )); then
   echo "session-state.sh: could not write $STATE_FILE" >&2
   exit 5
 fi

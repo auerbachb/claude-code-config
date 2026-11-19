@@ -335,31 +335,81 @@ _state_lock_destroy() {
 #       judged is what it moves;
 #     - the committer asserts ownership and `mv`s UNDER the gate, so a breaker
 #       cannot swap the lock in between.
+#     - release checks its token and removes the lock UNDER the gate, so a lock
+#       cannot be released and re-taken between a breaker's re-check and its
+#       rename (the lock directory only ever vanishes under the gate).
 #   A breaker that finds the gate taken abandons the break (the committer is
 #   live and mid-commit). A committer that finds it taken waits briefly, then
-#   refuses with exit 6 (unchanged, retry) -- the safe direction. The gate is
-#   held for microseconds; one left behind by a killed process is removed once
-#   older than _STATE_LOCK_GATE_STALE seconds.
+#   refuses with exit 6 (unchanged, retry) -- the safe direction.
+#
+#   The gate records its holder's pid in `<gate>/pid`. A gate is abandoned --
+#   and removable -- ONLY when that pid is dead, or when no pid was ever written
+#   and the gate is older than _STATE_LOCK_GATE_STALE seconds (holder killed
+#   between mkdir and the pid write). Age alone never frees a gate whose holder
+#   is alive: a commit stalled mid-gate (SIGSTOP, a suspended laptop) must not
+#   have its gate stolen, or the lock behind it could be broken and the resumed
+#   commit would overwrite newer state. A live-but-stalled holder therefore
+#   blocks commits and breaks until it resumes; everyone else fails closed
+#   (exit 6 / acquire timeout), never open.
 _STATE_LOCK_GATE_STALE=30
+
+# 0 when the gate at $1 is abandoned (see COMMIT GATE above).
+_state_lock_gate_abandoned() {
+  local gate="$1" pid mtime now
+  pid="$(cat "$gate/pid" 2>/dev/null)"
+  if [[ "$pid" =~ ^[0-9]+$ ]]; then
+    ! kill -0 "$pid" 2>/dev/null
+    return
+  fi
+  mtime="$(_state_lock_file_mtime "$gate")" || return 1
+  now="$(_state_lock_now)"
+  (( now - mtime >= _STATE_LOCK_GATE_STALE ))
+}
+
+# Remove an abandoned gate. Rename-aside first, then confirm what was moved is
+# still abandoned; a gate another process re-took in between is put back.
+# 0 when the gate is gone, 1 when it is still (or again) in place.
+_state_lock_gate_reap() {
+  local gate="$1" aside="${1}.dead.$$-${RANDOM}"
+  if ! mv "$gate" "$aside" 2>/dev/null; then
+    [[ -d "$gate" ]] && return 1
+    return 0
+  fi
+  if _state_lock_gate_abandoned "$aside"; then
+    rm -rf "$aside" 2>/dev/null || true
+    return 0
+  fi
+  mv "$aside" "$gate" 2>/dev/null || rm -rf "$aside" 2>/dev/null || true
+  return 1
+}
 
 # _state_lock_gate_take <lock-dir> <retries>: 0 when taken (0.1s per retry).
 _state_lock_gate_take() {
-  local gate="${1}.gate" tries="${2:-0}" mtime now
+  local gate="${1}.gate" tries="${2:-0}"
   while :; do
-    mkdir "$gate" 2>/dev/null && return 0
-    if mtime="$(_state_lock_file_mtime "$gate")"; then
-      now="$(_state_lock_now)"
-      if (( now - mtime >= _STATE_LOCK_GATE_STALE )); then
-        rmdir "$gate" 2>/dev/null || true
-        continue
-      fi
+    if mkdir "$gate" 2>/dev/null; then
+      printf '%s\n' "$$" > "$gate/pid" 2>/dev/null || true
+      return 0
+    fi
+    # Already ours: an EXIT trap releasing while this process was mid-commit.
+    [[ "$(cat "$gate/pid" 2>/dev/null)" == "$$" ]] && return 0
+    if [[ -d "$gate" ]] && _state_lock_gate_abandoned "$gate" \
+       && _state_lock_gate_reap "$gate"; then
+      continue
     fi
     (( tries-- > 0 )) || return 1
     sleep 0.1
   done
 }
 
-_state_lock_gate_drop() { rmdir "${1}.gate" 2>/dev/null || true; }
+# Drop a gate this process took. Never removes one recording another pid.
+_state_lock_gate_drop() {
+  local gate="${1}.gate" pid
+  pid="$(cat "$gate/pid" 2>/dev/null)"
+  [[ -z "$pid" || "$pid" == "$$" ]] || return 0
+  rm -f "$gate/pid" 2>/dev/null || true
+  rmdir "$gate" 2>/dev/null || true
+}
 
 # Break a stale lock, guarded against the double-steal described above.
 # Returns 0 when the lock was removed (or vanished on its own), 1 when the
@@ -552,6 +602,14 @@ state_lock_release() {
   unset CLAUDE_STATE_LOCK_HELD
   unset CLAUDE_STATE_LOCK_TOKEN
   [[ -d "$lock_dir" ]] || return 0
+  # Token check and removal run under the commit gate (#2460): a breaker that
+  # re-checked this lock's token under the gate must not see it released and
+  # re-taken before its rename. If the gate stays busy (a live holder stalled
+  # mid-commit), release without it rather than leak the lock -- the residual
+  # is a release racing a break of this same lock, which our token check
+  # below still confines to a lock we own.
+  local gated=0
+  _state_lock_gate_take "$lock_dir" 50 && gated=1
   owner_token="$(_state_lock_meta "$lock_dir/owner" token)"
   # Delete ONLY on a positive ownership match, and match on the TOKEN rather
   # than the pid: a pid match cannot distinguish our acquisition from a later
@@ -563,9 +621,11 @@ state_lock_release() {
   # via the staleness rules; one we wrongly delete lets two writers into the
   # critical section at once.
   if [[ -z "$token" || "$owner_token" != "$token" ]]; then
+    (( gated )) && _state_lock_gate_drop "$lock_dir"
     return 0
   fi
   _state_lock_destroy "$lock_dir"
+  (( gated )) && _state_lock_gate_drop "$lock_dir"
   return 0
 }
 

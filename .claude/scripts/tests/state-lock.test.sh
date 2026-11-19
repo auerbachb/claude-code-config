@@ -646,6 +646,61 @@ check_eq "stale W1 refused (exit 6)" "rc=6" "$(cat "$SYNC/w1.rc" 2>/dev/null)"
 check_eq "newer state survives" '"new"' "$(cat "$DEST")"
 
 echo
+echo "== issue #2460: an aged gate is reaped only when its holder is gone =="
+# A commit stalled mid-gate (SIGSTOP, suspended laptop) keeps its gate however
+# old it gets; only a dead holder's gate, or a pid-less one past the stale age,
+# may be removed.
+GATE="$LOCK_DIR.gate"
+# Bounded: a library that spins on an unremovable gate reports "hung", not a stalled suite.
+gate_try() {
+  local out="$SYNC/gate_try.out" p i
+  : > "$out"
+  bash -c 'source "$1"; _state_lock_gate_take "$2" 0 && echo taken || echo refused' \
+    _ "$LIB_UNDER_TEST" "$LOCK_DIR" > "$out" 2>/dev/null &
+  p=$!
+  for i in $(seq 1 60); do kill -0 "$p" 2>/dev/null || break; sleep 0.05; done
+  kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
+  [[ -s "$out" ]] && cat "$out" || echo hung
+}
+age_gate() { touch -t 200001010000 "$GATE"; }
+reset_state; rm -rf "$GATE"; mkdir -p "$SYNC"
+sleep 300 & LIVE_PID=$!
+mkdir -p "$GATE"; echo "$LIVE_PID" > "$GATE/pid"; age_gate
+check_eq "an old gate whose holder is alive is NOT reaped" "refused" "$(gate_try)"
+check_eq "the live holder's gate is still in place" "$LIVE_PID" "$(cat "$GATE/pid" 2>/dev/null)"
+kill "$LIVE_PID" 2>/dev/null; wait "$LIVE_PID" 2>/dev/null
+check_eq "once its holder is dead the gate is reaped and taken" "taken" "$(gate_try)"
+rm -rf "$GATE"; mkdir -p "$GATE"
+check_eq "a fresh pid-less gate (holder mid-take) is NOT reaped" "refused" "$(gate_try)"
+age_gate
+check_eq "an old pid-less gate (holder killed mid-take) is reaped" "taken" "$(gate_try)"
+rm -rf "$GATE"
+
+echo
+echo "== issue #2460: release removes the lock only under the gate =="
+# A breaker re-checks the token under the gate and then renames; a release
+# that ignored the gate could release-and-re-take in between. Release waits.
+reset_state; rm -rf "$SYNC" "$GATE"; mkdir -p "$SYNC"
+( SYNC="$SYNC" bash -c '
+    source "$1"
+    state_lock_acquire "$2" 10 || exit 9
+    touch "$SYNC/held"
+    while [[ ! -e "$SYNC/release" ]]; do sleep 0.05; done
+    state_lock_release; touch "$SYNC/released"
+  ' _ "$LIB_UNDER_TEST" "$STATE_FILE" 2>/dev/null ) &
+R_PID=$!
+wait_for "$SYNC/held" || echo "FAIL — holder never acquired"
+sleep 300 & LIVE_PID=$!
+mkdir -p "$GATE"; echo "$LIVE_PID" > "$GATE/pid"
+touch "$SYNC/release"; sleep 1
+check_eq "release waits while another process holds the gate" "1" "$([[ -d "$LOCK_DIR" ]] && echo 1 || echo 0)"
+rm -f "$GATE/pid"; rmdir "$GATE"
+wait "$R_PID" 2>/dev/null
+kill "$LIVE_PID" 2>/dev/null; wait "$LIVE_PID" 2>/dev/null
+check_eq "release completes once the gate is free; nothing left behind" "0" \
+  "$([[ -e "$LOCK_DIR" || -e "$GATE" ]] && echo 1 || echo 0)"
+
+echo
 echo "== summary: $PASS passed, $FAIL failed =="
 if [[ "$FAIL" -gt 0 ]]; then
   echo "FAILED: state-lock tests" >&2
