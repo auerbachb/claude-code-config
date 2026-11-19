@@ -3214,6 +3214,7 @@ import_login_pass() {
         echo "    ${provider} '${label}' was removed while its login ran; skipped"
         continue
       fi
+      dir="$(printf '%s' "$config" | jq -r --argjson i "$idx" '.accounts[$i].profile_dir // ""')"
       service="$(printf '%s' "$config" | jq -r --argjson i "$idx" '.accounts[$i].credential_ref.service // ""')"
       account_status "$provider" "$dir" "$service"
       if [[ "$ACCOUNT_STATUS" == ok ]]; then

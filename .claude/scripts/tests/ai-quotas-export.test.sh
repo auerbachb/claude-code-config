@@ -282,10 +282,11 @@ check_eq "$RC" "0" "export with credential-shaped IDs still succeeds"
 check_contains "$OUT" "2 provider ID value(s) were left out" "dropped IDs are reported"
 if grep -q -e "sk-ant" -e "eyJ" "$CASE_DIR/leak.json"; then bad "a token-shaped ID leaked into the export"; else ok "no token-shaped ID is in the export"; fi
 check_eq "$(jq -c '.accounts[0].ids' "$CASE_DIR/leak.json")" '{"organization_id":"org-1234"}' "the legitimate ID survives"
-jq --arg t "$TOKID" '.accounts[0].ids.account_id = $t' "$EXPORT" > "$CASE_DIR/leak2.json"
 new_case leak-import
+jq --arg t "$TOKID" '.accounts[0].ids.account_id = $t' "$EXPORT" > "$CASE_DIR/leak2.json"
 run import "$CASE_DIR/leak2.json" --no-login
 check_eq "$RC" "3" "an import carrying a token-shaped ID is refused"
+check_contains "$OUT" "invalid ids" "the refusal names the invalid ids, not a missing file"
 
 # the schema string must match exactly; nicknames are limited in bytes; prices to 2 decimals
 new_case strict-validation
