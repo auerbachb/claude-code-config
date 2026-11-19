@@ -58,6 +58,7 @@ reset_state() {
   rm -rf "$STATE"; mkdir -p "$STATE"
   echo 0 > "$STATE/next_id"
   : > "$STATE/calls.log"
+  : > "$STATE/fields.log"
   printf 'bug\n' > "$STATE/repo_labels"
   export FAKE_VIEWER="alice"
   unset FAKE_SWAP_ISSUE FAKE_INDEX_MODE FAKE_BAD_ISSUE FAKE_MISSING_ISSUE FAKE_CLOSED_ISSUE FAKE_GRAPHQL_MODE CLAIM_STALE_HOURS CLAIM_RENEW_MINUTES
@@ -77,19 +78,35 @@ lines_json() { jq -Rn --rawfile f "$1" '($f | split("\n") | map(select(length > 
 case "${1:-}" in
   api)
     shift
-    METHOD="GET"; ENDPOINT=""; BODY=""; QUERY=""
+    METHOD="GET"; ENDPOINT=""; BODY=""; QUERY=""; FIELDS=(); COERCED=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         -X) METHOD="$2"; shift 2 ;;
         --paginate|--slurp) shift ;;
         --jq) shift 2 ;;
-        -f|-F|--raw-field|--field) [[ "$2" == body=* ]] && BODY="${2#body=}"; [[ "$2" == query=* ]] && QUERY="${2#query=}"; shift 2 ;;
+        -f|-F|--raw-field|--field)
+          [[ "$2" == body=* ]] && BODY="${2#body=}"; [[ "$2" == query=* ]] && QUERY="${2#query=}"
+          # Keep each owner/name field's flag with its value (issue #2332): -F/--field
+          # type-converts all-digit and true/false/null values, as real gh does.
+          case "$2" in
+            owner=*|name=*)
+              FIELDS+=("$1 $2")
+              if [[ ( "$1" == -F || "$1" == --field ) && "${2#*=}" =~ ^([0-9]+|true|false|null)$ ]]; then
+                COERCED="${2%%=*}"
+              fi ;;
+          esac
+          shift 2 ;;
         *) [[ -z "$ENDPOINT" ]] && ENDPOINT="$1"; shift ;;
       esac
     done
     case "$ENDPOINT" in
       user) printf '%s\n' "${FAKE_VIEWER:-}" ;;
       graphql)
+        if (( ${#FIELDS[@]} > 0 )); then printf '%s\n' "${FIELDS[@]}" >> "$S/fields.log"; fi
+        if [[ -n "$COERCED" ]]; then
+          jq -cn --arg v "$COERCED" '{errors: [{message: ("Variable $" + $v + " of type String! was provided invalid value")}]}'
+          exit 1
+        fi
         # Existence/state read: one aliased issue(number: N) per issue. Mirrors gh:
         # a missing issue is null with a NOT_FOUND error, and gh exits 1 with the body.
         case "${FAKE_GRAPHQL_MODE:-ok}" in error) echo "gh: HTTP 502: bad gateway" >&2; exit 1 ;; esac
@@ -442,6 +459,27 @@ run_batch --check 303 --holder H1
 check_eq "a closed issue still in the label index is unknown, not claimed" unknown "$(verdict_of 303)"
 check_contains "and says it is closed" "closed" "$(field_of 303 reason)"
 unset FAKE_CLOSED_ISSUE
+
+############################################################################
+echo "== (8b) an all-numeric or boolean-looking --repo is sent as a raw string (issue #2332) =="
+field_count() { grep -cxF -- "$1" "$STATE/fields.log"; }
+for spec in "acme 1234" "1234 true"; do
+  read -r o r <<<"$spec"
+  reset_state
+  run_batch --check 311 --repo "$o/$r" --holder H1
+  check_eq "--repo $o/$r: exit 0" 0 "$RC"
+  check_eq "--repo $o/$r: the open issue reads unclaimed" unclaimed "$(verdict_of 311)"
+  check_eq "--repo $o/$r: owner sent once with -f" 1 "$(field_count "-f owner=$o")"
+  check_eq "--repo $o/$r: name sent once with -f" 1 "$(field_count "-f name=$r")"
+  check_eq "--repo $o/$r: no -F owner/name field" 0 "$(grep -cE '^(-F|--field) (owner|name)=' "$STATE/fields.log")"
+done
+reset_state
+SAVED_GH_REPO="${GH_REPO-__unset__}"; unset GH_REPO
+run_batch --check 312 --holder H1
+[[ "$SAVED_GH_REPO" != __unset__ ]] && export GH_REPO="$SAVED_GH_REPO"
+check_eq "no --repo: exit 0" 0 "$RC"
+check_eq "no --repo: owner stays a -F placeholder" 1 "$(field_count "-F owner={owner}")"
+check_eq "no --repo: name stays a -F placeholder" 1 "$(field_count "-F name={repo}")"
 
 ############################################################################
 echo "== (9) release: a claim swapped between the check and the release is left alone =="
