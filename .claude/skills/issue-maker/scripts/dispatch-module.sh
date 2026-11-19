@@ -9,7 +9,7 @@ Usage: dispatch-module.sh <operation> <phase>
 
 Operations and phases:
   session  state
-  create   reflect | doc-gate | increment-draft | dedup | file | crossrefs | postfile
+  create   reflect | doc-gate | increment-draft | dedup | file | crossrefs | postfile | coherence
   batch    chain
   update   edit
   retract  close
@@ -37,6 +37,7 @@ case "$operation:$phase" in
   create:file) relative='modules/create/file.md' ;;
   create:crossrefs) relative='modules/create/crossrefs.md' ;;
   create:postfile) relative='modules/create/postfile.md' ;;
+  create:coherence) relative='modules/create/coherence.md' ;;
   batch:chain) relative='modules/batch.md' ;;
   update:edit) relative='modules/update.md' ;;
   retract:close) relative='modules/retract.md' ;;

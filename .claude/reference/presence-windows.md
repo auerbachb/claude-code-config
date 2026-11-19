@@ -244,6 +244,11 @@ finished work. So every away declaration in the presence skill first takes one r
   sub-agent or session that asked. While away, a thread checks `unattended.sh list` for an answered
   question about the same decision before recording a new one. A question first known after he
   leaves is handled exactly as before.
+- **"I'll do it later" (issue #2562).** A deferred answer to an operator-only step is a task, not a
+  decision, so it goes to the human-task list (`owner-task.sh add`, `owner-tasks.md`) with its
+  why-human reason, and the receipt prints before he leaves. That is the list he asks about on
+  return. When the helper is missing or `add` fails, it becomes an open saved question instead
+  (never `answer`ed, so the return digest still lists it) and the thread says it was not saved.
 - **Authority.** An answer in this round is the operator's own answer in chat. It approves only what
   it names: one paid review approved is that one review (`safety.md` §Paid AI Reviews).
 

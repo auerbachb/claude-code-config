@@ -431,5 +431,32 @@ P $owner2 ask --afk; check "ask --afk: a second thread still loses the one-asker
 P $owner1 release --generation "$tok"; check "ask --afk: claim released" "$rc" 0
 P $owner1 ask --bogus; check "ask: unknown flag is a usage error" "$rc" 2
 
+printf '== skill text: an "I'"'"'ll do it later" answer becomes a human task (issue #2562)\n'
+pskill=$(tr '\n' ' ' < "$root/.claude/skills/presence/SKILL.md" | tr -s ' ')
+askill=$(tr '\n' ' ' < "$root/.claude/skills/afk/SKILL.md" | tr -s ' ')
+has "presence: owner-task.sh resolved as an optional helper" "$pskill" 'OWNER_TASK_SH=$(resolve_script owner-task.sh) || OWNER_TASK_SH=""'
+has "presence: the menu offers a deferral option" "$pskill" "also offers \`I'll do it later\`"
+has "presence: a deferred answer is saved with owner-task.sh add" "$pskill" '"$OWNER_TASK_SH" add --what "<the step>" --why "<reason>: <free text>" --source'
+for reason in sign-in legal-agreement payment-detail secret-value physical-device judgment-call; do
+  has "presence: reason list names $reason" "$pskill" "\`$reason\`"
+done
+has "presence: the receipt line is printed" "$pskill" '(`human task ht-<id> saved: <what> (<reason>)`)'
+has "presence: the receipt prints before away is set" "$pskill" 'Save it, before step 5,'
+has "presence: missing helper or non-zero add falls back" "$pskill" '`OWNER_TASK_SH` empty, or `add` exits non-zero'
+has "presence: exit 1 checks the list before falling back" "$pskill" 'exit 1: run `list --json` first'
+has "presence: exit 5 refused text goes nowhere" "$pskill" 'After an exit 5 the refused text goes nowhere'
+has "presence: fallback records an open unattended question" "$pskill" 'unattended.sh record --question "Human task: <what>"'
+has "presence: fallback says the task was not saved" "$pskill" 'not saved to the human-task list: <why> (owner-task.sh <not found|exit N>)'
+has "presence: a failed record claims no U-<n>" "$pskill" 'If `record` also fails, claim no `U-<n>`'
+has "afk: exit 1 checks the list like presence" "$askill" 'only if `list --json` does not show it'
+has "presence: other answers keep their destinations" "$pskill" 'Every other answer is recorded as above.'
+has "presence: existing answer destination unchanged" "$pskill" 'then `unattended.sh answer U-<n> --answer … --by operator`'
+has "afk: deferred answer saved as a human task" "$askill" 'saved as a human task with `owner-task.sh add`'
+has "afk: receipt printed before away" "$askill" 'its receipt is printed before away is set'
+has "afk: fallback to an unattended question" "$askill" 'recorded as an open unattended question in the work'"'"'s repo (`unattended.sh record --repo`)'
+has "afk: exit 5 retries once without the refused text" "$askill" 'after exit 5, only once a rewrite naming the variable is also refused, and never with the refused text'
+has "presence: fallback question lands in the work's repo" "$pskill" '--did "not saved to the human-task list: <why>" --repo <owner/name of the work>'
+has "afk: says the task was not saved" "$askill" 'the thread says the task was not saved'
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
