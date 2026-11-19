@@ -108,7 +108,9 @@
 #                               that is not a single object exits 4 unwritten.
 #                               Exit codes: 0 ok/no-op, 2 usage or scope, 3 no
 #                               record, 4 identity mismatch/bad JSON (the message
-#                               names the cause, e.g. "missing owner_repo"), 5 disk,
+#                               names the cause, e.g. "owner_repo mismatch"; a
+#                               missing owner_repo is repaired here, exit 0, and
+#                               is a cause only for other guarded writes), 5 disk,
 #                               6 lock timeout.
 #   handoff-state.sh [<scope-flags>] --set    <pr_number> <jq-path>=<value>
 #   handoff-state.sh [<scope-flags>] --append <pr_number> <field> <value>
