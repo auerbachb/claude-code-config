@@ -85,6 +85,7 @@ opt-in of issue #1544.
 | [estimate-log.test.sh](../tests/estimate-log.test.sh) | Tests claim timestamps, parsed repo rollups, empty/error paths and preservation of the input ledger |
 | [estimate-resolve.test.sh](../tests/estimate-resolve.test.sh) | Tests for `estimate-resolve.sh`, including the empty-`GH_ARGS` unbound-variable regression |
 | [estimate-rounds-batch-bash.test.sh](../tests/estimate-rounds-batch-bash.test.sh) | Runs actual estimate rounds batch controls under current Bash and macOS Bash 3.2 |
+| [execution-pause-proof.test.sh](../tests/execution-pause-proof.test.sh) | Verify exact read-only /end evidence across the pause marker and session state |
 | [exit-report-extract.test.sh](../tests/exit-report-extract.test.sh) | Extractor returns the completion-protocol fields per phase and outcome, fails closed on absent or malformed reports |
 | [fixpr-step3b-daily-cap.test.sh](../tests/fixpr-step3b-daily-cap.test.sh) | Runs `/fixpr` Step 3b's real `@cursor review` decision (fixpr-reviewer-triggers.sh, legacy path) against stubs — the daily-cap skip appends its `## Review notes` line once per HEAD, ok/unknown/missing post, and the tier and refused-HEAD skips still win |
 | [fixpr-step3b-pushed-sha.test.sh](../tests/fixpr-step3b-pushed-sha.test.sh) | Static guard that `/fixpr` Step 3b hands the post-push `PUSHED_SHA` to `fixpr-reviewer-triggers.sh`, which passes it to `bugbot-refused-head.sh` and the review-tier helper, never the pre-push `HEAD_SHA` |
@@ -245,6 +246,7 @@ opt-in of issue #1544.
 | [unset-home-contract.test.sh](../tests/unset-home-contract.test.sh) | Shared unset-`HOME` contract for `reviewer-of.sh`, `session-state.sh`, `silence-watchdog.sh`, and `script-usage-report.sh` — `--help` answers, load-bearing runs exit 8 named, no fabricated `/.claude/...` paths (issue #1434) |
 | [usage-horizon.test.sh](../tests/usage-horizon.test.sh) | Tests for `usage-horizon.sh` — the shim always answers clear, records nothing, and still rejects malformed invocations |
 | [window-plan.test.sh](../tests/window-plan.test.sh) | Proves window-plan.sh ends a clock-time window at second zero of the stated minute, and leaves duration windows at now + N |
+| [worker-reporting-banner.test.sh](../tests/worker-reporting-banner.test.sh) | Worker banners keep the quiet-wait rules and require an EXIT_REPORT with the blocker reason for every outcome (checks guidance text, not runtime compliance) |
 | [workspace-artifacts.test.sh](../tests/workspace-artifacts.test.sh) | Verify cadence artifact cleanup with disposable Git/files, terminal PRs, liveness, guarded publication and retention races |
 | [workspace-sweep.test.sh](../tests/workspace-sweep.test.sh) | Exercise finished-worktree cadence with real disposable Git cleanup and extracted orchestration commands |
 | [worktree-isolation-shapes.test.sh](../tests/worktree-isolation-shapes.test.sh) | Tests `worktree-status.sh` and `wait-until.sh` — the issue #1470 command shapes |
