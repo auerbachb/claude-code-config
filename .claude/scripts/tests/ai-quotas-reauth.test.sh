@@ -91,6 +91,7 @@ for layout in noncycle mixed; do
   run doctor --json
   check_eq "$RC" 8 'unsupported layout remains diagnostic'
   check_contains "$OUT" 'fresh-profile reauthentication' 'doctor gives supported fallback pointer'
+  check_contains "$OUT" 'ai-quotas-setup.md#fresh-profile-reauthentication' 'doctor names the exact reference file and fragment'
   run repair-layout claude
   [[ "$RC" -ne 0 ]] && ok 'in-place repair still refuses' || bad 'unsafe repair accepted'
   original_intact

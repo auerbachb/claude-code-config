@@ -363,8 +363,9 @@
 #     probes, which must not hang the report
 #
 # SEE ALSO
-#   .claude/reference/ai-quotas.md      registry schema, reader contract, the
-#                                       overage table with its sources
+#   .claude/reference/ai-quotas.md      registry schema and profile layout
+#   .claude/reference/ai-quotas-reader.md   reader contract, the overage
+#                                       table with its sources
 #   .claude/skills/quotas/SKILL.md      the /quotas surface
 #   ai-quotas-setup.sh --help           registering and re-logging in accounts
 #   quotas-cheapest-next.sh --help      the overage prices, the threshold
