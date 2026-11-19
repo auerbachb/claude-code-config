@@ -173,12 +173,13 @@ F="$WORK/findings.jsonl"
   echo '{"level":2,"file":".claude/skills/alpha/SKILL.md","start":3,"end":3,"action":"zap","reason":"bad action"}'
   echo '{"level":2,"file":".claude/skills/alpha/SKILL.md","start":3,"end":3,"action":"cut","reason":"two\nlines"}'
   echo '{"level":4,"file":".claude/skills/alpha/SKILL.md","start":3,"end":3,"action":"cut","reason":"above stop level"}'
+  echo '{"level":2,"file":".claude/skills/alpha/SKILL.md","start":3.9,"end":4,"action":"cut","reason":"fractional line"}'
 } > "$F"
 R="$(run_md report --snapshot "$FSNAP" --findings "$F" --stop-at section --format json)"
 check "report: per-level removal counted per level" "$(jq -r '"\(.per_level["1"].removed) \(.per_level["2"].removed)"' <<<"$R")" "5 5"
 check "report: overlapping ranges counted once in total" "$(jq -r .total_removed <<<"$R")" "5"
 check "report: move words are relocated, not removed" "$(jq -r '"\(.per_level["3"].removed) \(.total_moved)"' <<<"$R")" "0 13"
-check "report: malformed findings rejected" "$(jq -r '.invalid | length' <<<"$R")" "6"
+check "report: malformed findings rejected (fractional line included)" "$(jq -r '.invalid | length' <<<"$R")" "7"
 MD="$(run_md report --snapshot "$FSNAP" --findings "$F" --stop-at section)"
 check "report: stop at section reports no level above 3" "$(grep -c '^## Level [4-7]' <<<"$MD")" "0"
 check "report: levels in order" "$(grep '^## Level' <<<"$MD" | cut -c10 | tr -d '\n')" "123"
@@ -272,6 +273,23 @@ printf 'y\n' >> "$FX/notes.txt"
 printf 'z\n' >> "$FX/notes.txt"
 (cd "$FX" && python3 "$MDAUDIT" verify-unchanged --snapshot "$WORK/snap-dirty.json" --before "$WORK/before-dirty.json" >/dev/null)
 check "verify-unchanged: detects a second edit to a dirty non-Markdown file" "$?" "1"
+
+# Fingerprint never follows a dirty symlink out of the checkout and never
+# opens a FIFO.
+printf 'outside\n' > "$WORK/outside.txt"
+ln -s "$WORK/outside.txt" "$FX/ext-link"
+mkfifo "$FX/pipe"
+(cd "$FX" && python3 "$MDAUDIT" inventory > "$WORK/snap-special.json")
+FP="$(cd "$FX" && perl -e 'alarm 20; exec @ARGV' python3 "$MDAUDIT" fingerprint --snapshot "$WORK/snap-special.json")"; RC=$?
+check "fingerprint: FIFO in the checkout does not block" "$RC" "0"
+check "fingerprint: dirty symlink hashed by its target string" "$(jq -r '.files["ext-link"][0:5]' <<<"$FP")" "link:"
+check "fingerprint: a FIFO is never opened (metadata only)" \
+  "$(perl -e 'alarm 20; exec @ARGV' python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import mdaudit; print(mdaudit.path_digest(sys.argv[2])[0:5])' "$(dirname "$MDAUDIT")" "$FX/pipe")" "meta:"
+printf '%s\n' "$FP" > "$WORK/before-special.json"
+printf 'changed outside\n' >> "$WORK/outside.txt"
+check "verify-unchanged: an out-of-tree symlink target is not read" \
+  "$(cd "$FX" && perl -e 'alarm 20; exec @ARGV' python3 "$MDAUDIT" verify-unchanged --snapshot "$WORK/snap-special.json" --before "$WORK/before-special.json")" "UNCHANGED"
+rm -f "$FX/ext-link" "$FX/pipe"
 
 # TMPDIR inside the checkout is refused before anything is written there.
 OUT="$(cd "$FX" && TMPDIR="$FX/docs" MDA_TARGET="" MDA_FROM="" MDA_STOP="" bash -c "$BLOCK" 2>&1)"; RC=$?

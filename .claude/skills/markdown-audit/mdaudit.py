@@ -60,6 +60,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from collections import defaultdict
@@ -537,6 +538,31 @@ def cmd_pairs(args):
 
 # ---------------------------------------------------------------- read-only check
 
+def path_digest(full):
+    """Digest one path without following it out of the checkout: a symlink is
+    hashed by its target string, a special file (FIFO, socket, device) and any
+    .env file by metadata only, never opened. None for a directory."""
+    try:
+        st = os.lstat(full)
+    except OSError:
+        return "missing"
+    if stat.S_ISDIR(st.st_mode):
+        return None
+    if stat.S_ISLNK(st.st_mode):
+        try:
+            return "link:" + hashlib.sha256(os.fsencode(os.readlink(full))).hexdigest()
+        except OSError:
+            return "link:unreadable"
+    base = os.path.basename(full)
+    if not stat.S_ISREG(st.st_mode) or base == ".env" or base.startswith(".env."):
+        return "meta:%o:%d:%d" % (st.st_mode, st.st_size, st.st_mtime_ns)
+    try:
+        with open(full, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        return "missing"
+
+
 def fingerprint(snap):
     top = snap["checkout"]
     # --no-optional-locks: never refresh (write) the index while auditing.
@@ -555,14 +581,8 @@ def fingerprint(snap):
         i += 1
     hashes = {}
     for rel in sorted(paths):
-        full = os.path.join(top, rel)
-        try:
-            if os.path.isdir(full):
-                continue
-            with open(full, "rb") as fh:
-                hashes[rel] = hashlib.sha256(fh.read()).hexdigest()
-        except OSError:
-            hashes[rel] = "missing"
+        hashes[rel] = path_digest(os.path.join(top, rel))
+    hashes = {k: v for k, v in hashes.items() if v is not None}
     return {"head": git(top, "rev-parse", "HEAD").decode().strip(),
             "status_sha256": hashlib.sha256(st).hexdigest(), "files": hashes}
 
@@ -623,12 +643,23 @@ def read_jsonl(path):
     return rows
 
 
+def line_no(v):
+    """A whole line number: an int (not bool) or a digit string; 3.9 is rejected."""
+    if isinstance(v, bool):
+        raise ValueError(v)
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str) and v.strip().isdigit():
+        return int(v)
+    raise ValueError(v)
+
+
 def validate(f, snap):
     errs = []
     if "_parse_error" in f:
         return [f["_parse_error"]]
     try:
-        lvl = int(f.get("level"))
+        lvl = line_no(f.get("level"))
     except (TypeError, ValueError):
         lvl = parse_level_soft(f.get("level"))
     if lvl is None or not 1 <= lvl <= 7:
@@ -657,7 +688,7 @@ def validate(f, snap):
             return
         total = snap["files"][rel]["lines"]
         try:
-            s, e = int(f.get(s_key)), int(f.get(e_key, f.get(s_key)))
+            s, e = line_no(f.get(s_key)), line_no(f.get(e_key, f.get(s_key)))
         except (TypeError, ValueError):
             errs.append("%s/%s must be line numbers" % (s_key, e_key))
             return

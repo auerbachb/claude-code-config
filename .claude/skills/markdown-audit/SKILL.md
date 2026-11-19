@@ -130,7 +130,7 @@ finding per line) and `coverage.jsonl` (one line per file-and-level or pair the
 agent actually reviewed). An agent that fails or returns nothing leaves its
 items unreviewed — never record them as clean.
 
-## Step 4 — Validate, tally, render, store
+## Step 4 — Validate, tally, render
 
 <!-- test-anchor: markdown-audit-report -->
 ```bash
@@ -155,9 +155,15 @@ so no line counts twice; moved words are reported separately, not as removed),
 coverage with unreviewed items and exclusions, invalid findings, and "What NOT
 to change" (the `keep` rows).
 
-Store the report outside the checkout without overwriting an earlier one:
+## Step 5 — Read-only check, then store
+
+The report is stored only after the checkout is proven unchanged, so a failed
+run never leaves an ordinary-looking report behind:
 
 ```bash
+if ! python3 "$MDAUDIT" verify-unchanged --snapshot "$MDA_RUN/snapshot.json" --before "$MDA_RUN/before.json"; then
+  echo "ERROR: checkout changed during the audit; report not stored (left in $MDA_RUN)" >&2; exit 1
+fi
 MDA_DIR="${HOME:?HOME must be set}/.claude/reports/markdown-audit"
 mda_probe="$MDA_DIR"
 while [[ ! -d "$mda_probe" ]]; do mda_probe=$(dirname "$mda_probe"); done
@@ -173,16 +179,11 @@ MDA_OUT="$MDA_DIR/$(date -u +%Y%m%dT%H%M%SZ)-$$.md"
 echo "REPORT=$MDA_OUT"
 ```
 
-## Step 5 — Read-only check
-
-```bash
-python3 "$MDAUDIT" verify-unchanged --snapshot "$MDA_RUN/snapshot.json" --before "$MDA_RUN/before.json"
-```
-
-`UNCHANGED` (exit 0) is required. `CHANGED` (exit 1) is a failed run: report
-every listed difference at the top of the summary and file nothing. The check
-compares HEAD, `git status`, and every corpus file's content, so it holds in a
-checkout that was already dirty.
+`UNCHANGED` (exit 0) is required. `CHANGED` (exit 1) is a failed run: nothing
+is stored, report every listed difference at the top of the summary and file
+nothing. The check compares HEAD, `git status`, and every corpus file's
+content, so it holds in a checkout that was already dirty. The stored report
+never overwrites an earlier one.
 
 ## Step 6 — Summary, then the filing gate
 
@@ -209,6 +210,6 @@ and the report path. Then:
 
 STOP after the first of: a blocking error in Steps 1–5, the report under
 `--no-file` or unattended, or the filing outcome. Once Step 1 has written
-`before.json`, every stop — a Step 3 or Step 4 error included — runs Step 5
-first and reports its result. A successful run ends with `verify-unchanged`
+`before.json`, every stop — a Step 3 or Step 4 error included — first runs
+Step 5's `verify-unchanged` line (storing nothing) and reports its result. A successful run ends with `verify-unchanged`
 printing `UNCHANGED`.
