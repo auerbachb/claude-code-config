@@ -23,6 +23,17 @@ if [[ -n "$SWEEP_SH" ]]; then
 fi
 ```
 
+Then take the quiet-tick digest (issue #2459) before anything this tick reads or classifies. D5 records it, so an agent, PR or issue event that lands while the tick runs is outside the contract and the next Monitor tick emits for it. An empty digest only costs quietness:
+
+<!-- test-anchor: pm-day-tick-start-digest -->
+```bash
+DAY_TICK_START_DIGEST=""
+QUIET_SH=$(resolve_script monitor-quiet-tick.sh || true)
+if [ -n "$QUIET_SH" ]; then
+  DAY_TICK_START_DIGEST=$("$QUIET_SH" --print-digest --kind pm-day --repo "$REPO_KEY" 2>/dev/null) || DAY_TICK_START_DIGEST=""
+fi
+```
+
 **D1 — Reconcile and transition.** Run items 1–3 of `monitor-mode.md`'s per-cycle checklist verbatim: process completed subagents and parse exit reports, execute phase transitions per `phase-protocols.md` (including any stalled in `session-state.json`), and run the reviewer-escalation gate for every session PR still on `reviewer == cr`. That checklist owns each step's exact invocation; day mode adds nothing here — this is the same in-turn loop the on-demand path already runs.
 
 Then update the failure streak from this tick's terminal outcomes, in completion order: `merged` resets `failure_streak` to `0`; `blocked` increments it. Only terminal outcomes count — a pipeline still in Phase B is neither.
@@ -197,6 +208,23 @@ The fresh generation is what makes step 3 safe: a tick already queued by the old
 When this tick meets the existing successful-resume condition, resolve `day:park-reactive` before D5 and use only its **On a successful resume** cleanup and outcome branches. That subsection owns the identity-checked retirement and counter reset. Do not enter the reactive park procedure for this route.
 <!-- pm-routing:end -->
 **D5 — Persist status and evaluate scheduled reporting.** Record the tick, next cadence, slots, queue, digests and recovery outcomes in existing state. Run the 3.3a report gate on this tick's board and observed terminal outcomes before teardown. Follow `decision-only-output.md` for all other output, including immediate owner-action blockers, safety events and exhausted recovery. An explicit status/board request runs `/board` immediately.
+
+**Record the quiet-tick contract** (issue #2459) as the last write of a tick that keeps the loop running — after D3's persist and any re-arm, never on a D4 exit, pause or a 2D.7 park. Quiet is allowed only when a repeat of this tick would do nothing new. Bind `DAY_TICK_ACTED=true` when D1 processed an exit report or launched a transition, D2 launched or offered anything, D4 matched an outcome, or D5 surfaced an owner-action notice; else `false`. Horizon and budget holds stay loud, because only a model turn can see the counter that lifts them.
+
+<!-- test-anchor: pm-day-tick-quiet-record -->
+```bash
+DAY_QUIET_OK=false
+case "$IDLE_REASON" in
+  'ceiling reached'|'nothing eligible'|chained|paused|'paused (pipeline failures)')
+    [ "${DAY_TICK_ACTED:-true}" = false ] && DAY_QUIET_OK=true ;;
+esac
+QUIET_SH=$(resolve_script monitor-quiet-tick.sh || true)
+if [ -n "$QUIET_SH" ]; then
+  "$QUIET_SH" --record --kind pm-day --repo "$REPO_KEY" --quiet-ok "$DAY_QUIET_OK" --freeze-at 9 \
+    --tick-start-digest "${DAY_TICK_START_DIGEST:-}" >/dev/null ||
+    echo "pm day: quiet-tick contract not stored — the next Monitor tick wakes the model as before" >&2
+fi
+```
 
 **Before the tick ends, run `scheduling-reliability.md`'s pre-exit checklist:** (1) the recorded Monitor task is active and this tick fired, (2) required owner-action notices were delivered, (3) `last_tick_at`, digests, streaks and cadence are written.
 
