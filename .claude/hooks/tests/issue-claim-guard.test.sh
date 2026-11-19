@@ -445,6 +445,15 @@ expect_deny "#2366 -R target named in the message" "$out" "--claim --repo tgt-ow
 set_verdict 208 unclaimed
 out="$(run_hook 'gh -R glob-owner/glob-repo pr create --head issue-208-x' "$TMP/pr-feature")"
 expect_deny "#2366 gh -R before pr create is the target" "$out" "--claim --repo glob-owner/glob-repo"
+out="$(run_hook 'GH_REPO=env-owner/env-repo gh pr create --head issue-208-x' "$TMP/pr-feature")"
+expect_deny "#2366 a GH_REPO prefix is the target" "$out" "--claim --repo env-owner/env-repo"
+out="$(run_hook 'export GH_REPO=github.com/exp-owner/exp-repo && gh pr create --head issue-208-x' "$TMP/pr-feature")"
+expect_deny "#2366 an exported HOST/OWNER/REPO GH_REPO is the target" "$out" "--claim --repo exp-owner/exp-repo"
+out="$(run_hook 'GH_REPO=env-owner/env-repo gh pr create -R flag-owner/flag-repo --head issue-208-x' "$TMP/pr-feature")"
+expect_deny "#2366 -R overrides GH_REPO" "$out" "--claim --repo flag-owner/flag-repo"
+set_verdict 216 claimed
+out="$(run_hook 'X=$(a $(b)) gh pr create --head issue-216-n --title t' "$TMP/pr-feature")"
+expect_deny "#2366 a nested substitution prefix never hides gh" "$out" "claimed by another holder"
 
 set_verdict 209 unclaimed
 out="$(STUB_REPO_NULL=1 run_hook 'git checkout -b issue-209-n' "$WORK")"

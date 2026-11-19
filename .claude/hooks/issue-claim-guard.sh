@@ -114,6 +114,22 @@ def repo_value(v):
     return v if (v and REPO_OK.match(v)) else "-"
 
 
+def gh_repo_env(seg, i, exported):
+    # The GH_REPO the gh command word at seg[i] runs with ([HOST/]OWNER/REPO):
+    # the nearest prefix assignment, else the exported value. None when unset
+    # or not a literal repository.
+    found = exported
+    for tok in seg[:i]:
+        if tok.startswith("GH_REPO="):
+            found = tok[len("GH_REPO="):]
+    if not found:
+        return None
+    parts = found.split("/")
+    if len(parts) == 3:
+        found = parts[1] + "/" + parts[2]
+    return found if REPO_OK.match(found) else None
+
+
 def prep(cmd):
     s = cmd.replace("\r\n", "\n").replace("\\\n", "")
     s = HEREDOC.sub(lambda m: "<< " + m.group(2) + m.group(3), s)
@@ -121,7 +137,10 @@ def prep(cmd):
     # parentheses would hide the command word that follows a VAR=$(...) prefix.
     # A match never spans a quote, separator or newline: a stray $( or backtick
     # in quoted text must not swallow the next command (it would fail open).
-    s = re.sub(r"\$\([^()'\"`;&|\n]*\)", "$DYN", s)
+    # Repeated until stable, so a nested $(a $(b)) collapses from the inside out.
+    n = 1
+    while n:
+        s, n = re.subn(r"\$\([^()'\"`;&|\n]*\)", "$DYN", s)
     s = re.sub(r"`[^`'\";&|\n]*`", "$DYN", s)
     return "\n".join(l for l in s.split("\n") if not re.match(r"\s*#", l))
 
@@ -147,13 +166,19 @@ def analyse_full(src):
     dir_t = BASE
     switch_targets = []
     exported = None
+    exported_gh = None
     for seg in segs:
         if seg and seg[0] == "export":
             for tok in seg[1:]:
                 if tok.startswith(HOLDER_VAR + "="):
                     exported = holder_value(tok)
-        elif seg and seg[0] == "unset" and HOLDER_VAR in seg[1:]:
-            exported = None
+                elif tok.startswith("GH_REPO="):
+                    exported_gh = tok[len("GH_REPO="):]
+        elif seg and seg[0] == "unset":
+            if HOLDER_VAR in seg[1:]:
+                exported = None
+            if "GH_REPO" in seg[1:]:
+                exported_gh = None
         for k, tok in enumerate(seg):
             if os.path.basename(tok) == "issue-claim.sh" and "--claim" in seg[k + 1:]:
                 for a in seg[k + 1:]:
@@ -227,8 +252,9 @@ def analyse_full(src):
                         if target is not None:
                             switch_targets.append("DYN" if DYN_RE.search(target) else target)
             if os.path.basename(t) == "gh" and cmd_pos(seg, i):
-                # gh's global -R/--repo may precede the subcommand.
-                j, target = i + 1, None
+                # gh's global -R/--repo may precede the subcommand; either
+                # flag overrides GH_REPO, as in gh itself.
+                j, target = i + 1, gh_repo_env(seg, i, exported_gh)
                 while j < len(seg) and seg[j].startswith("-"):
                     if seg[j] in ("-R", "--repo") and j + 1 < len(seg):
                         target = seg[j + 1]
