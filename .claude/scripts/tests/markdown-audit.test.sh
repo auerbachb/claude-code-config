@@ -407,6 +407,31 @@ if [ "$RC" -eq 1 ] && grep -q 'between inventory and baseline' <<<"$OUTH"; then 
 check "segment: blank quote line splits quoted paragraphs" \
   "$(mda_py '[ (b["start"], b["end"]) for b in mdaudit.segment_lines(["> one", ">", "> two"])["blocks"] ]')" "[(1, 1), (3, 3)]"
 
+# A corpus file swapped after inventory (even if later restored) stops the run.
+mkdir -p "$WORK/fx-swap"
+printf '# S\n\noriginal text\n' > "$WORK/fx-swap/s.md"
+git -C "$WORK/fx-swap" init -q && git -C "$WORK/fx-swap" add -A && git -C "$WORK/fx-swap" commit -qm init
+(cd "$WORK/fx-swap" && python3 "$MDAUDIT" inventory > "$WORK/snap-swap.json")
+printf '# S\n\nreplaced text\n' > "$WORK/fx-swap/s.md"
+OUTS="$(cd "$WORK/fx-swap" && python3 "$MDAUDIT" segment --snapshot "$WORK/snap-swap.json" 2>&1)"; RC=$?
+if [ "$RC" -ne 0 ] && grep -q 'changed since inventory' <<<"$OUTS"; then ok "segment: content swapped after inventory is refused"; else bad "segment: content swapped after inventory is refused" "$OUTS"; fi
+
+# A comment closing mid-line keeps the prose after it.
+check "segment: prose after a closing comment stays a block" \
+  "$(mda_py '[ (b["start"], b["end"]) for b in mdaudit.segment_lines(["<!-- note", "end --> real prose here"])["blocks"] ]')" "[(2, 2)]"
+check "segment: one-line comment followed by prose stays a block" \
+  "$(mda_py 'len(mdaudit.segment_lines(["<!-- c --> prose after"])["blocks"])')" "1"
+
+# A thematic break separates paragraphs.
+check "segment: thematic break splits paragraphs" \
+  "$(mda_py '[ (b["start"], b["end"]) for b in mdaudit.segment_lines(["one", "* * *", "two"])["blocks"] ]')" "[(1, 1), (3, 3)]"
+
+# Shingles never join words across a skipped fence.
+check "pairs: no shingle spans a fence" \
+  "$(mda_py 'all(s <= 4 or s >= 8 for k in mdaudit.features(a[0].split("|"))[0] for (s, e) in mdaudit.features(a[0].split("|"))[0][k] if not (s <= 4 and e >= 8))' 'a1 a2 a3 a4 a5|b1 b2 b3 b4 b5|c1 c2 c3 c4 c5|d1 d2 d3 d4 d5|```|x y|```|e1 e2 e3 e4 e5|f1 f2 f3 f4 f5')" "True"
+check "pairs: a shingle spanning a fence is not produced" \
+  "$(mda_py 'any(s <= 4 and e >= 8 for v in mdaudit.features(a[0].split("|"))[0].values() for (s, e) in v)' 'a1 a2 a3 a4 a5|b1 b2 b3 b4 b5|c1 c2 c3 c4 c5|d1 d2 d3 d4 d5|```|x y|```|e1 e2 e3 e4 e5|f1 f2 f3 f4 f5')" "False"
+
 # TMPDIR inside the checkout is refused before anything is written there.
 OUT="$(cd "$FX" && TMPDIR="$FX/docs" MDA_TARGET="" MDA_FROM="" MDA_STOP="" bash -c "$BLOCK" 2>&1)"; RC=$?
 if [ "$RC" -ne 0 ] && grep -q 'TMPDIR resolves inside the checkout' <<<"$OUT" && [ -z "$(find "$FX/docs" -name 'markdown-audit.*')" ]; then

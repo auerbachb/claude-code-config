@@ -75,6 +75,7 @@ COMMON_CAP = 15  # a shingle/identifier in more files than this is boilerplate
 REASON_MAX = 240
 
 FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+BREAK_RE = re.compile(r"^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")
 BLANK_QUOTE_RE = re.compile(r"^ {0,3}(?:>[ \t]*)+$")
 HEADING_RE =re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t#]*$")
 LIST_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s")
@@ -239,9 +240,18 @@ def is_env_file(path):
     return base == ".env" or base.startswith(".env.")
 
 
+# rel -> sha256 recorded by inventory; set by load_snapshot. Any later read
+# must see exactly that content, so a file swapped (and even restored) mid-run
+# can never feed a report.
+EXPECT = {}
+
+
 def read_lines(top, rel, data=None):
     if data is None:
         data = read_bytes(top, rel)
+        want = EXPECT.get(rel)
+        if want and hashlib.sha256(data).hexdigest() != want:
+            die("%s changed since inventory; restart the audit" % rel)
     text = data.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
     if not text:
         return []
@@ -266,6 +276,10 @@ def load_snapshot(path):
     for key in ("checkout", "corpus", "in_scope", "files"):
         if key not in snap:
             die("snapshot %s lacks %r" % (path, key))
+    EXPECT.clear()
+    for rel, meta in snap["files"].items():
+        if isinstance(meta, dict) and meta.get("sha256"):
+            EXPECT[rel] = meta["sha256"]
     return snap
 
 
@@ -402,12 +416,18 @@ def scan(lines):
             while j < n and "-->" not in lines[j]:
                 j += 1
             end = min(j, n - 1)
-            for k in range(i, end + 1):
-                kinds[k] = "comment"
-            skipped.append({"kind": "comment", "start": i + 1, "end": end + 1})
-            i = end + 1
-            continue
-        if not line.strip() or BLANK_QUOTE_RE.match(line):
+            if j < n and lines[j].split("-->", 1)[1].strip():
+                # Prose follows the close on that line: keep the line as text.
+                end = j - 1
+            if end < i:
+                pass  # a one-line comment followed by prose: classify as text below
+            else:
+                for k in range(i, end + 1):
+                    kinds[k] = "comment"
+                skipped.append({"kind": "comment", "start": i + 1, "end": end + 1})
+                i = end + 1
+                continue
+        if not line.strip() or BLANK_QUOTE_RE.match(line) or BREAK_RE.match(line):
             # A quote line holding only ">" separates quoted paragraphs.
             kinds[i] = "blank"
         else:
@@ -524,10 +544,13 @@ def cmd_segment(args):
 
 def features(lines):
     kinds = scan(lines)[0]
-    toks = []
+    runs, toks = [], []
     ids = defaultdict(set)
     for i, line in enumerate(lines):
         if kinds[i] in ("fence", "frontmatter", "comment"):
+            if toks:
+                runs.append(toks)
+                toks = []
             continue
         for w in WORD_RE.findall(line):
             toks.append((w.lower(), i + 1))
@@ -539,10 +562,13 @@ def features(lines):
             term = " ".join(WORD_RE.findall((h.group(2) or "").lower()))
             if len(term.split()) >= 2:
                 ids["heading:" + term].add(i + 1)
+    if toks:
+        runs.append(toks)
     shingles = defaultdict(set)
-    for k in range(len(toks) - SHINGLE + 1):
-        key = " ".join(t for t, _ in toks[k:k + SHINGLE])
-        shingles[key].add((toks[k][1], toks[k + SHINGLE - 1][1]))
+    for run in runs:
+        for k in range(len(run) - SHINGLE + 1):
+            key = " ".join(t for t, _ in run[k:k + SHINGLE])
+            shingles[key].add((run[k][1], run[k + SHINGLE - 1][1]))
     return shingles, ids
 
 
