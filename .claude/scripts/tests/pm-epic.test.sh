@@ -331,7 +331,7 @@ check_eq "record: wave 2 boxes added after wave 1's" "801,802,803,804,805,806,80
   "$(body_of 800 | sed -n 's/^- \[ \] #\([0-9]*\)$/\1/p' | paste -sd, -)"
 
 # close-if-done keeps a parent open while its scope record lists remaining items.
-issue 820 open "Half-done epic" $'Scope.\n\n## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 1\n\n- S1 · covered by #821 · wave 1 · First\n- S2 · remaining · Second\n\n## Increment chain\n\n- [x] #821\n'
+issue 820 open "Half-done epic" $'Scope.\n\n## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 1 · last #821\n\n- S1 · covered by #821 · wave 1 · First\n- S2 · remaining · Second\n\n## Increment chain\n\n- [x] #821\n'
 issue 821 closed "First" "- Parent: #820"
 echo '[]' > "$TMP/fx/sub-820.json"
 : > "$TMP/calls.log"
@@ -435,7 +435,7 @@ issue 865 open "c865" ""
 check_eq "record: a fenced box is not a link; the real box is added" "865" \
   "$("$SCRIPT" children acme/w 864 2>/dev/null | jq -r '[.children[].number] | join(",")')"
 # close-if-done never closes past a child the record names but the child list did not show.
-issue 880 open "Race epic" $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 2\n\n- S1 · covered by #881 · wave 1 · a\n- S2 · covered by #882 · wave 1 · b\n\n## Increment chain\n\n- [x] #881\n'
+issue 880 open "Race epic" $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 2 · last #882\n\n- S1 · covered by #881 · wave 1 · a\n- S2 · covered by #882 · wave 1 · b\n\n## Increment chain\n\n- [x] #881\n'
 issue 881 closed "c881" ""
 issue 882 open "c882" ""
 echo '[]' > "$TMP/fx/sub-880.json"
@@ -453,13 +453,13 @@ rows "- S1 · covered by #831 · wave 0 · Done part" "- S2 · remaining · The 
 "$SCRIPT" scope-init acme/w 868 "$TMP/rows" "no clean seam: one migration" >/dev/null
 check_eq "scope-init: a stop reason is written in the same record" "stopped 0 - no clean seam: one migration" "$("$SCRIPT" wave-due acme/w 868)"
 # More than 100 linked PRs with none qualifying is unread, never "wait".
-issue 869 open "Paged epic" $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 1\n\n- S1 · covered by #882 · wave 1 · a\n- S2 · remaining · b\n'
+issue 869 open "Paged epic" $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 1 · last #882\n\n- S1 · covered by #882 · wave 1 · a\n- S2 · remaining · b\n'
 jq -n '{data: {repository: {issue: {closedByPullRequestsReferences: {pageInfo: {hasNextPage: true}, nodes: [{number: 1, state: "CLOSED", isDraft: false}]}}}}}' > "$TMP/fx/prs-882.json"
 "$SCRIPT" wave-due acme/w 869 >/dev/null 2>&1; rc=$?
 check_eq "wave-due: an unread next page of PRs is exit 1" "1" "$rc"
 rm "$TMP/fx/prs-882.json"
 # A child listed on the parent after the child read keeps the parent open.
-issue 885 open "Late child epic" $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 1\n\n- S1 · covered by #881 · wave 1 · a\n\n## Increment chain\n\n- [x] #881\n'
+issue 885 open "Late child epic" $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 1 · last #881\n\n- S1 · covered by #881 · wave 1 · a\n\n## Increment chain\n\n- [x] #881\n'
 echo '[]' > "$TMP/fx/sub-885.json"
 rm -f "$TMP/fx/served-885"
 jq '.body += "- [ ] #882\n"' "$TMP/fx/issue-885.json" > "$TMP/fx/next-issue-885.json"
@@ -610,6 +610,95 @@ check_eq "wave block: a parent closed elsewhere runs Completion, never pauses" "
 check_eq "wave block: an unreadable read pauses, never files" "false false true false   " "$(wave '' 1)"
 
 # ---- skill wiring ------------------------------------------------------------------
+# ---- review round on PR #2569 ---------------------------------------------------
+# (a) An ordered-list item in the section is a list item, so it must be a full row.
+mal 990 $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 0\n\n- S1 · remaining · x\n1. S2 · remaining · y\n' "an ordered-list row (1.)"
+mal 988 $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 0\n\n- S1 · remaining · x\n2) S2 · remaining · y\n' "an ordered-list row (2))"
+issue 987 open "Ordered prose" $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 0\n\nStep 1 of 2: the rows below.\n\n```\n1. S9 · remaining · fenced example\n```\n\n- S1 · remaining · x\n'
+check_eq "scope: prose and a fenced ordered item are still ignored" "S1" "$("$SCRIPT" scope acme/w 987 | jq -r '.remaining | join(",")')"
+
+# (b) already-closed is printed only after the final child read: a child
+# reopened between the first and the final read is a discrepancy.
+issue 991 closed "Closed epic, child reopens" $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 1 · last #992\n\n- S1 · covered by #992 · wave 1 · a\n\n## Increment chain\n\n- [x] #992\n'
+echo '[]' > "$TMP/fx/sub-991.json"
+issue 992 closed "c992" "- Parent: #991"
+check_eq "close-if-done: a closed parent with every child closed and no scope left is already-closed" "already-closed #991" "$("$SCRIPT" close-if-done acme/w 991 2>/dev/null)"
+issue 992 open "c992" "- Parent: #991"
+jq '.state = "closed"' "$TMP/fx/issue-992.json" > "$TMP/fx/issue-992.tmp" && mv "$TMP/fx/issue-992.tmp" "$TMP/fx/issue-992.json"
+jq '.state = "open"' "$TMP/fx/issue-992.json" > "$TMP/fx/later-issue-992.json"
+rm -f "$TMP/fx/count-992"; echo 2 > "$TMP/fx/swap-at-992"
+out=$("$SCRIPT" close-if-done acme/w 991 2>/dev/null); rc=$?
+check_eq "close-if-done: a child reopened before the final read is exit 1 on a closed parent" "1" "$rc"
+check_eq "close-if-done: ... and reports a discrepancy, never already-closed" "discrepancy #991 closed with 1 of 1 children open" "$out"
+rm -f "$TMP/fx/swap-at-992" "$TMP/fx/count-992"
+
+# (c) The next wave waits on the child filed LAST, persisted as `last #T`,
+# never the highest number (a recovered child can have a lower one).
+issue 993 open "Tail epic" $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 0\n\n- S1 · remaining · a\n- S2 · remaining · b\n- S3 · remaining · c\n'
+issue 951 open "c951" "- Parent: #993"
+issue 950 open "c950 (recovered, lower number)" "- Parent: #993"
+"$SCRIPT" wave-open acme/w 993 1 2 >/dev/null
+"$SCRIPT" record acme/w 993 S1 951 >/dev/null
+"$SCRIPT" record acme/w 993 S2 950 >/dev/null
+check_eq "record: the Wave: line names the child filed last" "Wave: 1 · planned 2 · last #950" "$(body_of 993 | grep '^Wave:')"
+check_eq "scope: last is the filing tail" "950" "$("$SCRIPT" scope acme/w 993 | jq -r .last)"
+prs 951 '[{"number":11,"state":"OPEN","isDraft":false}]'
+prs 950 '[]'
+check_eq "wave-due: waits on the last-filed child, not the highest number" "wait 1 - #950" "$("$SCRIPT" wave-due acme/w 993)"
+# wave-open re-runs the same eligibility check; a same-wave retry stays a no-op.
+"$SCRIPT" wave-open acme/w 993 2 1 >/dev/null 2>&1; rc=$?
+check_eq "wave-open: refused while the last-filed child is not in review" "8" "$rc"
+check_eq "wave-open: the refusal wrote nothing" "Wave: 1 · planned 2 · last #950" "$(body_of 993 | grep '^Wave:')"
+check_eq "wave-open: a same-wave same-count retry is still a no-op" "wave 1 already open (2 planned)" "$("$SCRIPT" wave-open acme/w 993 1 2)"
+prs 950 '[{"number":12,"state":"OPEN","isDraft":false}]'
+check_eq "wave-open: opens once the last-filed child is in review" "opened wave 2 on #993 (1 planned)" "$("$SCRIPT" wave-open acme/w 993 2 1)"
+mal 994 $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 1\n\n- S1 · covered by #951 · wave 1 · a\n- S2 · remaining · b\n' "a wave with a filed child but no last"
+mal 995 $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 1 · last #952\n\n- S1 · covered by #951 · wave 1 · a\n- S2 · remaining · b\n' "a last child that covers nothing in the wave"
+
+# (d) record, wave-open and stop re-read the parent right before writing and
+# never overwrite an edit made since their read.
+pw() {  # pw N VERB ARGS... — the 2nd parent read (the pre-write check) sees an operator edit
+  local n="$1"; shift
+  issue "$n" open "Pre-write $n" $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 1\n\n- S1 · remaining · a\n- S2 · remaining · b\n'
+  jq '.body += "operator edit\n"' "$TMP/fx/issue-$n.json" > "$TMP/fx/later-issue-$n.json"
+  rm -f "$TMP/fx/count-$n"; echo 2 > "$TMP/fx/swap-at-$n"
+  "$SCRIPT" "$@" >/dev/null 2>&1; local r=$?
+  check_eq "pre-write: $1 aborts on a body changed since its read (exit 1)" "1" "$r"
+  check_contains "pre-write: $1 kept the operator's edit" "operator edit" "$(body_of "$n")"
+  check_contains "pre-write: $1 wrote nothing" "- S1 · remaining · a" "$(body_of "$n")"
+  rm -f "$TMP/fx/swap-at-$n" "$TMP/fx/count-$n"
+}
+issue 959 open "c959" "- Parent: #996"
+pw 996 record acme/w 996 S1 959
+pw 997 stop acme/w 997 "no clean seam: test"
+check_eq "pre-write: stop wrote no Stopped: line" "0" "$(body_of 997 | grep -c '^Stopped:')"
+issue 998 open "Pre-write wave-open" $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 0\n\n- S1 · remaining · a\n'
+jq '.body += "operator edit\n"' "$TMP/fx/issue-998.json" > "$TMP/fx/later-issue-998.json"
+rm -f "$TMP/fx/count-998"; echo 2 > "$TMP/fx/swap-at-998"
+"$SCRIPT" wave-open acme/w 998 1 1 >/dev/null 2>&1; rc=$?
+check_eq "pre-write: wave-open aborts on a body changed since its read (exit 1)" "1" "$rc"
+check_eq "pre-write: wave-open left Wave: 0" "Wave: 0" "$(body_of 998 | grep '^Wave:')"
+rm -f "$TMP/fx/swap-at-998" "$TMP/fx/count-998"
+
+# (e) A covered row counts only when its child closed as completed.
+issue 960 open "Honest coverage" $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 1 · last #961\n\n- S1 · covered by #961 · wave 1 · a\n\n## Increment chain\n\n- [x] #961\n'
+echo '[]' > "$TMP/fx/sub-960.json"
+issue 961 closed "c961" "- Parent: #960"
+jq '.state_reason = "not_planned"' "$TMP/fx/issue-961.json" > "$TMP/fx/issue-961.tmp" && mv "$TMP/fx/issue-961.tmp" "$TMP/fx/issue-961.json"
+: > "$TMP/calls.log"
+out=$("$SCRIPT" close-if-done acme/w 960 2>/dev/null); rc=$?
+check_eq "close-if-done: a covered child closed as not planned is exit 1" "1" "$rc"
+check_eq "close-if-done: ... and names the row to re-cut" "discrepancy #960 S1 is covered by #961, closed as not_planned (not completed); set S1 back to remaining or re-cover it" "$out"
+check_eq "close-if-done: no close call on uncompleted coverage" "0" "$(grep -c '^issue close' "$TMP/calls.log")"
+jq '.state_reason = "completed"' "$TMP/fx/issue-961.json" > "$TMP/fx/issue-961.tmp" && mv "$TMP/fx/issue-961.tmp" "$TMP/fx/issue-961.json"
+check_eq "close-if-done: a covered child closed as completed closes the parent" "closed #960 (1 children)" "$("$SCRIPT" close-if-done acme/w 960 2>/dev/null)"
+
+# Day arming order: 0c (away window) before 2D.1; 0b and 0d (epic Bind) after it.
+arming=$(grep '^\*\*On an arming invocation, ownership is settled before any work.\*\*' "$SKILL/SKILL.md")
+check_contains "SKILL.md: day arming runs 2D.1 after 0c, before 0b, 0d and 1" "Step 2D.1 right after Step 0c and before Steps 0b, 0d and 1" "$arming"
+check_contains "SKILL.md: a refused day run still stores the away window" "a refused \`/pm day --away …\` still records it" "$arming"
+check_contains "epic Bind runs after 2D.1 on a day arming invocation" "on a \`/pm day\` arming invocation, after 2D.1" "$(grep '^Runs once, as Step 0d' "$SKILL/modules/shared/epic.md")"
+
 entry="$SKILL/SKILL.md"
 epic_parse=$(grep -n '^- \*\*Epic' "$entry" | head -1 | cut -d: -f1)
 mode_parse=$(grep -n '^- \*\*Mode:\*\*' "$entry" | head -1 | cut -d: -f1)
