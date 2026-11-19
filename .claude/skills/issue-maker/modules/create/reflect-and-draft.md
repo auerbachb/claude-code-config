@@ -99,7 +99,7 @@ Rapid-fire keeps exactly **two hard bars in the create flow**, and neither is a 
 1. **Exact title match** on dedup (default pauses on strong *or* exact — Step 4).
 2. **The document gate** — more than 5 increments, or open design decisions the body cannot settle (`create:doc-gate`; it replaces Step 8's old count-only question).
 
-At either bar rapid-fire stops and asks, in one terse line rather than default's fuller framing. Outside the create flow, **retracting a member of an increment chain** (Step 12) also stops for an answer in both modes — for the same reason, and it is the only such call. Switch back with `"switch to default mode"`.
+At either bar rapid-fire stops and asks, in one terse line rather than default's fuller framing. The coherence pass after a chain or a batch of three or more (`create:coherence`) is not a bar: it runs in both modes without asking, and rapid-fire trims its report to one line. Outside the create flow, **retracting a member of an increment chain** (Step 12) also stops for an answer in both modes — for the same reason, and it is the only such call. Switch back with `"switch to default mode"`.
 
 ## Issue body tone & audience (default — NON-NEGOTIABLE)
 
