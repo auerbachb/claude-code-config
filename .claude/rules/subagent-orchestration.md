@@ -23,21 +23,20 @@ Any spawn that does NOT use a `.claude/agents/` definition — built-in Explore/
 
 ## Model Selection
 
-**Run-mode selection (every spawn).** Resolve `model-route.sh` and execute
-`.claude/reference/task-model-routing.md`'s dispatch block for each task/phase.
-The run mode (`default`, `speed`, `cheap`) and the issue tier choose the starting
-tier; preserve explicit owner choices, tool/context support, permissions and
-launch/reserve/budget gates. Persist the request and decision through scoped state
-helpers before dispatch; failed writes launch nothing. Pass the returned alias
-explicitly; frontmatter is only a cheap fallback.
+**Run-mode selection (every spawn).** Choose the cheapest suitable available
+model. Run `.claude/reference/task-model-routing.md`'s dispatch block per task/phase:
+the run mode (`default`, `speed`, `cheap`) and issue tier give a recommended starting
+point; you decide what suits this task, recording a one-line `parent_choice` reason
+when you depart from it. Owner pins, Fable rules, permissions and gates still
+bind. Persist request and decision through scoped
+state helpers before dispatch; failed writes launch nothing. Pass the chosen alias
+explicitly; frontmatter is a cheap fallback.
 
-Retries stay on the current tier while producing useful evidence. Speed mode
-moves up after one failure without new evidence; default and cheap modes need a
-diagnosis first. In default and cheap modes, slow work, one failed test or an
-arbitrary retry count never upgrades a worker by itself. Diagnose equivalent failures
-or poor-patch review/CI churn before task-local escalation. Preserve discoveries,
-local checks, batched changed pushes, independent review and merge gates. Store
-actual cost or unknown; routine retries stay silent.
+Retries keep their tier while producing useful evidence. You may move a
+retry after one unsatisfactory attempt, with a reason; the table's thresholds
+(speed: one failure; default/cheap: two equivalent failures or poor-patch churn)
+force reconsideration. Preserve discoveries, local checks, batched changed pushes,
+independent review and merge gates. Store actual cost or unknown; routine retries stay silent.
 
 **Effort is not settable on a spawn** — subagents inherit the parent's effort level; never write an effort instruction into a spawn prompt. **Set model at spawn, never mid-session** — session-scoped caches make tier switches costly (`token-efficiency-audit-2026-07.md` §FU-4).
 

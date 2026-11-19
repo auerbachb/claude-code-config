@@ -27,8 +27,8 @@ overlap-chain successor. This gate overrides every "within
 Before each successor, append completed-attempt evidence to its scoped routing
 record and execute `task-model-routing.md`'s dispatch block. Persist refreshed
 eligibility and the decision before launch; failed writes launch nothing.
-Progress keeps the cheap model; diagnosis/escalation stays task-local and never
-skips the launch, review or acceptance gates.
+Pick the cheapest suitable model (router recommends, you decide; one-line reason
+to depart); model changes stay task-local and never skip launch, review or acceptance gates.
 
 ## Structured Exit Report (MANDATORY — all phases)
 
