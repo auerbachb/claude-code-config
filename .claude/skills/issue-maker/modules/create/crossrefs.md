@@ -27,6 +27,6 @@ This is the existing `- Depends on #N` phrasing above, reused deliberately rathe
 
 **Both modes stop at this bar.** It continues the document gate, one of rapid-fire's two hard bars enumerated in the "Rapid-fire override" paragraph of the top-level rule — rapid-fire asks in one terse line instead of default's fuller framing, but it never files a 6+ chain unasked and never silently re-cuts one down to 5 on its own. Re-cutting changes what gets built; that call is the user's.
 
-**A chain cut from a document** (`create:doc-gate`) also has a tracking parent: each child adds `- Part of #<parent>` to its `## Related Issues`, and no child `Depends on` the parent.
+**A chain cut from a document** (`create:doc-gate`) also has a tracking parent: each child adds `- Parent: #<parent>` (the line `/subagent` reads to advance the parent) to its `## Related Issues`, and no child `Depends on` the parent.
 
 ---

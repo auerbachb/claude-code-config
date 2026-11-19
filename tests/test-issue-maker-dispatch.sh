@@ -189,6 +189,14 @@ member_chain=$(IS_INCREMENT=true CHAIN_ID=c POSITION=1 TOTAL=3 CHAIN_ROLE= bash 
 printf "%s" "$RECORD_CHAIN"')
 assert_eq '{"chain_id":"c","position":0,"total":3,"role":"parent"}' "$parent_chain" 'tracking parent records its role at position 0'
 assert_eq '{"chain_id":"c","position":1,"total":3}' "$member_chain" 'chain members keep the unchanged record shape'
+assert_eq 0 "$(grep -qF '`- Parent: #<parent>`' "$DOC_GATE"; echo $?)" 'children carry the Parent marker /subagent reads'
+assert_eq 1 "$(grep -rqF 'Part of #' .claude/skills/issue-maker; echo $?)" 'no issue-maker module writes the unread Part of marker'
+assert_eq 0 "$(grep -qF "sed -n 's/^- Parent: #" .claude/skills/subagent/SKILL.md; echo $?)" '/subagent still reads the Parent marker'
+MINE_DEF_LINE=$(grep -m1 '^MINE_DEF=' .claude/skills/issue-maker/modules/session-state.md)
+runnable_rows=$(eval "$MINE_DEF_LINE"; printf '%s' '{"issues":[{"number":1,"url":"https://github.com/o/r/issues/1","status":"open","origin":"create","chain":{"chain_id":"c","position":0,"total":2,"role":"parent"}},{"number":2,"url":"https://github.com/o/r/issues/2","status":"open","origin":"create","chain":{"chain_id":"c","position":1,"total":2}},{"number":3,"url":"https://github.com/o/r/issues/3","status":"open","origin":"create","chain":null}]}' | jq -c --arg repo o/r "$MINE_DEF"'[.issues[] | runnable | .number]')
+assert_eq '[2,3]' "$runnable_rows" 'the inline offer and hand-off exclude a tracking parent'
+assert_eq 0 "$(grep -qF '(.issues[] | runnable | .chip_task_id) = $tok' .claude/skills/issue-maker/modules/create/postfile.md; echo $?)" 'the offer stamp skips a tracking parent'
+assert_eq 0 "$(grep -qF 'never offer `"Re-cut remainder"`' .claude/skills/issue-maker/modules/retract.md; echo $?)" 'parent retract offers exactly two unambiguous options'
 
 
 set +e
