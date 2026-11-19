@@ -68,6 +68,16 @@ run 'back at 10';         expect_call 'bare hour is padded' '^set away --by oper
 run 'until 8am';          expect_call 'glued am/pm' '^set away --by operator-message --until-epoch [0-9]+$'
 run 'until 8:00 AM' "$stub" "$evening"
                           expect_call 'passed clock time -> tomorrow 08:00 ET' '^set away --by operator-message --until-epoch 1768568400$'
+# A bare hour with no am/pm takes its soonest future occurrence (2026-01-15/16 ET).
+night="$tmp/wp-9pm.sh"; pin_window "$night" 2026-01-16T02:00:00Z    # Thu 9 PM ET
+morning="$tmp/wp-8am.sh"; pin_window "$morning" 2026-01-15T13:00:00Z # Thu 8 AM ET
+late="$tmp/wp-11pm.sh"; pin_window "$late" 2026-01-16T04:00:00Z     # Thu 11 PM ET
+run 'back at 10' "$stub" "$night";   expect_call 'bare 10 at 9 PM -> 10 PM tonight' '^set away --by operator-message --until-epoch 1768532400$'
+[[ "$out" == *'Away until Thu 10:00 PM ET.' ]] && ok 'resolved end time is printed' || bad "resolved time: '$out'"
+run 'back at 10' "$stub" "$morning"; expect_call 'bare 10 at 8 AM -> 10 AM today' '^set away --by operator-message --until-epoch 1768489200$'
+run 'back at 10' "$stub" "$late";    expect_call 'bare 10 at 11 PM -> 10 AM tomorrow' '^set away --by operator-message --until-epoch 1768575600$'
+run 'until 22:00' "$stub" "$morning"; expect_call '24-hour value keeps its meaning' '^set away --by operator-message --until-epoch 1768532400$'
+run 'until 8:00 AM' "$stub" "$night"; expect_call 'explicit AM keeps its meaning' '^set away --by operator-message --until-epoch 1768568400$'
 run '6 hours';            expect_call 'spelled duration -> --until-epoch' '^set away --by operator-message --until-epoch [0-9]+$'
 run '6h';                 [[ "$out" == 'presence: away, until later' ]] && ok 'presence output is printed for the operator' || bad "printed: '$out'"
 

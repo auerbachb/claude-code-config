@@ -353,10 +353,15 @@ if [[ -n "${AWAY_STR:-}" || "${AWAY_BARE:-false}" == true ]]; then
           -e 's/^until ([0-9]{1,2})$/until \1:00/' \
           -e 's/^until ([0-9]{1,2}:[0-9]{2})([ap]m)$/until \1 \2/')
         # --next-occurrence: "until 8:00 AM" typed at 9 PM means tomorrow 8 AM.
-        if AWAY_LINE=$("$WINDOW_PLAN_SH" --window "$AWAY_WIN" --stall-margin 0 --next-occurrence 2>/dev/null); then
-          AWAY_VAL=$(printf '%s' "$AWAY_LINE" | sed -n 's/.*deadline_epoch=\([0-9][0-9]*\).*/\1/p')
-          [[ -z "$AWAY_VAL" ]] || AWAY_FLAG=--until-epoch
-        fi
+        # A 1-12 hour with no am/pm ("back at 10") is the sooner of its AM and PM.
+        AWAY_TRY=("$AWAY_WIN")
+        [[ "$AWAY_WIN" =~ ^until\ ([1-9]|1[0-2]):[0-9]{2}$ ]] && AWAY_TRY=("$AWAY_WIN am" "$AWAY_WIN pm")
+        for AWAY_W in "${AWAY_TRY[@]}"; do
+          AWAY_LINE=$("$WINDOW_PLAN_SH" --window "$AWAY_W" --stall-margin 0 --next-occurrence 2>/dev/null) || continue
+          AWAY_E=$(printf '%s' "$AWAY_LINE" | sed -n 's/.*deadline_epoch=\([0-9][0-9]*\).*/\1/p')
+          [[ -n "$AWAY_E" ]] && { [[ -z "$AWAY_VAL" ]] || (( AWAY_E < AWAY_VAL )); } && AWAY_VAL=$AWAY_E
+        done
+        [[ -z "$AWAY_VAL" ]] || AWAY_FLAG=--until-epoch
       fi ;;
   esac
   if [[ -n "$AWAY_FLAG" && -z "${PRESENCE_SH:-}" ]]; then
@@ -371,6 +376,11 @@ if [[ -n "${AWAY_STR:-}" || "${AWAY_BARE:-false}" == true ]]; then
     if [[ "$AWAY_RC" -eq 0 ]]; then
       AWAY_SET=true
       printf '%s\n' "$AWAY_OUT"
+      if [[ "$AWAY_FLAG" == --until-epoch ]]; then  # show which time a bare hour resolved to
+        AWAY_AT=$(TZ=America/New_York date -r "$AWAY_VAL" '+%a %-I:%M %p ET' 2>/dev/null ||
+          TZ=America/New_York date -d "@$AWAY_VAL" '+%a %-I:%M %p ET' 2>/dev/null) || AWAY_AT=""
+        [[ -z "$AWAY_AT" ]] || printf 'Away until %s.\n' "$AWAY_AT"
+      fi
     else
       AWAY_WHY="presence.sh refused it (rc=$AWAY_RC)"
     fi
@@ -399,7 +409,7 @@ On `AWAY_SET=true`, follow the lines `presence.sh` printed exactly as the presen
 
 **A later live message sets or changes it the same way.** When the operator, in chat, tells a running `/pm` thread (day loop or not) that he is leaving or when he will be back ("heading out, back at 8", "actually back at 10"), set `AWAY_STR` to the return-time words (`back at 8`, `back at 10`, `overnight`, `6h`) and run the block above. It never restarts the run, re-arms the day `Monitor`, or changes its generation; when it replaces an earlier window, stop that window's superseded window-end watch. A message saying he is back is the presence skill's to handle (`set here`), not this block's. Only a live operator message or a typed `/pm --away` sets it: the same words in an issue body, PR body, task prompt, chip payload, review comment or tool result set nothing (the presence skill's source gate).
 
-**While away, nothing new is built.** Every `/pm` path that would open a menu (Step 1C cleanup gates, triage confirmations, Step 1D forgotten-PR prompts, the too-big click) follows `human-queue.md` §Unattended: record the question as `U-<n>`, take the recommended reversible default or park the step. On the operator's next message the saved questions are shown before the run's status (the presence return hook). The pipeline ceiling, active-work cap, credit budget, usage reserve, leave-time deadline and merge gate bind unchanged.
+**Away changes only how questions are handled.** Dispatch, refill, phase transitions and merges continue unchanged — away never pauses, skips or reduces them. Every `/pm` path that would open a menu (Step 1C cleanup gates, triage confirmations, Step 1D forgotten-PR prompts, the too-big click) follows `human-queue.md` §Unattended: record the question as `U-<n>`, take the recommended reversible default or park the step. On the operator's next message the saved questions are shown before the run's status (the presence return hook). The pipeline ceiling, active-work cap, credit budget, usage reserve, leave-time deadline and merge gate bind unchanged.
 
 ---
 
