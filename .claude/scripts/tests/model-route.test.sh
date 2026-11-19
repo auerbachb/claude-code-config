@@ -136,7 +136,7 @@ with tempfile.TemporaryDirectory() as tmp:
         row.pop('capable')
     check('unknown capability is not available', data, 'blocked', code=3)
 
-    # Capability basis: an explicit capable:false needs a valid capability_gap to exclude a tier.
+    # Capability basis: capable:false is honoured; a valid capability_gap records a concrete missing requirement.
     GAP = dict(kind='tool', detail='needs the repo-local MCP tool', evidence='fixture/tool-gap.json')
 
     def row_of(d, model):
@@ -144,9 +144,11 @@ with tempfile.TemporaryDirectory() as tmp:
 
     data = copy.deepcopy(base)
     row_of(data, 'haiku')['capable'] = False
-    result = check('capable false without basis falls back to haiku', data, 'start', 'haiku',
+    # Issue #2449: a capable:false judgment is honoured without a gap and kept as a recorded note.
+    result = check('capable false without basis is honoured as caller judgment', data, 'start', 'sonnet',
                    fallback=[('haiku', 'missing')], gaps=[],
-                   reason=['disregarded for haiku', 'basis missing'])
+                   reason=['haiku skipped on caller judgment', 'basis missing'])
+    assert result['recommended_model'] == 'sonnet' and result['choice'] is None, result
     data = copy.deepcopy(base)
     row_of(data, 'haiku')['capable'] = False
     row_of(data, 'haiku')['capability_gap'] = GAP
@@ -160,7 +162,7 @@ with tempfile.TemporaryDirectory() as tmp:
         data = copy.deepcopy(base)
         row_of(data, 'haiku')['capable'] = False
         row_of(data, 'haiku')['capability_gap'] = gap
-        check('malformed basis (' + label + ') falls back', data, 'start', 'haiku',
+        check('malformed basis (' + label + ') still honours the judgment', data, 'start', 'sonnet',
               fallback=[('haiku', 'malformed')], gaps=[])
     data = copy.deepcopy(base)
     row_of(data, 'haiku')['capable'] = False
@@ -180,8 +182,8 @@ with tempfile.TemporaryDirectory() as tmp:
     data = copy.deepcopy(base)
     for model in ('haiku', 'sonnet', 'opus'):
         row_of(data, model)['capable'] = False
-    check('every tier capable false without basis selects cheapest', data, 'start', 'haiku',
-          fallback=[('haiku', 'missing')], gaps=[])
+    check('every tier judged unsuitable blocks and names each', data, 'blocked', code=3,
+          fallback=[('haiku', 'missing'), ('sonnet', 'missing'), ('opus', 'missing')], gaps=[])
     data = copy.deepcopy(base)
     for model in ('haiku', 'sonnet', 'opus'):
         row_of(data, model)['capable'] = False
@@ -191,7 +193,7 @@ with tempfile.TemporaryDirectory() as tmp:
     data = copy.deepcopy(base)
     data['submission'] = dict(local_checks_passed=True, distinct_changes=True, batched=True)
     row_of(data, 'haiku')['capable'] = False
-    result = check('basis fallback keeps submission guard usable', data, 'start', 'haiku',
+    result = check('judged tier keeps submission guard usable', data, 'start', 'sonnet',
                    fallback=[('haiku', 'missing')], gaps=[])
     assert result['submission_allowed'] is True
     data = copy.deepcopy(base)
@@ -201,42 +203,120 @@ with tempfile.TemporaryDirectory() as tmp:
     data['diagnosis'] = dict(model='haiku', kind='stuck_bug', attempt_ids=['a1', 'a2'],
                              evidence=['fixture/diagnosis.json'], approaches_verified=True,
                              why_more_retries_unlikely='Two distinct precedence approaches failed without new evidence.')
-    check('escalation to sonnet without basis falls back to sonnet', data, 'escalate', 'sonnet',
-          fallback=[('sonnet', 'missing')], gaps=[])
+    check('escalation skips a sonnet judged unsuitable', data, 'escalate', 'opus',
+          fallback=[('sonnet', 'missing')], gaps=[], reason=['sonnet skipped on caller judgment'])
     row_of(data, 'sonnet')['capability_gap'] = dict(GAP)
     check('escalation with sonnet gap skips to opus', data, 'escalate', 'opus',
           fallback=[], gaps=[('sonnet', 'tool')])
-    # Routing moves past a disregarded current tier: reason must name it even though sonnet is chosen.
+    # A current tier judged unsuitable moves up after ONE failure, with no diagnosis required.
     data = copy.deepcopy(base)
     data['current_model'] = 'haiku'
-    data['attempts'] = [attempt(1), attempt(2)]
+    data['attempts'] = [attempt(1)]
     row_of(data, 'haiku')['capable'] = False
-    data['diagnosis'] = dict(model='haiku', kind='stuck_bug', attempt_ids=['a1', 'a2'],
-                             evidence=['fixture/diagnosis.json'], approaches_verified=True,
-                             why_more_retries_unlikely='Two distinct precedence approaches failed without new evidence.')
-    result = check('escalation past disregarded haiku names it in reason', data, 'escalate', 'sonnet',
-                   fallback=[('haiku', 'missing')], gaps=[], reason=['disregarded for haiku (basis missing); not selected'])
-    assert result['reason'].endswith('Unsupported capable:false disregarded for haiku (basis missing); not selected.'), result
+    result = check('current tier judged unsuitable moves up without diagnosis', data, 'escalate', 'sonnet',
+                   fallback=[('haiku', 'missing')], gaps=[], reason=['Caller judged haiku unsuitable'])
+    assert result['reason'].endswith('haiku skipped on caller judgment (capable:false, basis missing).'), result
     row_of(data, 'sonnet')['available'] = False
     row_of(data, 'opus')['available'] = False
-    result = check('blocked escalation still names disregarded haiku', data, 'blocked', code=3,
-                   fallback=[('haiku', 'missing')], gaps=[], reason=['disregarded for haiku (basis missing); not selected'])
-    row_of(data, 'sonnet')['available'] = True
-    row_of(data, 'opus')['available'] = True
-    # Control: when the disregarded tier is the chosen one, the clause keeps its original wording.
-    data = copy.deepcopy(base)
-    row_of(data, 'haiku')['capable'] = False
-    result = check('chosen disregarded haiku keeps original clause', data, 'start', 'haiku',
-                   fallback=[('haiku', 'missing')], gaps=[])
-    assert result['reason'].endswith(' Unsupported capable:false disregarded for haiku (basis missing).'), result
+    check('judged current tier with nothing above blocks and names it', data, 'blocked', code=3,
+          fallback=[('haiku', 'missing')], gaps=[], reason=['no eligible tier is above it'])
     data = copy.deepcopy(base)
     data['owner_model'] = 'opus'
     row_of(data, 'opus')['capable'] = False
-    check('owner pin with unsupported capable false keeps owner and names disregard', data, 'start', 'opus',
-          fallback=[('opus', 'missing')], gaps=[], reason=['disregarded for opus'])
+    result = check('owner pin keeps a judged tier and records the note', data, 'start', 'opus',
+                   fallback=[('opus', 'missing')], gaps=[])
+    assert result['reason'].endswith('Owner pin kept opus despite capable:false (basis missing).'), result
     row_of(data, 'opus')['capability_gap'] = dict(GAP)
     check('owner pin with documented gap is blocked', data, 'blocked', code=3, fallback=[], gaps=[('opus', 'tool')],
           reason=['blocked by accepted tool capability gap', 'never substitute silently'])
+
+    # Issue #2449: the table recommends, the launching thread decides with a one-line reason.
+    WHY = 'design-heavy refactor across three modules'
+    data = copy.deepcopy(base)
+    data.update(mode='cheap', tier='Heavy', parent_choice=dict(model='sonnet', reason=WHY))
+    result = check('parent picks sonnet over the cheap heavy recommendation', data, 'start', 'sonnet',
+                   reason=['Parent choice sonnet', 'recommended haiku', WHY])
+    assert result['recommended_model'] == 'haiku', result
+    assert result['choice'] == dict(by='parent', model='sonnet', reason=WHY, applied=True), result
+    for label, bad in [('no reason', dict(model='sonnet')), ('blank reason', dict(model='sonnet', reason='  ')),
+                       ('multi-line reason', dict(model='sonnet', reason='one\ntwo')),
+                       ('reason wrapped in line breaks', dict(model='sonnet', reason='\nuse sonnet\n')),
+                       ('reason with a trailing line break', dict(model='sonnet', reason='use sonnet\n')),
+                       ('unknown model', dict(model='gpt', reason=WHY))]:
+        data['parent_choice'] = bad
+        refused = check('parent choice refused: ' + label, data, 'invalid', code=2)
+        assert 'parent_choice' in refused['error'], refused
+    data['parent_choice'] = dict(model='sonnet')
+    request.write_text(json.dumps(data), encoding='utf-8')
+    refused = json.loads(subprocess.run([str(script), '--input', str(request)], capture_output=True, text=True).stdout)
+    assert 'reason is required' in refused['error'], refused
+    data = copy.deepcopy(base)
+    data.update(tier='Heavy', parent_choice=dict(model='haiku', reason='mechanical rename only'))
+    result = check('parent may choose lower than the recommendation', data, 'start', 'haiku',
+                   reason=['recommended opus'])
+    assert result['recommended_model'] == 'opus', result
+    data = copy.deepcopy(base)
+    data.update(current_model='haiku', attempts=[attempt(1)],
+                parent_choice=dict(model='sonnet', reason='first patch misread the parser contract'))
+    result = check('parent moves a retry after one failure in default mode', data, 'escalate', 'sonnet',
+                   reason=['recommended haiku', 'router action retry'])
+    assert result['recommended_model'] == 'haiku', result
+    data['parent_choice']['model'] = 'haiku'
+    check('parent may keep the current model with a reason', data, 'retry', 'haiku')
+    data = copy.deepcopy(base)
+    data.update(current_model='haiku', attempts=[attempt(1), attempt(2)])
+    check('failure threshold still forces reconsideration', data, 'diagnose', 'haiku', 3)
+    data['parent_choice'] = dict(model='opus', reason='two equivalent failures; reconsidered')
+    result = check('reconsideration at the threshold may move with a reason', data, 'escalate', 'opus',
+                   reason=['router action diagnose'])
+    assert result['recommended_model'] is None, result
+    data = copy.deepcopy(base)
+    data.update(owner_model='opus', parent_choice=dict(model='haiku', reason='cheaper is enough'))
+    result = check('owner pin wins over a conflicting parent choice', data, 'start', 'opus',
+                   reason=['Owner pin wins over the parent choice of haiku'])
+    assert result['choice']['applied'] is False, result
+    data = copy.deepcopy(base)
+    data.update(mode='cheap', parent_choice=dict(model='fable', reason='hardest bug in the repo'))
+    check('parent cannot pick fable outside speed mode', data, 'blocked', code=3,
+          reason=['owner choice outside speed mode'])
+    data['mode'] = 'speed'
+    check('parent may pick fable in speed mode', data, 'start', 'fable')
+    data = copy.deepcopy(base)
+    data['parent_choice'] = dict(model='sonnet', reason=WHY)
+    row_of(data, 'sonnet')['budget_allowed'] = False
+    check('parent choice never buys a budget-blocked tier', data, 'blocked', code=3, reason=['never substitute'])
+    row_of(data, 'sonnet')['budget_allowed'] = True
+    row_of(data, 'sonnet')['capable'] = False
+    row_of(data, 'sonnet')['capability_gap'] = dict(GAP)
+    check('parent choice cannot override a documented gap', data, 'blocked', code=3, gaps=[('sonnet', 'tool')])
+    data = copy.deepcopy(base)
+    data.update(current_model='haiku', attempts=[attempt(1)])
+    row_of(data, 'haiku')['capable'] = False
+    row_of(data, 'haiku')['capability_gap'] = dict(GAP)
+    check('current tier with a documented gap blocks without a choice', data, 'blocked', code=3,
+          gaps=[('haiku', 'tool')])
+    data['parent_choice'] = dict(model='sonnet', reason='haiku lacks the required tool')
+    check('a reasoned parent choice moves off a current tier with a documented gap', data, 'escalate', 'sonnet',
+          gaps=[('haiku', 'tool')])
+    data = copy.deepcopy(base)
+    data.update(launch_allowed=False, parent_choice=dict(model='sonnet', reason=WHY))
+    check('parent choice never bypasses launch gates', data, 'blocked', code=3)
+    data = copy.deepcopy(base)
+    data.update(current_model='haiku', parent_choice=dict(model='sonnet', reason=WHY),
+                attempts=[dict(id='wait-1', model='haiku', outcome='waiting',
+                               evidence=['fixture/pending-review.json'], next_action='await reviewer')])
+    check('parent choice does not wake an unchanged wait', data, 'wait', code=3)
+    row_of(data, 'haiku')['available'] = False
+    check('unchanged wait holds even when the current model is ineligible', data, 'wait', code=3)
+    data = copy.deepcopy(base)
+    data.update(mode='cheap', parent_choice=dict(model='opus', reason=WHY))
+    row_of(data, 'haiku')['capable'] = False
+    row_of(data, 'haiku')['capability_gap'] = dict(GAP)
+    row_of(data, 'sonnet')['capable'] = False
+    result = check('parent choice keeps the baseline exclusion evidence', data, 'start', 'opus',
+                   fallback=[('sonnet', 'missing')], gaps=[('haiku', 'tool')],
+                   reason=['haiku skipped for accepted tool capability gap', 'sonnet skipped on caller judgment'])
+    assert result['recommended_model'] == 'opus', result
     data = copy.deepcopy(base)
     result = check('unknown local checks cannot submit', data, 'start', 'haiku')
     assert result['submission_allowed'] is False
@@ -395,6 +475,15 @@ with tempfile.TemporaryDirectory() as tmp:
     check('speed fable worker retries on fable', fable_run, 'retry', 'fable')
     fable_run['mode'] = 'default'
     check('default mode does not keep an unpinned fable worker', fable_run, 'blocked', code=3)
+    fable_run['parent_choice'] = dict(model='opus', reason='mode left speed; move off fable')
+    result = check('parent choice moves an unpinned fable worker off fable outside speed', fable_run,
+                   'escalate', 'opus', reason=['Parent choice opus'])
+    assert result['recommended_model'] is None and result['choice']['applied'] is True, result
+    fable_run['parent_choice'] = dict(model='fable', reason='keep fable')
+    check('parent choice cannot keep an unpinned fable worker outside speed', fable_run, 'blocked', code=3)
+    fable_run.update(owner_model='sonnet', parent_choice=dict(model='opus', reason='mode left speed'))
+    check('owner pin still wins over a parent choice off fable', fable_run, 'start', 'sonnet',
+          reason=['Owner pin wins over the parent choice of opus'])
     # A mode change affects only later launches: a running cheap-tier worker keeps its model.
     running = copy.deepcopy(base)
     running.update(mode='speed', current_model='opus',

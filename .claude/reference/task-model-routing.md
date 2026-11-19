@@ -1,4 +1,4 @@
-# Cost-first worker routing and patient retries
+# Cheapest-suitable worker routing and patient retries
 
 Issue #1875. This contract governs unattended phase A/B/C, PM and read-only
 worker launches. It does not change the running parent model, the owner's
@@ -9,21 +9,26 @@ interactive picker, permissions, tool allowlists, review independence or gates.
 Resolve `model-route.sh` through the usual shared-tool paths. Run it with
 `--input <request.json>`. It makes no provider calls and changes no state.
 Supply an explicit current runtime inventory, not guessed availability. The
-cost ladder is Haiku → Sonnet → Opus. Fable is never a starting tier without an
-explicit owner choice; speed mode reaches it only as the escalation step above a
-stalled Opus worker. The run mode and issue tier choose the starting tier (see "Run mode and issue tier"). This is an ordinal cost policy,
+cost ladder is Haiku → Sonnet → Opus. The router never recommends Fable as a
+starting tier; outside an explicit owner choice, only speed mode reaches it — as the
+escalation step above a stalled Opus worker, or by a reasoned parent choice. The run
+mode and issue tier recommend the starting tier (see "Run mode and issue tier"). This is an ordinal cost policy,
 not a dollar estimate or a claim that every task succeeds on Haiku. Actual
 availability and capability win over the ladder. Source: [provider pricing](https://platform.claude.com/docs/en/about-claude/pricing),
 [subagent model/tool configuration](https://code.claude.com/docs/en/sub-agents).
 
+**The router recommends; the launching thread decides (Issue #2449).** Choose the
+cheapest suitable available model. The run mode and issue tier give a recommended
+starting point; you decide what is suitable for this task and record a one-line
+reason when you depart from the recommendation (see "Parent choice" below).
+
 For each candidate confirm tool support, required context, the agent's unchanged
 permission/tool restrictions, provider availability and budget/reserve controls.
-`capable` means these requirements are supported, not that a first patch is
-guaranteed correct. Unknown capability/availability is ineligible. Set `capable`
-to `true` when the tier's requirements are supported. If a concrete requirement
-is missing, set `false` **and** add a valid `capability_gap` (see "Capability
-gap" below). An unsupported `false` is disregarded: the router selects the
-next eligible tier in the mode's preference order and names the fallback. A provider
+`capable` means the tier suits the task, not that a first patch is guaranteed
+correct. Unknown capability/availability is ineligible. Set `capable` to `true`
+when the tier suits the task. Set `false` when your judgment is that it does not;
+no proof is needed, and the router honours it as a recorded note. When a concrete
+requirement is missing, also add a `capability_gap` (see "Capability gap" below). A provider
 limit is handled by existing park/wake controls, never an excuse to buy another
 tier or silently switch accounts. Preserve the existing reserve gate's own
 freshness/unknown semantics; the routing helper does not reinterpret its marker.
@@ -35,7 +40,7 @@ Request shape (the inventory below is illustrative, not a live authorization):
   "task": "issue-123", "phase": "A", "mode": "default", "tier": "Light",
   "launch_allowed": true, "permissions_preserved": true,
   "runtime": {"version": "2.1.312", "model_override_forced": false},
-  "owner_model": null, "current_model": null,
+  "owner_model": null, "current_model": null, "parent_choice": null,
   "models": [{
     "model": "haiku", "available": true, "capable": true,
     "budget_allowed": true, "reserve_allowed": true,
@@ -55,7 +60,9 @@ successor; do not reuse a stale clear result. `owner_model` is only an explicit
 owner selection for this task, not an old phase default or a generated model
 recommendation. If pinned and unavailable, block; never silently substitute.
 
-The result contains `action`, `model`, `reason`, evidence IDs, metrics,
+The result contains `action`, `model` (the model to launch), `recommended_model`
+(what the table alone would launch, null when it would launch nothing), `choice`
+(the parent choice record, null when none), `reason`, evidence IDs, metrics,
 `capability_fallback` and `capability_gaps` (both always present, empty when
 nothing applies). An invalid request (exit 2) returns only `action` `invalid`,
 `model` null and `error`, with no capability fields. Exit
@@ -85,14 +92,49 @@ restating it.
 | cheap | Haiku | Haiku | Haiku | two equivalent failures plus diagnosis |
 
 Fallback when a preferred tier is unavailable or ineligible: the next entry in
-that row's preference order, named in `reason`. Fable is never a starting tier in
-any mode without an owner choice. Speed mode escalates one step at a time: Sonnet
+that row's preference order, named in `reason`. The table never recommends Fable as
+a starting tier; only an owner choice, or a parent choice in speed mode, starts there. Speed mode escalates one step at a time: Sonnet
 to Opus, then Opus to Fable (only while Fable is eligible). Default and cheap
 escalate on diagnosis only and never reach Fable unless the owner pins it. A Fable
 worker started by an owner pin keeps its model on retries in speed mode and is
 blocked in default or cheap mode. An explicit owner pin wins in every mode, an
 unavailable pin still blocks, and budget, reserve, launch, review and merge gates
 are unchanged. A mode change affects only later launches.
+
+The escalation column is the point where the parent **must** reconsider (the
+router returns `diagnose` in default and cheap modes), not the only point where it
+**may**: after any unsatisfactory attempt the parent can move the retry with a
+`parent_choice` and a reason.
+
+### Parent choice
+
+Add `"parent_choice": {"model": "sonnet", "reason": "<one line>"}` to launch on a
+model other than the recommendation, lower or higher. No missing tool and no
+failed attempt is needed first. The rules:
+
+- `reason` is required: one nonblank line (at most 500 characters). A choice
+  without one is refused as invalid (exit 2) with an error naming
+  `parent_choice.reason`; one naming an unknown model is refused the same way with
+  an error naming `parent_choice`.
+- The chosen row must pass the same eligibility as any other: available, within
+  budget and reserve, with evidence, and not `capable: false`. An ineligible
+  choice blocks (exit 3); the router never substitutes silently.
+- Fable stays owner-only outside speed mode: a parent choice of Fable in default
+  or cheap mode blocks. In speed mode it is allowed.
+- An owner pin wins. The choice is kept in the record with `applied: false` and
+  `reason` says the pin won.
+- Launch gates, runtime checks, `complete` and an unchanged `wait` are decided
+  first; a parent choice never launches past them.
+- With no attempts the action is `start`; on a retry it is `retry` when the
+  model is unchanged and `escalate` (a fresh context on the chosen model, up or
+  down) when it changes. At the diagnosis threshold a parent choice is the
+  recorded reconsideration and launches.
+
+The decision records `recommended_model`, the chosen `model`, and `choice`
+`{by: "parent", model, reason, applied}`, plus the recommendation's own
+`capability_fallback` and `capability_gaps`; `reason` reads `Parent choice <model>
+(recommended <model>; router action <action>): <reason>`. That record, persisted
+before launch, is where each departure stays visible afterwards.
 
 ### Runtime precedence preflight
 
@@ -111,7 +153,9 @@ version shown in the JSON example is illustrative, not automatic detection.
 
 ## Capability gap
 
-A tier marked `"capable": false` is excluded only with a recorded basis on the
+A tier marked `"capable": false` is excluded: it is the caller's judgment that the
+tier does not suit the task (Issue #2449 replaced the proof requirement of
+Issue #2301). When the reason is a concrete missing requirement, record it on the
 same inventory row:
 
 ```json
@@ -128,22 +172,27 @@ same inventory row:
 - A valid gap excludes that tier. The decision lists it in `capability_gaps`
   and, when a higher tier is chosen, `reason` names the skipped tier and `kind`.
 - A `false` with no gap, or with a missing or malformed one (bad `kind`, blank
-  field, or a non-object), is **disregarded**. The tier stays eligible: a fresh
-  start chooses the first eligible tier in the mode's start order for the issue tier
-(the ladder row above), a retry keeps its current tier, and
-  `capability_fallback` names the tier with `basis` `missing` or `malformed`.
-  `reason` says the flag was disregarded for every such tier, including one
-  routing moved past (marked `not selected`).
+  field, or a non-object), is **honoured as a recorded note**. The tier is
+  skipped: a fresh start takes the next eligible tier in the mode's start order
+  for the issue tier (the ladder row above), and `capability_fallback` names the
+  tier with `basis` `missing` or `malformed`. `reason` says `<tier> skipped on
+  caller judgment` for every such tier. When every tier is judged unsuitable the
+  route blocks (exit 3).
+- A retry whose **current** tier is marked `false` without a gap moves to the
+  next eligible tier above it (`escalate`), after one attempt and in any mode;
+  no diagnosis is needed. With nothing eligible above, it blocks.
 - `capable: true` ignores any stray `capability_gap`. A missing, null or
   non-boolean `capable` stays ineligible, as before.
-- An owner pin keeps its selection. An unsupported `false` on the pinned row is
-  recorded in `capability_fallback`, not treated as a blocker. A valid gap on the
-  pinned row blocks (exit 3), lists it in `capability_gaps`, and never
-  substitutes another tier. A retry whose current tier has a valid gap blocks the
-  same way rather than moving to another tier.
+- An owner pin keeps its selection. A `false` without a gap on the pinned row is
+  recorded in `capability_fallback` (`Owner pin kept <tier>`), not treated as a
+  blocker. A valid gap on the pinned row blocks (exit 3), lists it in
+  `capability_gaps`, and never substitutes another tier. A retry whose current
+  tier has a valid gap blocks the same way rather than moving to another tier,
+  unless a `parent_choice` names another eligible model: that explicit, reasoned
+  move is not a silent substitution.
 
-Callers record a basis or leave the flag `true`. They never mark a cheaper tier
-incapable without naming what it lacks.
+Name the missing requirement when there is one; otherwise your judgment is
+enough. To pick a specific model rather than skip a tier, use `parent_choice`.
 
 ## State and dispatch integration
 
@@ -159,7 +208,8 @@ The parent constructs the bounded request from those records and raw evidence
 pointers, writes it to a scratch JSON file, then runs the helper. Parse its JSON
 only after capturing its exit code. Persist `{request, decision}` using the
 owning locked helper **before** dispatch. A failed state write stops dispatch.
-Set the Agent call's explicit `model` to the returned alias, keeping its existing
+Set the Agent call's explicit `model` to the decision's `model` (the parent's
+choice when one was applied, else the recommendation), keeping its existing
 agent type, permissions, tools, worktree, claim and silence ceiling. Agent
 frontmatter is a cheap fallback, never a substitute for this preflight.
 
@@ -276,7 +326,9 @@ transition; retain other tasks and phases under the existing locked writer.
  Use `new_evidence` for discoveries,
 distinct failures repaired or a narrowed cause, with real source/log pointers.
 Do not relabel repetition as progress. One bad answer, slow work, one failing
-test, one review rejection or a retry count alone never upgrades a worker.
+test, one review rejection or a retry count alone never upgrades a worker
+**automatically**; the parent may still move it on its own reading of the result
+with a `parent_choice` and a reason (see "Parent choice").
 Useful progress continues on the same cheap model, without a fixed retry cap.
 
 Two consecutive equivalent failures without new evidence trigger **diagnosis**,

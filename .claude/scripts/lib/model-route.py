@@ -1,9 +1,13 @@
 """Task-local routing reducer. The caller owns and locks session/handoff state.
 
-A tier marked capable:false is excluded only with a valid capability_gap
-(kind tool|context|permissions, nonblank detail and evidence). Without one the
-flag is disregarded, the cheapest eligible tier is chosen, and the decision
-names the fallback in capability_fallback. Accepted gaps go in capability_gaps.
+The mode/tier table is a recommendation; the launching thread decides (#2449).
+A tier marked capable:false is the caller's judgment that it does not suit the
+task and is honoured: with a valid capability_gap (kind tool|context|permissions,
+nonblank detail and evidence) it goes in capability_gaps, without one it is a
+recorded note in capability_fallback. Only an owner pin keeps a judged tier.
+An optional parent_choice {model, reason} launches on another model, lower or
+higher, with a one-line reason; the decision records recommended_model, the
+chosen model and the reason. Owner pins win; Fable stays owner-only outside speed.
 
 The optional run mode (default|speed|cheap; absent or unknown reads as default)
 picks the starting tier for an issue tier (Light|Standard|Heavy; an unresolved tier
@@ -62,8 +66,25 @@ def require(ok, message):
         raise ValueError(message)
 
 
+LAUNCH_ACTIONS = ("start", "retry", "escalate")
+
+
+def parse_choice(choice):
+    # The launching thread's own pick: any known model plus a one-line reason.
+    if choice is None:
+        return None
+    require(isinstance(choice, dict) and choice.get("model") in MODELS,
+            "parent_choice must be an object naming a known model")
+    reason = choice.get("reason")
+    # Any line separator in the original text is refused, leading or trailing ones included.
+    require(text(reason) and reason.splitlines() == [reason] and len(reason) <= 500,
+            "parent_choice.reason is required: one line saying why this model departs from the recommendation")
+    return {"by": "parent", "model": choice["model"], "reason": reason.strip(), "applied": False}
+
+
 def decide(request):
     require(isinstance(request, dict), "request must be an object")
+    choice = parse_choice(request.get("parent_choice"))
     require(all(isinstance(request.get(k), str) and re.fullmatch(r"[A-Za-z0-9_.:/@+-]{1,512}", request[k])
                 for k in ("task", "phase")), "task and phase must be stable metadata identifiers")
     models = request.get("models")
@@ -121,7 +142,7 @@ def decide(request):
     result = {
         "schema_version": 1, "task": request["task"], "phase": request["phase"],
         "mode": mode, "tier": tier,
-        "action": "blocked", "model": None, "reason": "",
+        "action": "blocked", "model": None, "recommended_model": None, "choice": choice, "reason": "",
         "capability_fallback": [], "capability_gaps": [],
         "attempt_ids": [a["id"] for a in attempts],
         "submission_allowed": all(submission.get(k) is True for k in
@@ -137,25 +158,37 @@ def decide(request):
         },
     }
 
-    def finish(action, reason, model=None):
-        # Every disregarded tier is named, including one routing moved past.
-        clauses = [" Unsupported capable:false disregarded for %s (basis %s)%s." % (
-                       note["model"], note["basis"], "" if note["model"] == model else "; not selected")
-                   for note in fallbacks]
+    def finish(action, reason, model=None, recommended="same"):
+        for notes in (fallbacks, gaps):
+            unique = []
+            for note in notes:
+                if note not in unique:
+                    unique.append(note)
+            notes[:] = unique
+        # Every judged tier is named: skipped on the caller's judgment, or kept by an owner pin.
+        clauses = [(" Owner pin kept %s despite capable:false (basis %s)." if note["model"] == model
+                    else " %s skipped on caller judgment (capable:false, basis %s).")
+                   % (note["model"], note["basis"]) for note in fallbacks]
         # A gap on a tier the router moved past is "skipped"; on a blocked
         # decision (e.g. an owner pin) that tier was held, not passed over.
         verb = "blocked by" if action == "blocked" else "skipped for"
         clauses += [" %s %s accepted %s capability gap." % (note["model"], verb, note["kind"])
                     for note in gaps]
+        if choice is not None and owner is not None:
+            # An owner pin wins over a parent choice, which stays recorded as not applied.
+            clauses.append(" Owner pin wins over the parent choice of %s." % choice["model"])
         if tier_unresolved:
             reason = "Tier unresolved; routed as Standard. " + reason
+        if recommended == "same":
+            recommended = model if action in LAUNCH_ACTIONS else None
         result.update(action=action, reason=reason + "".join(clauses), model=model,
+                      recommended_model=recommended,
                       capability_fallback=list(fallbacks), capability_gaps=list(gaps))
         if action in ("blocked", "diagnose", "owner_decision", "wait"):
             result["submission_allowed"] = False
         return result
 
-    def assess(model):
+    def assess(model, pinned=False):
         # Records a note only for a row the active branch examined.
         row = inventory.get(model, {})
         if not (all(row.get(k) is True for k in ("available", "budget_allowed", "reserve_allowed"))
@@ -171,8 +204,10 @@ def decide(request):
             gaps.append({"model": model, "kind": gap["kind"], "detail": gap["detail"],
                          "evidence": gap["evidence"]})
             return False
+        # No gap is needed: the caller's judgment that the tier is unsuitable is honoured
+        # and recorded as a note. Only an owner pin keeps the judged tier.
         fallbacks.append({"model": model, "basis": "missing" if gap is None else "malformed"})
-        return True
+        return pinned
 
     def next_tier(model):
         # The next eligible cost-ladder tier above model.
@@ -193,7 +228,8 @@ def decide(request):
         return finish("complete", "Task finished; verify its independent acceptance and merge gates.")
     if request.get("launch_allowed") is not True or request.get("permissions_preserved") is not True:
         return finish("blocked", "Launch controls or unchanged permission/tool boundaries are not explicitly clear.")
-    if current == "fable" and owner is None and mode != "speed":
+    if current == "fable" and owner is None and mode != "speed" and (choice is None or choice["model"] == "fable"):
+        # An eligible parent choice away from an unpinned Fable worker is applied below.
         return finish("blocked", "Retain the explicit owner choice for a tier outside the unattended ladder.")
     runtime = request.get("runtime", {})
     version = runtime.get("version") if isinstance(runtime, dict) else None
@@ -202,13 +238,45 @@ def decide(request):
         return finish("blocked", "Verify Claude Code >=2.1.251 so explicit models override legacy defaults.")
     if runtime.get("model_override_forced") is not False:
         return finish("blocked", "A forced/unknown runtime model override cannot honor the routed model; preserve owner control.")
+    if choice is not None and owner is None:
+        # The launching thread decides; the recommendation is what the table alone would do.
+        if attempts and attempts[-1]["outcome"] == "waiting":
+            wake = request.get("wake_evidence", [])
+            require(pointers(wake), "wake_evidence must be pointers to changed state")
+            if not wake:
+                # An unchanged wait holds whatever the current model's eligibility.
+                return finish("wait", "Keep existing monitoring; unchanged waiting is not a failure or a new "
+                              "model invocation. Parent choice not applied: nothing to launch.")
+        baseline = decide(dict(request, parent_choice=None))
+        if baseline["action"] in ("complete", "wait"):
+            baseline["choice"] = choice
+            baseline["reason"] += " Parent choice not applied: nothing to launch."
+            return baseline
+        recommended = baseline["model"] if baseline["action"] in LAUNCH_ACTIONS else None
+        # Keep the baseline's exclusion evidence in the persisted decision.
+        fallbacks.extend(baseline["capability_fallback"])
+        gaps.extend(baseline["capability_gaps"])
+        chosen = choice["model"]
+        if chosen == "fable" and mode != "speed":
+            return finish("blocked", "Fable needs an explicit owner choice outside speed mode; parent choice not applied.",
+                          recommended=recommended)
+        if not assess(chosen):
+            return finish("blocked", "Parent-chosen %s is unavailable/ineligible; never substitute silently." % chosen,
+                          recommended=recommended)
+        choice["applied"] = True
+        action = "start" if not attempts else ("retry" if chosen == current else "escalate")
+        return finish(action, "Parent choice %s (recommended %s; router action %s): %s." % (
+            chosen, recommended or "none", baseline["action"], choice["reason"].rstrip(".")), chosen, recommended=recommended)
+    judged = False
     if owner is not None:
-        if not assess(owner):
+        if not assess(owner, pinned=True):
             return finish("blocked", "Owner-selected model is unavailable/ineligible; never substitute silently.")
         selected = owner
     elif current is not None:
         if not assess(current):
-            return finish("blocked", "Current model is unavailable/ineligible; refresh inventory and reserve/budget gates.")
+            if not (fallbacks and fallbacks[-1]["model"] == current):
+                return finish("blocked", "Current model is unavailable/ineligible; refresh inventory and reserve/budget gates.")
+            judged = True  # capable:false on the current tier: the caller judged it unsuitable
         selected = current
     else:
         selected = None
@@ -243,7 +311,14 @@ def decide(request):
         require(pointers(wake), "wake_evidence must be pointers to changed state")
         if not wake:
             return finish("wait", "Keep existing monitoring; unchanged waiting is not a failure or a new model invocation.")
-        return finish("retry", "New state evidence wakes the same task/model.", selected)
+        if not judged:
+            return finish("retry", "New state evidence wakes the same task/model.", selected)
+    if judged:
+        successor = successor_for(current)
+        if successor is None:
+            return finish("blocked", "Caller judged %s unsuitable and no eligible tier is above it." % current)
+        return finish("escalate", "Caller judged %s unsuitable; fresh context on %s for this task/phase only."
+                      % (current, successor), successor)
     if latest["outcome"] == "exhaustion":
         return finish("retry", "Resume from the valid recovery handoff on the same model; exhaustion is not poor quality.", selected)
     if latest["outcome"] == "progress" or latest.get("new_evidence", []):

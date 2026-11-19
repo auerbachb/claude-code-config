@@ -56,10 +56,11 @@ Agent definitions use `{{PLACEHOLDER}}` markers for runtime context that the par
 Each agent definition declares a default `model` in frontmatter. The parent must also set `model` explicitly at every Agent tool call site per `.claude/rules/subagent-orchestration.md` "Model Selection" — the call-site parameter overrides the frontmatter default and keeps cost decisions visible at every spawn point.
 
 **Fleet:** Fable, Opus, Sonnet, Haiku. Worker selection follows
-`task-model-routing.md`: start with the cheapest available capable model,
-retain cheap retries while progressing, and diagnose before task-local escalation.
+`task-model-routing.md`: choose the cheapest suitable available model. The router
+recommends one for the run mode and issue tier; the parent decides, recording a
+one-line reason when it departs. Retain cheap retries while progressing.
 Runtime routing requires verified Claude Code >=2.1.251 and no forced model override (see the reference); existing owner settings are never silently changed. Frontmatter uses the cheap fallback; every caller still runs routing and passes
-its returned alias explicitly. Permissions and tool restrictions stay unchanged.
+the decision's chosen alias explicitly. Permissions and tool restrictions stay unchanged.
 
 **Aliases:** the Agent tool's `model` parameter accepts exactly four values — `sonnet`, `opus`, `haiku`, `fable` — and each resolves to the newest non-legacy model of that family. Frontmatter intentionally uses these bare aliases, so agent definitions need no editing when Anthropic ships a new version. Write an explicit model ID (e.g. `claude-opus-5`) only where a tool literally consumes the string; if the runtime ever stops resolving bare aliases, switch frontmatter to explicit IDs and update this note.
 
@@ -80,8 +81,10 @@ This reverses the version-pinning call made in #749. That change wanted the docs
 reviews and repairs, C verifies and wraps, PM gathers structured data, and the
 researcher stays read-only. Those roles keep their existing tool boundaries;
 none mandates a premium model. Use the current runtime's capability/context
-checks and the existing reserve/budget controls before routing. Fable is only an
-explicit owner selection, never an automatic fallback. Do not rely on
+checks and the existing reserve/budget controls before routing. Outside speed
+mode Fable is only an explicit owner selection; in speed mode it may also be an
+eligible `parent_choice` or the escalation above Opus. It is never a starting
+tier. Do not rely on
 `CLAUDE_CODE_SUBAGENT_MODEL` or inherited parent models instead of routing.
 
 ## Spawning Pattern
