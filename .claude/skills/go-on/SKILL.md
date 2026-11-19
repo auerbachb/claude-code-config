@@ -846,7 +846,7 @@ Pipe with `printf '%s'`, never `echo` — zsh's builtin `echo` interprets the es
     ```bash
     gh issue view $ISSUE_NUM --json title,body 2>/dev/null
     ```
-  - Create the PR with a proper body (including `Closes #N` if issue was found) and a Test plan section. Include a `**Local review coverage:** <level>` labeled line when coverage is anything other than `both` (mandatory for `none` and single-CLI cases). After creation, capture the PR number:
+  - Create the PR with `gh pr create` and a proper body (including `Closes #N` if issue was found) and a Test plan section. When `ISSUE_NUM` is set and this thread recovered its claim holder from its receipt, also put the output of `pr-claim-line.sh "$ISSUE_NUM" --holder "<recovered holder>"` (resolve it to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/pr-claim-line.sh`, `$HOME/.claude/scripts/pr-claim-line.sh`, `.claude/scripts/pr-claim-line.sh` (skip the installed candidates when `HOME` is unset or empty)) on its own line of the body, also when the PR is opened through the REST API (`gh api repos/{owner}/{repo}/pulls`); with no issue or no recovered holder, omit the line. Include a `**Local review coverage:** <level>` labeled line when coverage is anything other than `both` (mandatory for `none` and single-CLI cases). After creation, capture the PR number:
     ```bash
     PR_NUM=$(gh pr view --json number --jq '.number')
     ```

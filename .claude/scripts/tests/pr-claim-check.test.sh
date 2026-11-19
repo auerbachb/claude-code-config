@@ -145,13 +145,18 @@ reset_state() {
   mkdir -p "$S"
   export FAKE_VIEWER="viewer-stub"
   unset FAKE_COMMENTS_FAIL
-  unset CLAUDE_CLAIM_HOLDER CLAUDE_SESSION_REPO
+  unset CLAUDE_CLAIM_HOLDER CLAUDE_SESSION_REPO PR_STATE_FIXTURE PR_MERGED_AT_FIXTURE
 }
 
 # set_pr <body> <author login> <author type>
+# PR_STATE_FIXTURE: open (default), closed, invalid, or __missing__ (no state field).
+# PR_MERGED_AT_FIXTURE: when set, the PR carries that merged_at (a merged PR).
 set_pr() {
   jq -cn --arg b "$1" --arg l "$2" --arg t "$3" \
-    '{number: 900, user: {login: $l, type: $t}, body: $b}' > "$S/pr.json"
+    --arg st "${PR_STATE_FIXTURE:-open}" --arg mg "${PR_MERGED_AT_FIXTURE:-}" \
+    '{number: 900, user: {login: $l, type: $t}, body: $b}
+     + (if $st == "__missing__" then {} else {state: $st} end)
+     + (if $mg == "" then {} else {merged_at: $mg} end)' > "$S/pr.json"
 }
 
 # set_issue <number> <open|closed> [labeled]
@@ -535,6 +540,118 @@ reset_state
 set_pr "Closes other-owner/elsewhere#2288" "human-dev" "User"
 run_check
 check_eq "C9 other-repo qualified reference is not linked -> skipped" "skipped" "$(verdict_of)"
+check_eq "C9 reason is cross_repo_issue" "cross_repo_issue" "$(printf '%s' "$OUT" | jq -r '.reason')"
+check_eq "C9 one skipped reference" "1" "$(printf '%s' "$OUT" | jq -r '.skipped_references | length')"
+check_eq "C9 skipped reference names repo and issue" "other-owner/elsewhere#2288" \
+  "$(printf '%s' "$OUT" | jq -r '.skipped_references[0] | "\(.repo)#\(.issue)"')"
+check_eq "C9 skipped reference reason" "cross_repo_issue" "$(printf '%s' "$OUT" | jq -r '.skipped_references[0].reason')"
+
+# C9b: a cross-repository keyword never hides a local outcome (foreign).
+reset_state
+set_issue 2288 open labeled
+add_claim 2288 "codex-thread-beta" "codex" "box-7" "run-9" "$NOW"
+set_pr "Closes #2288 and fixes Other-Owner/Elsewhere#5
+
+<!-- claim-holder: $(expect_digest "some-other-thread") -->" "human-dev" "User"
+run_check
+check_eq "C9b mixed local foreign + cross-repo keeps foreign" "foreign" "$(verdict_of)"
+check_eq "C9b mixed lists the skipped reference (repo lowercased)" "other-owner/elsewhere#5" \
+  "$(printf '%s' "$OUT" | jq -r '.skipped_references[0] | "\(.repo)#\(.issue)"')"
+
+# C9c: mixed local match + cross-repo keeps match.
+reset_state
+set_issue 2288 open labeled
+add_claim 2288 "$MATCH_RAW" "claude" "laptop" "run-1" "$NOW"
+set_pr "Closes #2288, closes other-owner/elsewhere#5
+
+<!-- claim-holder: $MATCH_DIGEST -->" "human-dev" "User"
+run_check
+check_eq "C9c mixed local match + cross-repo keeps match" "match" "$(verdict_of)"
+check_eq "C9c skipped reference still listed" "1" "$(printf '%s' "$OUT" | jq -r '.skipped_references | length')"
+
+# C9d: cross-repo keywords inside a fence or an HTML comment are ignored.
+reset_state
+set_pr 'Intro
+
+```
+Closes other-owner/elsewhere#7
+```
+
+<!-- Closes other-owner/elsewhere#8 -->' "human-dev" "User"
+run_check
+check_eq "C9d fenced/commented cross-repo keyword ignored -> no_linked_issue" "no_linked_issue" "$(printf '%s' "$OUT" | jq -r '.reason')"
+check_eq "C9d no skipped references" "0" "$(printf '%s' "$OUT" | jq -r '.skipped_references | length')"
+
+# C9e: duplicate and case-varied cross-repo references give one entry.
+reset_state
+set_pr "Closes other-owner/elsewhere#2288 and Fixes Other-Owner/ELSEWHERE#2288" "human-dev" "User"
+run_check
+check_eq "C9e duplicate/case-varied cross-repo reference -> one entry" "1" "$(printf '%s' "$OUT" | jq -r '.skipped_references | length')"
+
+# C9f: a case-varied qualifier for THIS repository stays local.
+reset_state
+set_issue 2288 open labeled
+add_claim 2288 "codex-thread-beta" "codex" "box-7" "run-9" "$NOW"
+set_pr "Closes OWNER/Repo#2288
+
+<!-- claim-holder: $(expect_digest "some-other-thread") -->" "human-dev" "User"
+run_check
+check_eq "C9f case-varied same-repo qualifier stays local -> foreign" "foreign" "$(verdict_of)"
+check_eq "C9f no skipped references" "0" "$(printf '%s' "$OUT" | jq -r '.skipped_references | length')"
+
+# C9g: --report on a cross-repository-only PR: exit 0, no comment, summary names it.
+reset_state
+set_pr "Closes other-owner/elsewhere#2288" "human-dev" "User"
+GITHUB_STEP_SUMMARY="$TMP/summary-c9g" bash "$CHECK" 900 --repo owner/repo --report >"$TMP/c9g.out" 2>/dev/null; RC=$?
+check_eq "C9g cross-repo-only --report exits 0" "0" "$RC"
+check_eq "C9g posts no comment" "0" "$(jq 'length' "$S/comments-900.json" 2>/dev/null || echo 0)"
+check_contains "C9g summary names the reference" "other-owner/elsewhere#2288" "$(cat "$TMP/summary-c9g")"
+check_contains "C9g summary names the reason" "cross_repo_issue" "$(cat "$TMP/summary-c9g")"
+check_contains "C9g notice names the reason" "::notice::" "$(cat "$TMP/c9g.out")"
+
+# C14: a merged PR is finished work: skipped/pr_not_open, no issue read, no comment.
+# No issue fixture exists, so any issue read would turn the verdict into unverifiable.
+reset_state
+PR_STATE_FIXTURE=closed PR_MERGED_AT_FIXTURE="2026-11-13T00:00:00Z" set_pr "Closes #2288" "human-dev" "User"
+run_check
+check_eq "C14 merged PR -> skipped" "skipped" "$(verdict_of)"
+check_eq "C14 merged PR reason is pr_not_open" "pr_not_open" "$(printf '%s' "$OUT" | jq -r '.reason')"
+check_eq "C14 merged PR has no issues" "0" "$(printf '%s' "$OUT" | jq -r '.issues | length')"
+GITHUB_STEP_SUMMARY="$TMP/summary-c14" bash "$CHECK" 900 --repo owner/repo --report >"$TMP/c14.out" 2>/dev/null; RC=$?
+check_eq "C14 merged PR --report exits 0" "0" "$RC"
+check_eq "C14 merged PR posts no comment" "0" "$(jq 'length' "$S/comments-900.json" 2>/dev/null || echo 0)"
+check_contains "C14 summary says pr_not_open" "pr_not_open" "$(cat "$TMP/summary-c14")"
+
+# C14b: a merged PR whose issue is claimed by someone else is still quiet.
+reset_state
+set_issue 2288 closed
+add_claim 2288 "codex-thread-beta" "codex" "box-7" "run-9" "$NOW"
+PR_STATE_FIXTURE=closed PR_MERGED_AT_FIXTURE="2026-11-13T00:00:00Z" set_pr "Closes #2288" "human-dev" "User"
+bash "$CHECK" 900 --repo owner/repo --report >/dev/null 2>&1; RC=$?
+check_eq "C14b merged PR on a closed, claimed issue exits 0" "0" "$RC"
+check_eq "C14b claim comment on the issue untouched" "1" "$(jq 'length' "$S/comments-2288.json" 2>/dev/null || echo 0)"
+check_eq "C14b no PR comment posted" "0" "$(jq 'length' "$S/comments-900.json" 2>/dev/null || echo 0)"
+
+# C14c: closed (unmerged) PR and closed bot PR.
+reset_state
+PR_STATE_FIXTURE=closed set_pr "Closes #2288" "human-dev" "User"
+run_check
+check_eq "C14c closed unmerged PR -> pr_not_open" "pr_not_open" "$(printf '%s' "$OUT" | jq -r '.reason')"
+reset_state
+PR_STATE_FIXTURE=closed set_pr "Closes #2288" "dependabot[bot]" "Bot"
+run_check
+check_eq "C14c closed bot PR -> pr_not_open (state checked before bot)" "pr_not_open" "$(printf '%s' "$OUT" | jq -r '.reason')"
+
+# C14d: a missing or unexpected state is unverifiable, never a silent skip.
+reset_state
+PR_STATE_FIXTURE=__missing__ set_pr "Closes #2288" "human-dev" "User"
+run_check
+check_eq "C14d missing state -> unverifiable" "unverifiable" "$(verdict_of)"
+check_eq "C14d missing state reason" "pr_read_failed" "$(printf '%s' "$OUT" | jq -r '.reason')"
+reset_state
+PR_STATE_FIXTURE=weird set_pr "Closes #2288" "human-dev" "User"
+run_check
+check_eq "C14d invalid state -> unverifiable" "unverifiable" "$(verdict_of)"
 
 reset_state
 set_issue 2288 open labeled

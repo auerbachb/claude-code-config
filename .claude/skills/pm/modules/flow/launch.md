@@ -102,7 +102,7 @@ Fix/implement issue #{N}: {title}
 4. Implement the changes
 5. Run the local dual-CLI review per `cr-local-review.md` — resolve `local-review.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/local-review.sh`, `$HOME/.claude/scripts/local-review.sh`, `.claude/scripts/local-review.sh`, then run it `--tool coderabbit` + `--tool codeant` — fix all findings; read the compact verdict, not the raw log
 6. One clean pass on each available CLI (dropped-CLI and outage fallbacks per `cr-local-review.md`), then commit and push
-7. Create a PR with `Closes #{N}` in the body
+7. Create a PR with `Closes #{N}` in the body. Whether you run `gh pr create` or open the PR through the REST API (`gh api repos/{owner}/{repo}/pulls`), also put the output of `pr-claim-line.sh {N} --holder "<the CLAIM_HOLDER you verified and saved in your receipt>"` on its own line of the PR body (resolve `pr-claim-line.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/pr-claim-line.sh`, `$HOME/.claude/scripts/pr-claim-line.sh`, `.claude/scripts/pr-claim-line.sh` (skip the installed candidates when `HOME` is unset or empty)). If you hold no claim for the issue, omit the line.
 8. Include a Test Plan section with checkboxes for acceptance criteria
 9. Enter the review polling loop and fix any findings
 
