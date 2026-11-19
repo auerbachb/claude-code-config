@@ -214,6 +214,30 @@ load_once create coherence
 expected=$(printf '%s\n' .claude/skills/issue-maker/modules/session-state.md .claude/skills/issue-maker/modules/create/postfile.md .claude/skills/issue-maker/modules/create/coherence.md | sed "s#^#$ROOT/#")
 assert_eq "$expected" "$(cat "$TRACE")" 'the coherence pass loads after postfile without other create phases'
 
+# Epic offer (#2547): its own phase, keyed only on the session-filed parent row.
+EPIC_OFFER="$ROOT/.claude/skills/issue-maker/modules/create/epic-offer.md"
+assert_eq "$EPIC_OFFER" "$("$DISPATCH" create epic-offer)" 'a big tracking parent dispatches to the epic-offer module'
+assert_eq 0 "$(grep -qF '| create / epic-offer | `modules/create/epic-offer.md` |' .claude/skills/issue-maker/SKILL.md; echo $?)" 'entry index lists the epic-offer phase'
+assert_eq 0 "$(grep -qF 'Load `create:epic-offer` only when postfile Step 9c'"'"'s epic gate prints' .claude/skills/issue-maker/SKILL.md; echo $?)" 'entry loads the epic offer only on its gate'
+assert_eq 0 "$(grep -qF 'plus `create:epic-offer` once the document gate'"'"'s plan records a tracking parent' .claude/skills/issue-maker/SKILL.md; echo $?)" 'entry preflights the epic-offer module before the first remote write'
+epic_gate=$(sed -n '/test-anchor: issue-maker-epic-gate/,/^```$/p' .claude/skills/issue-maker/modules/create/postfile.md)
+assert_eq 0 "$(grep -qF 'epic_parent' <<<"$epic_gate"; echo $?)" 'the epic gate reads the epic_parent selector'
+assert_eq 1 "$(grep -Eq '\.title|\.labels|\.body|test\(' <<<"$epic_gate"; echo $?)" 'the epic gate reads no title, label, body or keyword'
+assert_eq 0 "$(grep -qF '`"New thread: /pm epic #{N} (Recommended)"`, `"Run {K} issue(s) inline here"`' "$EPIC_OFFER"; echo $?)" 'the epic offer recommends the /pm epic thread first and inline second'
+assert_eq 0 "$(grep -qF 'Run `/pm epic #{parent}` in this thread.' .claude/skills/issue-maker/modules/handoff.md; echo $?)" 'the epic handoff payload runs /pm epic for the parent'
+assert_eq 0 "$(grep -qF 'Ready to run {N} issue(s) inline via /subagent' .claude/skills/issue-maker/modules/create/postfile.md; echo $?)" 'the ordinary inline offer text is unchanged'
+assert_eq 1 "$(grep -c '^\*\*Model:\*\* {MODEL from Step 9b}' .claude/skills/issue-maker/modules/handoff.md)" 'the handoff keeps one chip template'
+assert_eq 0 "$(grep -qF '#1190' .claude/reference/chip-launching.md && grep -qF 'A capture-time epic parent' .claude/reference/chip-launching.md; echo $?)" 'chip-launching names the epic parent as a third non-routing case'
+assert_eq 0 "$(grep -qF 'One narrow third trigger lives outside `/pm`' .claude/skills/pm/SKILL.md; echo $?)" 'pm Execution Boundary names the third trigger'
+assert_eq 0 "$(grep -qF 'epic-parent `/pm epic` thread' .claude/rules/chip-spawn.md; echo $?)" 'chip-spawn emission gate names the epic-parent case'
+: > "$TRACE"
+loaded=""
+load_once session state
+load_once create postfile
+load_once create epic-offer
+load_once offer handoff
+expected=$(printf '%s\n' .claude/skills/issue-maker/modules/session-state.md .claude/skills/issue-maker/modules/create/postfile.md .claude/skills/issue-maker/modules/create/epic-offer.md .claude/skills/issue-maker/modules/handoff.md | sed "s#^#$ROOT/#")
+assert_eq "$expected" "$(cat "$TRACE")" 'the epic offer loads after postfile and before the handoff, without other create phases'
 
 set +e
 "$DISPATCH" create unknown >/dev/null 2>&1
@@ -936,6 +960,126 @@ set_log() {
     r=run(setup+gate); assert r.returncode==0 and r.stdout.strip()=='COHERENCE=run SET_ID='+sid,(r.stdout,r.stderr)
     r=run(setup+'SOURCE_ASK="one chain"\nSET_CONTINUE=true\nSOURCE_REF="#9 § PRD"\n'+open_set); assert r.returncode==0 and state()['active_set']['source']['ref']=='#9 § PRD',r.stderr
     print('ok workflow: any chain qualifies for the pass and a document reference replaces the ask as source')
+    # Epic offer (#2547): driven only by the session-filed tracking parent's
+    # recorded scope; recovery, stale parents and wrong rows never misfire.
+    epic_gate=next(b for b in blocks('modules/create/postfile.md') if 'EPIC_GATE=' in b)
+    scope_rec=next(b for b in blocks('modules/create/doc-gate.md') if 'PLANNED_CHILDREN' in b)
+    epic_rec=next(b for b in blocks('modules/create/epic-offer.md') if '.epic_offer = {parent:' in b)
+    epic_ans=next(b for b in blocks('modules/create/epic-offer.md') if 'EPIC_ANSWER' in b)
+    epic_bound=next(b for b in blocks('modules/create/epic-offer.md') if 'EPIC_BOUND=""' in b)
+    stamp=next(b for b in blocks('modules/create/postfile.md') if 'OFFER_TOKEN="offer-' in b)
+    inline_guard=next(b for b in blocks('modules/create/postfile.md') if 'INLINE_REQUEST=' in b)
+    def parent(n=10,planned=9,cut=4,**kw):
+        r=row(n,origin='create',chain=dict(chain_id='e',position=0,total=5,role='parent'),**kw)
+        if planned is not None: r['epic_scope']=dict(planned=planned,not_yet_cut=cut)
+        return r
+    def kids(cid='e',start=11,count=5): return [row(start+i,origin='create',chain=dict(chain_id=cid,position=i+1,total=count)) for i in range(count)]
+    def gate_out(): r=run(setup+epic_gate); assert r.returncode==0,r.stderr; return r.stdout.strip()
+    seed([parent()]+kids()); assert gate_out()=='EPIC_OFFER=10'
+    seed([parent(planned=4,cut=1)]+kids(count=3)); assert gate_out()=='EPIC_OFFER=10'
+    print('ok workflow: a session-filed parent planning nine children, or leaving scope uncut, gets the epic offer')
+    seed(kids('c',1,4)); assert gate_out()==''
+    seed([parent(planned=5,cut=0)]+kids()); assert gate_out()==''
+    seed([parent(planned=None)]+kids()); assert gate_out()==''
+    seed([dict(row(10,origin='create',labels=['epic']),title='Epic: rebuild everything')]+kids()); assert gate_out()==''
+    seed([parent()]); assert gate_out()==''
+    for bad in (dict(parent(),url='https://github.com/other/repo/issues/10'),dict(parent(),origin='update'),dict(parent(),status='closed')):
+        seed([bad]+kids()); assert gate_out()=='',bad
+    log.write_text('{not json'); r=run(setup+epic_gate); assert r.returncode!=0 and 'EPIC_OFFER' not in r.stdout
+    print('ok workflow: a four-increment chain, five planned with nothing uncut, an unscoped or epic-titled row, a childless parent, and foreign/update-only/closed parents get the ordinary offer')
+    seed([parent(planned=None)]+kids()); before=log.read_bytes()
+    for env in ('PARENT_N=11\nPLANNED_CHILDREN=9\nNOT_YET_CUT=4\n','PARENT_N=10\nPLANNED_CHILDREN=nine\nNOT_YET_CUT=4\n','PARENT_N=10\nPLANNED_CHILDREN=9\nNOT_YET_CUT=4\nset_log() { return 1; }\n'):
+        r=run(setup+env+scope_rec); assert r.returncode!=0 and log.read_bytes()==before,(env,r.stderr)
+    r=run(setup+'PARENT_N=10\nPLANNED_CHILDREN=9\nNOT_YET_CUT=4\n'+scope_rec); assert r.returncode==0 and state()['issues'][0]['epic_scope']=={'planned':9,'not_yet_cut':4},r.stderr
+    assert gate_out()=='EPIC_OFFER=10'
+    print('ok workflow: the document gate records planned scope only on its own parent row, and a failed write changes nothing')
+    # Offer record, recovery and stale-parent cleanup.
+    r=run(setup+stamp); assert r.returncode==0,r.stderr
+    tok=state()['issues'][1]['chip_task_id']; assert tok and state()['issues'][0]['chip_task_id'] is None
+    before=log.read_bytes()
+    r=run(setup+'EPIC_PARENT=11\nOFFER_TOKEN='+tok+'\nEPIC_BOUND=none\n'+epic_rec); assert r.returncode!=0 and log.read_bytes()==before
+    r=run(setup+'EPIC_PARENT=10\nOFFER_TOKEN='+tok+'\nEPIC_BOUND=none\n'+epic_rec); assert r.returncode==0 and state()['epic_offer']['state']=='offered' and state()['epic_offer']['bound_epic'] is None,r.stderr
+    before=log.read_bytes(); r=run(setup+'EPIC_PARENT=10\nOFFER_TOKEN='+tok+'\nEPIC_BOUND=none\n'+epic_rec); assert r.returncode!=0 and log.read_bytes()==before
+    assert gate_out()=='EPIC_OFFER_STATE=offered PARENT=10'
+    recovery=next(b for b in blocks('modules/session-state.md') if 'if [ -f "$LOG" ]' in b)
+    r=run(setup+recovery); assert r.returncode==0 and 'Epic offer for #10 — offered' in r.stdout,r.stdout
+    d=state(); d['issues'][0]['status']='closed'; log.write_text(json.dumps(d))
+    assert gate_out()=='' and state()['epic_offer'] is None
+    print('ok workflow: the offer receipt is recorded once for the qualifying parent, survives recovery, and is dropped when the parent is retracted before an answer')
+    decline=next(b for b in blocks('modules/create/postfile.md') if '(.issues[] | mine | .chip_task_id) = null' in b and 'OFFER_TOKEN' not in b and 'INLINE' not in b)
+    seed([parent()]+kids()+[dict(row(40,origin='create'),url='https://github.com/other/repo/issues/40',chip_task_id='offer-other')]); assert run(setup+stamp).returncode==0
+    r=run(setup+decline); d=state(); assert r.returncode==0 and all(x['chip_task_id'] is None for x in d['issues'][:-1]) and d['issues'][-1]['chip_task_id']=='offer-other',(r.stderr,d)
+    print('ok workflow: before a re-offer, the decline block clears only this session\'s stamps from a failed attempt; another repo\'s token stays counted')
+    def offered(bound='none'):
+        seed([parent()]+kids()); assert run(setup+stamp).returncode==0
+        t=state()['issues'][1]['chip_task_id']; r=run(setup+'EPIC_PARENT=10\nOFFER_TOKEN='+t+'\nEPIC_BOUND='+bound+'\n'+epic_rec); assert r.returncode==0,r.stderr
+    offered(); before=log.read_bytes()
+    for env in ('EPIC_PARENT=10\n','EPIC_PARENT=11\nEPIC_ANSWER=thread\n','EPIC_PARENT=10\nEPIC_ANSWER=maybe\n','EPIC_PARENT=10\nEPIC_ANSWER=thread\nset_log() { return 1; }\n'):
+        r=run(setup+env+epic_ans); assert r.returncode!=0 and log.read_bytes()==before,(env,r.stderr)
+    offered('7'); before=log.read_bytes()
+    r=run(setup+'EPIC_PARENT=10\nEPIC_ANSWER=thread\n'+epic_ans); assert r.returncode!=0 and log.read_bytes()==before
+    r=run(setup+'EPIC_PARENT=10\nEPIC_ANSWER=inline\n'+epic_ans); assert r.returncode==0 and state()['epic_offer']['state']=='inline'
+    print('ok workflow: an answer needs the user choice for the offered parent, a failed write changes nothing, and a bound epic refuses a second thread')
+    for a in ('inline','declined','thread'):
+        offered(); d=state(); d['issues'][0]['status']='closed'; log.write_text(json.dumps(d)); before=log.read_bytes()
+        r=run(setup+'EPIC_PARENT=10\nEPIC_ANSWER='+a+'\n'+epic_ans); assert r.returncode!=0 and log.read_bytes()==before,(a,r.stderr)
+    offered(); assert run(setup+'EPIC_PARENT=10\nEPIC_ANSWER=thread\n'+epic_ans).returncode==0
+    d=state(); d['issues'][0]['status']='closed'; log.write_text(json.dumps(d))
+    r=run(setup+'EPIC_PARENT=10\nEPIC_ANSWER=inline\n'+epic_ans); assert r.returncode==0 and state()['epic_offer']['state']=='inline',r.stderr
+    print('ok workflow: a parent that stops qualifying after the question refuses every answer; a thread answer can still switch to inline')
+    # Decline the thread, accept inline: the existing inline run covers the children, never the parent.
+    offered(); r=run(setup+'EPIC_PARENT=10\nEPIC_ANSWER=inline\n'+epic_ans); assert r.returncode==0
+    assert all(x['chip_task_id'] for x in state()['issues'][1:])
+    r=run(setup+'USER_ACCEPTED=true\n'+inline_guard); assert r.returncode==0 and state()['inline_checkpoint']['issues']==[11,12,13,14,15],(r.stderr,state())
+    before=log.read_bytes(); r=run(setup+'EPIC_PARENT=10\nEPIC_ANSWER=thread\n'+epic_ans); assert r.returncode!=0 and log.read_bytes()==before
+    offered(); r=run(setup+'EPIC_PARENT=10\nEPIC_ANSWER=declined\n'+epic_ans); assert r.returncode==0 and state()['epic_offer']['state']=='declined' and all(x['chip_task_id'] is None for x in state()['issues'])
+    print('ok workflow: choosing inline keeps the existing acceptance path over the children; declining clears the offer like today')
+    # Thread: the epic-scoped handoff snapshot, guarded under the lock.
+    epic_handoff=release_block+'\n'+next(b for b in blocks('modules/handoff.md') if 'OFFER_TOKEN="offer-' in b)
+    hset='CHIP_TOOL_AVAILABLE=false\nISSUE_ARGS=()\nHANDOFF_PAYLOAD=epic\nHANDOFF_EPIC_PARENT=10\nEPIC_BOUND=\n'
+    offered(); before=log.read_bytes()
+    r=run(setup+hset+'HANDOFF_ISSUES_JSON="[11,12,13,14,15]"\n'+epic_handoff); assert r.returncode!=0 and log.read_bytes()==before,'handoff ran before a thread answer'
+    r=run(setup+'EPIC_PARENT=10\nEPIC_ANSWER=thread\n'+epic_ans); assert r.returncode==0 and state()['epic_offer']['state']=='thread' and all(x['chip_task_id'] is None for x in state()['issues'])
+    assert gate_out()=='EPIC_OFFER_STATE=thread PARENT=10'
+    d=state(); d['issues'].append(row(30,origin='create')); log.write_text(json.dumps(d)); before=log.read_bytes()
+    r=run(setup+hset+'HANDOFF_ISSUES_JSON="[11,12,13,14,15,30]"\n'+epic_handoff); assert r.returncode!=0 and log.read_bytes()==before
+    r=run(setup+hset.replace('PARENT=10','PARENT=11')+'HANDOFF_ISSUES_JSON="[11,12,13,14,15]"\n'+epic_handoff); assert r.returncode!=0 and log.read_bytes()==before
+    for b in ('EPIC_BOUND=7\n','EPIC_BOUND=unreadable\n','unset EPIC_BOUND\n'):
+        r=run(setup+hset+b+'HANDOFF_ISSUES_JSON="[11,12,13,14,15]"\n'+epic_handoff); assert r.returncode!=0 and log.read_bytes()==before,(b,r.stderr)
+    r=run(setup+hset+'HANDOFF_ISSUES_JSON="[11,12,13,14,15]"\n'+epic_handoff); d=state()
+    assert r.returncode==0 and d['handoff_checkpoint']['issues']==[11,12,13,14,15] and d['handoff_checkpoint']['epic_parent']==10 and d['issues'][0]['chip_task_id'] is None and d['issues'][-1]['chip_task_id'] is None and d['issues'][1]['chip_task_id'],(r.stderr,d)
+    before=log.read_bytes(); r=run(setup+'EPIC_PARENT=10\nEPIC_ANSWER=inline\n'+epic_ans); assert r.returncode!=0 and log.read_bytes()==before
+    offered(); assert run(setup+'EPIC_PARENT=10\nEPIC_ANSWER=thread\n'+epic_ans).returncode==0
+    r=run(setup+'EPIC_PARENT=10\nEPIC_ANSWER=inline\n'+epic_ans); assert r.returncode==0 and state()['epic_offer']['state']=='inline',r.stderr
+    r=run(setup+'USER_ACCEPTED=true\n'+inline_guard); assert r.returncode==0 and state()['inline_checkpoint']['issues']==[11,12,13,14,15]
+    print('ok workflow: the /pm epic handoff needs a thread answer, covers exactly the parent\'s filed children, and stamps neither the parent nor unrelated rows; thread switches to inline only before any handoff receipt')
+    # The bound-epic read: one epic thread per repo; unreadable is never free.
+    bhome=pathlib.Path(td)/'bound-home'; bss=bhome/'.claude/scripts/session-state.sh'; bss.parent.mkdir(parents=True)
+    for body,expect in (('exit 3','none'),("printf '{\"number\":7}'",'7'),("printf '{\"number\":7,\"completed_at\":\"x\"}'",'none'),('exit 4','unreadable'),("printf '\"7\"'",'unreadable'),("printf '{\"number\":-1}'",'unreadable'),("printf '{\"number\":7.5}'",'unreadable'),("printf '{\"number\":7,\"completed_at\":true}'",'unreadable')):
+        bss.write_text('#!/usr/bin/env bash\n'+body+'\n'); bss.chmod(0o755)
+        r=run('export HOME='+shlex.quote(str(bhome))+'\n'+setup+epic_bound,cwd=td); assert r.returncode==0 and r.stdout.strip()=='EPIC_BOUND='+expect,(body,r.stdout,r.stderr)
+    bss.unlink(); r=run('export HOME='+shlex.quote(str(bhome))+'\n'+setup+epic_bound,cwd=td); assert r.returncode==0 and 'EPIC_BOUND=unreadable' in r.stdout and 'DEGRADED' in r.stderr
+    print('ok workflow: a bound open epic or an unreadable read withholds the thread option; a finished epic does not')
+    epic_refresh=next(b for b in blocks('modules/create/epic-offer.md') if 'no open epic offer to refresh' in b)
+    offered(); tok=state()['epic_offer']['offer_token']; d=state(); d['issues'].append(row(30,origin='create')); log.write_text(json.dumps(d))
+    before=log.read_bytes(); r=run(setup+'unset EPIC_BOUND\n'+epic_refresh); assert r.returncode!=0 and log.read_bytes()==before,'refresh without a fresh bound-epic read'
+    r=run(setup+'EPIC_BOUND=\n'+epic_refresh); d=state(); assert r.returncode==0 and d['issues'][-1]['chip_task_id']==tok and d['issues'][0]['chip_task_id'] is None and d['epic_offer']['state']=='offered',(r.stderr,d)
+    r=run(setup+'EPIC_PARENT=10\nEPIC_ANSWER=declined\n'+epic_ans); assert r.returncode==0
+    before=log.read_bytes(); r=run(setup+'EPIC_BOUND=\n'+epic_refresh); assert r.returncode!=0 and log.read_bytes()==before
+    print('ok workflow: an issue filed while the epic offer is open joins its token; an answered offer is never refreshed')
+    offered('7'); r=run(setup+'EPIC_BOUND=\n'+epic_refresh); assert r.returncode==0 and state()['epic_offer']['bound_epic'] is None,r.stderr
+    r=run(setup+'EPIC_PARENT=10\nEPIC_ANSWER=thread\n'+epic_ans); assert r.returncode==0 and state()['epic_offer']['state']=='thread',r.stderr
+    for fresh in ('unreadable','8'):
+        offered(); r=run(setup+'EPIC_BOUND='+fresh+'\n'+epic_refresh); assert r.returncode==0 and state()['epic_offer']['bound_epic']==fresh,r.stderr
+        before=log.read_bytes(); r=run(setup+'EPIC_PARENT=10\nEPIC_ANSWER=thread\n'+epic_ans); assert r.returncode!=0 and log.read_bytes()==before,fresh
+    print('ok workflow: recovery refreshes the recorded bound epic; a finished one frees the thread option, a new or unreadable one withholds it')
+    for st,ok in (('declined',True),('inline',True),('offered',False),('thread',False)):
+        seed([parent()]+kids()); assert run(setup+stamp).returncode==0
+        d=state(); d['epic_offer']=dict(parent=5,repository='other/repo',state=st); log.write_text(json.dumps(d)); before=log.read_bytes()
+        t=state()['issues'][1]['chip_task_id']; r=run(setup+'EPIC_PARENT=10\nOFFER_TOKEN='+t+'\nEPIC_BOUND=none\n'+epic_rec)
+        assert (r.returncode==0)==ok and (ok or log.read_bytes()==before),(st,r.stderr)
+        if ok: assert state()['epic_offer']['repository']=='owner/repo'
+    print('ok workflow: another repo\'s answered epic receipt is replaced; an open or thread one blocks the record')
 PY
 
 if (( fail > 0 )); then

@@ -49,6 +49,19 @@ File it **before** the children so each child can point at it; it never depends 
 
 - **Identity first.** Run `create:increment-draft`'s chain-identity block with `TOTAL` = the child count, then file the parent with `IS_INCREMENT=true`, `POSITION=0`, `CHAIN_ROLE=parent`. `create:file` adds `role:"parent"` to its chain record, so the session log row is `{chain_id, position:0, total, role:"parent"}` — the marker `update:edit` and `retract:close` read. Then reset `CHAIN_ROLE=""` and file the children at positions 1…N exactly as a chain does today.
 - **Body.** Seven sections plus the footer. Background links the document; `## Estimate` is the sum of the children's estimates, with one sentence saying the parent is tracking-only and never a pipeline. No closing keyword anywhere points at the parent — not in its own body, not in any child.
+- **Record the planned scope on the parent row.** Right after the parent's session-log row is recorded (Step 9) and before the first child is drafted, write how much the document plans: `PLANNED_CHILDREN` is every child the document yields, `NOT_YET_CUT` the number of bullets going under `## Not yet cut` (zero when all fit in this filing). This record, and nothing about the issue's wording, is what `create:epic-offer` reads at the end of the session. A failed write stops before any child is filed, with the parent named and this write as the checkpointed next step; never re-file the parent.
+
+  <!-- test-anchor: issue-maker-epic-scope-record -->
+  ```bash
+  : "${PARENT_N:?record the tracking parent first}"
+  [[ "${PLANNED_CHILDREN:-}" =~ ^[0-9]+$ && "${NOT_YET_CUT:-}" =~ ^[0-9]+$ ]] || { echo "ERROR: planned and not-yet-cut counts must be whole numbers" >&2; exit 1; }
+  set_log "$MINE_DEF"'([.issues[] | mine | select(.origin == "create" and .number == ($n|tonumber) and (.chain.role // "") == "parent")] | length) as $hits |
+    if $hits != 1 then error("tracking parent row not found in this session") else
+    (.issues[] | mine | select(.origin == "create" and .number == ($n|tonumber) and (.chain.role // "") == "parent") | .epic_scope) =
+      {planned:($planned|tonumber), not_yet_cut:($cut|tonumber)} end' \
+    --arg repo "$REPO" --arg n "$PARENT_N" --arg planned "$PLANNED_CHILDREN" --arg cut "$NOT_YET_CUT" || exit 1
+  ```
+
 - **Seed the checklist on the parent.** Right after the parent's create is confirmed, write an empty `## Increment chain` section (heading and tracking sentence, no boxes) before the footer, so a parent still waiting for its children is recognizable from GitHub alone.
 - **Children link back** in `## Related Issues`: `- Parent: #<parent>` beside the usual `- Depends on #<predecessor>` — the marker `/subagent` Phase C Completion step 4 reads to tick the parent's checklist and close it when the last child merges.
 - **Checklist as each child files.** After each child's create is confirmed, and before the next child is drafted, fetch the parent body and remove any earlier `## Increment chain` section, from its heading up to the next `## ` heading or the footer, whichever comes first, so later sections survive a retried write. Insert the same shape `/subagent` Step 5.1 writes, with heading `## Increment chain`, one tracking sentence, then `- [ ] #<child>` for every child filed so far, in order. The parent then always lists the confirmed children, so another session can rebuild the chain from it even when filing stopped part-way. Put it directly before the `_Captured via /issue-maker._` footer so the footer stays the last line, and write it with `gh issue edit --body-file`. If this write fails, stop with the parent and children named and the checklist write as the checkpointed next step; never re-file children.
