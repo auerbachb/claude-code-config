@@ -240,8 +240,9 @@ grep -q -- '--kind babysit --pr 7 --generation g1' "$QUIET_SEQ_FILE.args" || fai
 printf '10\n' > "$QUIET_SEQ_FILE"; rm -f "$QUIET_SEQ_FILE.n" "$QUIET_SEQ_FILE.args"
 out=$(cd "$TMP" && PR=7 MONITOR_GENERATION=g1 MONITOR_CADENCE=5 MONITOR_REVIEW_DEADLINE="$(( $(date +%s) + 30 ))" \
   bash -c 'n=0; sleep() { n=$((n+1)); (( n <= 1 )); }; '"$LOOP" 2>/dev/null)
-[[ "$(printf '%s\n' "$out" | grep -c -- '--tick')" == 1 && ! -e "$QUIET_SEQ_FILE.args" ]] ||
-  fail "the review-deadline tick must always print, without consulting the gate"
+[[ "$(printf '%s\n' "$out" | grep -c -- '--tick')" == 1 ]] || fail "the review-deadline tick must always print"
+[[ "$(cat "$QUIET_SEQ_FILE.args")" == "--disarm --kind babysit --pr 7" ]] ||
+  fail "the review-deadline tick must only disarm, never consult the gate: $(cat "$QUIET_SEQ_FILE.args")"
 printf '10\n0\n10\n' > "$QUIET_SEQ_FILE"; rm -f "$QUIET_SEQ_FILE.n" "$QUIET_SEQ_FILE.args"
 LOOP=$(extract_skill_bash "$ROOT/.claude/skills/pm/modules/day-arm.md" pm-day-monitor-loop)
 out=$(cd "$TMP" && DAY_CADENCE_MIN=5 DAY_GENERATION=d1 REPO_KEY="$REPO" \
@@ -325,6 +326,14 @@ echo '[{"number":9,"headRefOid":"b2","updatedAt":"2026-01-01T00:09:00Z"}]' > "$P
 QT --record --kind pm-day --repo "$REPO" --quiet-ok true --tick-start-digest "$dstart" 2>/dev/null
 set +e; QT --kind pm-day --repo "$REPO" --generation d1 2>"$TMP/err"; RC=$?; set -e
 [[ $RC -eq 0 ]] || fail "pm day: a PR event during the tick must make the next Monitor tick emit (rc=$RC)"
+# Another session clears the human refill pause mid-tick: a repo key the tick does not own is pinned too.
+echo '[{"number":9,"headRefOid":"a1","updatedAt":"2026-01-01T00:00:00Z"}]' > "$PRS_FIXTURE"
+seed_day 0 5 3; jq --arg r "$REPO" '.active_agents = [] | .repos[$r].refill = {paused: true, reason: "full_stop"}' "$STATE" > "$TMP/s" && mv "$TMP/s" "$STATE"
+dstart=$(QT --print-digest --kind pm-day --repo "$REPO" 2>/dev/null)
+jq --arg r "$REPO" '.repos[$r].refill = {paused: false}' "$STATE" > "$TMP/s" && mv "$TMP/s" "$STATE"
+QT --record --kind pm-day --repo "$REPO" --quiet-ok true --tick-start-digest "$dstart" 2>/dev/null
+set +e; QT --kind pm-day --repo "$REPO" --generation d1 2>"$TMP/err"; RC=$?; set -e
+[[ $RC -eq 0 ]] || fail "pm day: a refill pause cleared by another session mid-tick must make the next tick emit (rc=$RC)"
 pass "contracts carry the tick-start digest: mid-tick events emit, missing digests fail closed, pm day own writes stay quiet"
 
 # 14. A hung digest read is bounded: the tick emits (and disarms) instead of holding the Monitor loop silent.
@@ -342,5 +351,17 @@ elapsed=$(( $(date +%s) - t0 ))
 [[ $RC -eq 0 && $elapsed -lt 15 ]] || fail "a hung read must emit within the bound (rc=$RC, ${elapsed}s)"
 [[ "$(bget "$B.babysit.quiet.quiet_ok")" == false ]] || fail "a timed-out read must disarm the contract"
 pass "a hung digest read emits within MONITOR_QUIET_DIGEST_TIMEOUT_S"
+
+# 15. --disarm (the review-deadline tick) turns an armed contract off, so the next unchanged tick emits.
+seed_babysit 1 5 0 false null 1
+set +e; OUT=$("$GATE" --disarm --kind babysit --pr 7 --repo "$REPO" 2>/dev/null); rc=$?; set -e
+[[ $rc -eq 0 && -z "$OUT" ]] || fail "--disarm must print nothing and exit 0 (rc=$rc)"
+[[ "$(bget "$B.babysit.quiet.quiet_ok")" == false && "$(bget "$B.babysit.quiet.disarmed_reason")" == "forced emit" ]] ||
+  fail "--disarm did not disarm: $(bget "$B.babysit.quiet")"
+tick "${BT[@]}" --input-digest D1; [[ $RC -eq 0 ]] || fail "a tick after --disarm must emit (rc=$RC)"
+rm -f "$STATE"
+set +e; "$GATE" --disarm --kind babysit --pr 7 --repo "$REPO" 2>/dev/null; rc=$?; set -e
+[[ $rc -eq 0 ]] || fail "--disarm without state must still exit 0 (rc=$rc)"
+pass "--disarm turns off an armed contract and never blocks the printed tick"
 
 echo "ALL $PASS PASSED"

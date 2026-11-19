@@ -27,11 +27,16 @@
 #   monitor-quiet-tick.sh --record --kind pm-day --repo owner/name --quiet-ok true|false
 #       [--widen-at N] [--freeze-at N|none] [--tick-start-digest D | --input-digest D]
 #   monitor-quiet-tick.sh --print-digest --kind babysit|pm-day (--pr N | --repo owner/name)
+#   monitor-quiet-tick.sh --disarm --kind babysit|pm-day (--pr N | --repo owner/name)
 #   monitor-quiet-tick.sh --help
+#
+#   --disarm sets an armed contract to quiet_ok=false, prints nothing and exits 0.
+#   A Monitor loop runs it on any tick it prints without the gate (the babysit
+#   review-deadline tick), so no later tick goes quiet while that one is handled.
 #
 #   --tick-start-digest (record only) is the --print-digest value the tick took
 #   before classifying. babysit stores it as is. pm day keeps its external part
-#   and re-reads only the repo-state part, which is mostly this tick's own writes.
+#   and re-reads only the .repos[R] keys the tick itself writes.
 #   An empty value (the tick-start read failed) stores quiet_ok=false.
 #   --input-digest replaces the shell read with a supplied value verbatim. It is
 #   for tests; a Monitor loop never passes it, because a stale value would let a
@@ -66,17 +71,19 @@
 #   Defaults: --widen-at 3, --freeze-at 9, --blocker-counting false.
 #
 # INPUT DIGEST (sha256 of a canonical projection, no clock-derived text)
-#   Forms: babysit sha256:<hex>; pm day sha256:<external hex>.<repo-state hex>.
+#   Forms: babysit sha256:<hex>; pm day sha256:<external hex>.<own hex>.
 #   babysit: merge-gate.sh (head, met, merge state, mergeable, human changes
 #     requested, CI counts and blocking conclusions, stale bot changes,
 #     missing[], no-review-override reason, cancelled retry, CodeAnt run),
 #     pr-state.sh --stdout (unresolved threads, new findings, bot states,
 #     check-runs), cr-review-hourly.sh / greptile-budget.sh --check exits,
 #     usage-horizon.sh --check status.
-#   pm-day external: .active_agents with tick bookkeeping stripped, open PRs by
-#     @me (head, updatedAt, merge state, review decision), open issues (number,
-#     updatedAt), credit-budget.sh --check exit, horizon status.
-#   pm-day repo state: .repos[R] with tick bookkeeping stripped.
+#   pm-day external: .active_agents and the .repos[R] keys the tick does not own
+#     (refill pause, window, leave, any other) with tick bookkeeping stripped, open
+#     PRs by @me (head, updatedAt, merge state, review decision), open issues
+#     (number, updatedAt), credit-budget.sh --check exit, horizon status.
+#   pm-day own: the tick-owned .repos[R] keys (day, prs, pipelines,
+#     pm_backlog_scan_at, pm_standing_queues, pm_receipts), bookkeeping stripped.
 #
 # EXIT STATUS
 #   tick:   10 quiet; 0 emit; 2 usage (caller emits — any non-10 means emit)
@@ -100,6 +107,7 @@ while [[ $# -gt 0 ]]; do
     --help|-h) usage; exit 0 ;;
     --record) MODE=record; shift ;;
     --print-digest) MODE=print; shift ;;
+    --disarm) MODE=disarm; shift ;;
     --kind|--pr|--repo|--generation|--input-digest|--tick-start-digest|--quiet-ok|--blocker-counting|--widen-at|--freeze-at)
       [[ $# -ge 2 ]] || usage_fail "$1 needs a value"
       case "$1" in
@@ -224,31 +232,45 @@ JQ_STRIP='def strip: walk(if type == "object"
   then del(.last_tick_at, .tick_count, .digest, .digest_streak, .blocker_streak, .quiet, .last_tick_parse_failures)
   else . end);'
 
-# pm day digest has two parts. The external part (agents, GitHub, budget, horizon) is what a
-# model tick classifies on, so the contract pins it from the tick's start. The repo-state
-# part is mostly the tick's own writes, so the contract reads it at record time (issue #2459).
+# pm day digest has two parts (issue #2459). The external part is what a model tick
+# classifies on, so the contract pins it from the tick's start: agents, GitHub, budget,
+# horizon, and every .repos[R] key this tick does not own — the human refill pause, the
+# leave/window deadline, and any key added later. The own part is the keys the tick
+# itself writes (TICK_OWN); the contract re-reads only those at record time, so the
+# tick's own writes do not defeat quiet while another session's write still emits.
+JQ_OWN='def own_keys: ["day", "prs", "pipelines", "pm_backlog_scan_at", "pm_standing_queues", "pm_receipts"];
+  def own: with_entries(select(.key as $k | own_keys | index($k)));
+  def foreign: with_entries(select(.key as $k | own_keys | index($k) | not));'
+
+read_repo_state() {
+  tmpdir || return 1
+  state --get-json ".repos[\"$REPO\"]" > "$TMPD/repo.json" 2>/dev/null || return 1
+}
+
 pm_day_external_projection() {
   local hz
   tmpdir || return 1
   hz=$(horizon_status) || return 1
+  read_repo_state || return 1
   state --get-json '.active_agents' > "$TMPD/agents.json" 2>/dev/null || return 1
   gh pr list --repo "$REPO" --author "@me" --state open --limit 200 \
     --json number,headRefOid,updatedAt,mergeStateStatus,reviewDecision > "$TMPD/prs.json" 2>/dev/null || return 1
   gh issue list --repo "$REPO" --state open --limit 300 --json number,updatedAt > "$TMPD/issues.json" 2>/dev/null || return 1
-  jq -cnS --slurpfile ags "$TMPD/agents.json" --slurpfile ps "$TMPD/prs.json" --slurpfile iss "$TMPD/issues.json" \
-    --arg budget "$(check_rc credit-budget.sh --check)" --arg hz "$hz" "$JQ_STRIP"'
-    if ([$ags, $ps, $iss] | any(length != 1)) or ($ps[0] | type) != "array" or ($iss[0] | type) != "array"
+  jq -cnS --slurpfile ss "$TMPD/repo.json" --slurpfile ags "$TMPD/agents.json" \
+    --slurpfile ps "$TMPD/prs.json" --slurpfile iss "$TMPD/issues.json" \
+    --arg budget "$(check_rc credit-budget.sh --check)" --arg hz "$hz" "$JQ_STRIP$JQ_OWN"'
+    if ([$ss, $ags, $ps, $iss] | any(length != 1)) or ($ss[0] | type) != "object"
+       or ($ps[0] | type) != "array" or ($iss[0] | type) != "array"
     then error("degenerate state or GitHub read") else . end |
-    {agents: ($ags[0] | strip), prs: ($ps[0] | sort_by(.number)), issues: ($iss[0] | sort_by(.number)),
-     budget: $budget, horizon: $hz}'
+    {repo_foreign: ($ss[0] | foreign | strip), agents: ($ags[0] | strip),
+     prs: ($ps[0] | sort_by(.number)), issues: ($iss[0] | sort_by(.number)), budget: $budget, horizon: $hz}'
 }
 
 pm_day_state_projection() {
-  tmpdir || return 1
-  state --get-json ".repos[\"$REPO\"]" > "$TMPD/repo.json" 2>/dev/null || return 1
-  jq -cnS --slurpfile ss "$TMPD/repo.json" "$JQ_STRIP"'
+  read_repo_state || return 1
+  jq -cnS --slurpfile ss "$TMPD/repo.json" "$JQ_STRIP$JQ_OWN"'
     if ($ss | length) != 1 or ($ss[0] | type) != "object" then error("degenerate state read") else . end |
-    {repo: ($ss[0] | strip)}'
+    {repo_own: ($ss[0] | own | strip)}'
 }
 
 # hex_of PROJECTION — sha256 hex of a projection; fails on an empty one.
@@ -295,6 +317,22 @@ bounded_digest() {
 
 # W selects the watcher object inside OBJ: .babysit for a PR, the day object itself for pm day.
 JQ_W='def W: if $kind == "babysit" then .babysit else . end;'
+
+if [[ "$MODE" == disarm ]]; then
+  # A tick the loop prints without consulting the gate (the babysit review-deadline tick)
+  # must not leave an armed contract behind, or the next unchanged tick could go quiet and
+  # advance counters while the model is still handling that printed tick.
+  for _ in 1 2 3; do
+    OBJ=$(state --get-json "$OBJ_PATH" 2>/dev/null) || exit 0
+    jq -e --arg kind "$KIND" "$JQ_W"' type == "object" and (W | type == "object") and W.quiet.quiet_ok == true' \
+      >/dev/null 2>&1 <<<"$OBJ" || exit 0
+    NEW=$(jq -c --arg kind "$KIND" --arg now "$(date -u +%FT%TZ)" "$JQ_W"'
+      W.quiet.quiet_ok = false | W.quiet.disarmed_reason = "forced emit" | W.quiet.disarmed_at = $now' <<<"$OBJ") || exit 0
+    state --cas "$OBJ_PATH=$NEW" --expect "$OBJ" >/dev/null 2>&1 && exit 0
+  done
+  echo "monitor-quiet-tick.sh: disarm write lost three times" >&2
+  exit 0
+fi
 
 if [[ "$MODE" == print ]]; then
   bounded_digest || { echo "monitor-quiet-tick.sh: input digest unavailable" >&2; exit 1; }

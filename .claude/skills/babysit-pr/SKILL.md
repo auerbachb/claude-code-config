@@ -336,11 +336,14 @@ while true; do
   sleep "$delay" || break
   # Quiet unchanged tick (issue #2459): exit 10 means the digest is unchanged and no
   # threshold is crossed; the helper advanced the counters, so print nothing. Any other
-  # exit, a missing helper, or the review-deadline tick prints the line as before.
+  # exit, a missing helper, or the review-deadline tick prints the line as before. The
+  # deadline tick disarms the contract first, so no later tick goes quiet while it is handled.
   if [[ -n "$QUIET_SH" && "$deadline_tick" != true ]]; then
     quiet_rc=0
     "$QUIET_SH" --kind babysit --pr "$PR" --generation "$MONITOR_GENERATION" >/dev/null 2>&1 || quiet_rc=$?
     if (( quiet_rc == 10 )); then continue; fi
+  elif [[ -n "$QUIET_SH" ]]; then
+    "$QUIET_SH" --disarm --kind babysit --pr "$PR" >/dev/null 2>&1 || true
   fi
   printf '%s\n' "/babysit-pr $PR --tick --monitor-generation $MONITOR_GENERATION --cadence ${MONITOR_CADENCE}m"
 done
@@ -352,7 +355,9 @@ recomputes the input digest in the shell and, only against the contract the last
 recorded (T6a), advances `digest_streak`, `blocker_streak`, `tick_count` and `last_tick_at`
 itself. The tick that would widen the cadence, reach `stable-frozen` or reach `--max-iter` is
 always emitted, with the counter left for the model, so backoff and termination fire on the same
-tick as before; a missing contract, a changed digest or any read/write failure emits too. Pass `persistent: true`, capture the returned task ID, and persist it as
+tick as before; a missing contract, a changed digest or any read/write failure emits too. The
+review-deadline tick skips the gate and runs `--disarm` before printing, so no later tick goes
+quiet while that one is being handled. Pass `persistent: true`, capture the returned task ID, and persist it as
 `.prs["$PR"].babysit.monitor_task_id`. The watcher stays session-scoped by design — one that
 outlived its session would be auto-dispatching `/wrap` merges into an empty room.
 
