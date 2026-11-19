@@ -118,7 +118,8 @@ case "${1:-}" in
           elif [[ "${FAKE_CLOSED_ISSUE:-}" == "$n" ]]; then
             data="$(jq -c --arg a "i$n" --argjson n "$n" '. + {($a): {number: $n, state: "CLOSED"}}' <<<"$data")"
           else
-            data="$(jq -c --arg a "i$n" --argjson n "$n" '. + {($a): {number: $n, state: "OPEN"}}' <<<"$data")"
+            lbl='[]'; [[ -f "$S/i$n/labels" ]] && lbl="$(jq -Rn --rawfile f "$S/i$n/labels" '($f | split("\n") | map(select(length > 0) | {name: .}))')"
+            data="$(jq -c --arg a "i$n" --argjson n "$n" --argjson l "$lbl" '. + {($a): {number: $n, state: "OPEN", labels: {nodes: $l}}}' <<<"$data")"
           fi
         done
         jq -cn --argjson d "$data" --argjson e "$errs" 'if ($e | length) > 0 then {data: {repository: $d}, errors: $e} else {data: {repository: $d}} end'
@@ -254,6 +255,18 @@ run_batch --check 11 12 15 --holder H1
 check_eq "an issue that no longer exists reads unknown, never free" unknown "$(verdict_of 12)"
 check_eq "a missing issue makes the batch exit 4" 4 "$RC"
 unset FAKE_MISSING_ISSUE
+
+############################################################################
+echo "== (1b) the owner's human-tasks list issue is never startable from a batch (#2539) =="
+reset_state
+mkdir -p "$STATE/i16"; echo Human-Tasks > "$STATE/i16/labels"            # not in the in-progress index
+run_batch --check 11 16 --holder H1
+check_eq "human-tasks issue absent from the index reads claimed, not unclaimed" claimed "$(verdict_of 16)"
+check_eq "the free issue beside it still reads unclaimed" unclaimed "$(verdict_of 11)"
+check_eq "a human-tasks issue makes batch --check exit 1" 1 "$RC"
+run_batch --claim 11 16 --holder H1
+check_eq "batch --claim never claims the human-tasks issue" 0 "$(marker_count 16)"
+check_eq "batch --claim still claims the free issue" 1 "$(marker_count 11)"
 
 ############################################################################
 echo "== (2) batch claim: four free + one held elsewhere =="

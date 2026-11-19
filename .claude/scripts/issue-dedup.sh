@@ -28,6 +28,9 @@
 #   --max-results N        Cap emitted candidates (default 5)
 #   --exclude N[,N...]     Issue numbers to omit (e.g. issues this run just filed)
 #
+# An issue labelled `human-tasks` (the owner's own to-do list, issue #2539) is
+# never a candidate: it is not agent work, so a finding is never folded into it.
+#
 # Output (stdout): JSON array, highest score first. Each element:
 #   {number, title, url, state, score, coverage, title_hits, body_hits,
 #    terms_matched, terms_missed}
@@ -57,7 +60,8 @@ if [[ -n "${HOME:-}" ]]; then
 fi
 
 usage() {
-  sed -n '3,47p' "$0" | sed 's/^# \{0,1\}//'
+  # The whole header comment block from line 3, however long it grows.
+  awk 'NR < 3 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
 }
 
 if [ "$#" -eq 0 ]; then
@@ -130,7 +134,7 @@ command -v gh >/dev/null 2>&1 || { echo "issue-dedup.sh: gh not found" >&2; exit
 REPO_ARGS=()
 if [ -n "$REPO" ]; then REPO_ARGS=(--repo "$REPO"); fi
 
-FIELDS="number,title,body,url,state"
+FIELDS="number,title,body,url,state,labels"
 
 # A plain listing (no --search) is intentional: search relevance is opaque and
 # title-weighted, whereas scoring locally lets us weigh body text the same way
@@ -227,12 +231,20 @@ def load(name):
         sys.exit(4)
     return data if isinstance(data, list) else []
 
+def is_human_tasks(issue):
+    """The owner's to-do list issue (#2539) is never a duplicate candidate."""
+    labels = issue.get("labels") or []
+    return any(isinstance(l, dict) and (l.get("name") or "").lower() == "human-tasks"
+               for l in labels)
+
 def score_all():
     candidates = []
     seen = set()
     for issue in load("OPEN_JSON") + load("CLOSED_JSON"):
         number = issue.get("number")
         if number is None or str(number) in exclude or number in seen:
+            continue
+        if is_human_tasks(issue):
             continue
         seen.add(number)
         title = (issue.get("title") or "").lower()
