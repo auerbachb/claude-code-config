@@ -404,6 +404,99 @@ rm -rf "$LOCK_DIR"
 [[ "$gate_contention_elapsed" -lt 5 ]] || fail "launch-gate contention outlived its hook timeout budget"
 ok "launch-gate lock contention fails closed within the hook budget"
 
+# issue #2433: the gate retries a busy lock briefly, reports busy separately
+# from paused and from unavailable, and stays inside the host hook budget.
+gate_sid() {
+  local sid="$1" tool="${2:-Agent}"
+  jq -nc --arg sid "$sid" --arg cwd "$CWD" --arg tool "$tool" \
+    '{session_id:$sid,cwd:$cwd,tool_name:$tool,tool_input:{run_in_background:false}}' | "$GATE"
+}
+IDLE_SID=pause-gate-idle-2433
+ACTIVE_SID=pause-gate-active-2433
+"$PAUSE" --repo "$REPO" --activate --session "$ACTIVE_SID" --command pause --window-minutes 5 >/dev/null
+
+hold_state_lock
+SECONDS=0
+set +e
+held_msg=$(gate_sid "$IDLE_SID" 2>&1 >/dev/null); held_rc=$?
+set -e
+held_elapsed=$SECONDS
+rm -rf "$LOCK_DIR"
+[[ "$held_rc" == 2 ]] || fail "held lock with an inactive gate did not block (rc=$held_rc)"
+[[ "$held_elapsed" -lt 5 ]] || fail "held-lock retries outlived the 5s host hook budget (${held_elapsed}s)"
+grep -Fq 'lock-busy' <<<"$held_msg" || fail "held lock was not reported as lock-busy: $held_msg"
+grep -Fq "held by pid $$ on ${HOSTNAME:-$(hostname)}" <<<"$held_msg" || \
+  fail "busy message omitted the real holder pid/host: $held_msg"
+grep -Fq 'NOT a pause' <<<"$held_msg" || fail "busy message did not say it is not a pause"
+grep -Eq 'after [2-9][0-9]* attempt' <<<"$held_msg" || fail "held lock was not retried: $held_msg"
+ok "a lock held past the budget is reported as busy (not paused) with the real holder"
+
+hold_state_lock
+( sleep 1.2; rm -rf "$LOCK_DIR" ) &
+set +e
+gate_sid "$IDLE_SID" >/dev/null 2>&1; transient_idle_rc=$?
+set -e
+wait
+[[ "$transient_idle_rc" == 0 ]] || fail "a transient lock with an inactive gate did not allow after retry (rc=$transient_idle_rc)"
+hold_state_lock
+( sleep 1.2; rm -rf "$LOCK_DIR" ) &
+set +e
+transient_active_msg=$(gate_sid "$ACTIVE_SID" 2>&1 >/dev/null); transient_active_rc=$?
+set -e
+wait
+[[ "$transient_active_rc" == 2 ]] || fail "a transient lock with an active gate did not block"
+grep -Fq 'background launches are closed' <<<"$transient_active_msg" || \
+  fail "transient lock with an active gate was not reported as paused: $transient_active_msg"
+ok "a transient lock is retried and the final verdict follows the gate state"
+
+MKDIR_SHIM="$TMP/mkdir-shim-2433"
+mkdir -p "$MKDIR_SHIM"
+REAL_MKDIR="$(command -v mkdir)"
+cat > "$MKDIR_SHIM/mkdir" <<SH
+#!/bin/bash
+for a in "\$@"; do case "\$a" in *session-state.json.lock) exit 1 ;; esac; done
+exec "$REAL_MKDIR" "\$@"
+SH
+chmod +x "$MKDIR_SHIM/mkdir"
+set +e
+unavail_msg=$(PATH="$MKDIR_SHIM:$PATH" gate_sid "$IDLE_SID" 2>&1 >/dev/null); unavail_rc=$?
+set -e
+[[ "$unavail_rc" == 2 ]] || fail "non-contention exit 6 was treated as inactive (rc=$unavail_rc)"
+grep -Fq 'could not be verified' <<<"$unavail_msg" || fail "non-contention exit 6 not reported as unavailable: $unavail_msg"
+grep -Fq 'not contention' <<<"$unavail_msg" || fail "unavailable message omitted the reason: $unavail_msg"
+if grep -Fq 'lock-busy' <<<"$unavail_msg"; then fail "non-contention exit 6 was called lock-busy"; fi
+ok "a lock that cannot be created is reported as unavailable, not busy"
+
+# Call-count shim: the gate never retries an `active` verdict, and other
+# non-zero exits stay fail-open after a single call.
+SHIM_ROOT="$TMP/gate-shim-2433"
+mkdir -p "$SHIM_ROOT/hooks" "$SHIM_ROOT/scripts"
+cp "$GATE" "$SHIM_ROOT/hooks/pause-launch-gate.sh"
+cat > "$SHIM_ROOT/scripts/execution-pause.sh" <<'SH'
+#!/bin/bash
+echo x >> "$GATE_SHIM_COUNT"
+case "$GATE_SHIM_MODE" in
+  active) echo active ;;
+  error) echo "execution-pause.sh: boom" >&2; exit 4 ;;
+esac
+SH
+chmod +x "$SHIM_ROOT/scripts/execution-pause.sh"
+shim_gate() {
+  jq -nc --arg cwd "$CWD" '{session_id:"shim-sid",cwd:$cwd,tool_name:"Agent",tool_input:{}}' \
+    | CLAUDE_SESSION_REPO="$REPO" GATE_SHIM_MODE="$1" GATE_SHIM_COUNT="$TMP/shim-count-$1" \
+      "$SHIM_ROOT/hooks/pause-launch-gate.sh"
+}
+set +e
+shim_gate active >/dev/null 2>&1; shim_active_rc=$?
+shim_gate error >/dev/null 2>&1; shim_error_rc=$?
+set -e
+[[ "$shim_active_rc" == 2 ]] || fail "shim active verdict did not block"
+[[ "$(wc -l < "$TMP/shim-count-active" | tr -d ' ')" == 1 ]] || fail "an active verdict was retried"
+[[ "$shim_error_rc" == 0 ]] || fail "a non-6 status failure no longer fails open"
+[[ "$(wc -l < "$TMP/shim-count-error" | tr -d ' ')" == 1 ]] || fail "a non-6 status failure was retried"
+ok "active is never retried and non-lock failures stay fail-open"
+"$PAUSE" --repo "$REPO" --clear --session "$ACTIVE_SID" >/dev/null 2>&1 || true
+
 # If state becomes unreadable after activation, the positive marker keeps the
 # gate closed. A random parse failure without such a marker stays fail-open.
 set +e

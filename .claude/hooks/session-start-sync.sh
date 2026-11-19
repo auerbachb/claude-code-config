@@ -1075,6 +1075,53 @@ if [[ -f "$reconcile_script" ]]; then
   fi
 fi
 
+# Age-cadence compaction of session-state.json (issue #2433). Runs after the
+# config-sync lock is released and after the reconcile pass, for EVERY source
+# (compaction is local and never touches live or protected records). Detached
+# and never waited on, so it spends none of the hook's tail reserve. Gated by
+# the compactor's stamp (last successful run): due when absent or older than
+# CLAUDE_STATE_COMPACT_CADENCE_SECS (default 86400). A run that hits the state
+# lock (exit 6) leaves the stamp alone, so the next trigger retries.
+# CLAUDE_STATE_COMPACT_BIN overrides the compactor path (tests).
+_compact_bin="${CLAUDE_STATE_COMPACT_BIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" 2>/dev/null && pwd)/session-state-compact.sh}"
+_compact_state="${HOME:-}/.claude/session-state.json"
+_compact_cadence="${CLAUDE_STATE_COMPACT_CADENCE_SECS:-86400}"
+case "$_compact_cadence" in ''|*[!0-9]*) _compact_cadence=86400 ;; esac
+# A run guard younger than 10 minutes means a compactor is (or just was)
+# running. An older one, or one whose published owner pid is dead — left by a
+# killed compactor — must not block the spawn: the compactor itself is the
+# only code that reclaims it (same rules as its own reclaim).
+_compact_guard_busy=0
+if [[ -d "$_compact_state.compact.run" ]]; then
+  _compact_g="$(stat -c %Y "$_compact_state.compact.run" 2>/dev/null)"
+  [[ "$_compact_g" =~ ^[0-9]+$ ]] || _compact_g="$(stat -f %m "$_compact_state.compact.run" 2>/dev/null)"
+  if [[ ! "$_compact_g" =~ ^[0-9]+$ ]] || (( $(date +%s) - _compact_g < 600 )); then
+    _compact_guard_busy=1
+  fi
+  # A published owner pid that is gone means the compactor died: not busy,
+  # whatever the guard's age (the compactor reclaims a dead owner's guard).
+  _compact_gpid="$(cat "$_compact_state.compact.run/pid" 2>/dev/null || true)"
+  if [[ "$_compact_gpid" =~ ^[0-9]+$ ]] && ! kill -0 "$_compact_gpid" 2>/dev/null; then
+    _compact_guard_busy=0
+  fi
+fi
+if [[ -n "${HOME:-}" && -x "$_compact_bin" && -f "$_compact_state" \
+      && "${CLAUDE_STATE_COMPACT_AUTO:-1}" != 0 && "$_compact_guard_busy" == 0 ]]; then
+  _compact_due=1
+  if [[ -f "$_compact_state.compact.stamp" ]]; then
+    _compact_m="$(stat -c %Y "$_compact_state.compact.stamp" 2>/dev/null)"
+    [[ "$_compact_m" =~ ^[0-9]+$ ]] || _compact_m="$(stat -f %m "$_compact_state.compact.stamp" 2>/dev/null)"
+    if [[ "$_compact_m" =~ ^[0-9]+$ ]] && (( $(date +%s) - _compact_m < _compact_cadence )); then
+      _compact_due=0
+    fi
+  fi
+  if [[ "$_compact_due" == 1 ]]; then
+    ( unset CLAUDE_STATE_LOCK_HELD CLAUDE_STATE_LOCK_TOKEN
+      nohup "$_compact_bin" --apply --state-file "$_compact_state" --if-due "$_compact_cadence" \
+        --lock-timeout 5 --trigger session-start >> "$_compact_state.compact.log" 2>&1 < /dev/null & ) 2>/dev/null
+  fi
+fi
+
 # Fold symlink-publish notices into the notices variable before sanitization so
 # they reach the user when no other notices are present.
 if [[ -n "$_agents_notices" ]]; then

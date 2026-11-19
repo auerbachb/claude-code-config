@@ -230,6 +230,7 @@ opt-in of issue #1544.
 | [session-state-active-agents.test.sh](../tests/session-state-active-agents.test.sh) | Tests the `.active_agents` keyed-map contract in `session-state.sh` — a negative control proving the old whole-value replace loses a sibling thread's entries, concurrent per-key writes that lose none, the array→map migration, and `--remove-agent` (issue #1631) |
 | [session-state-audit.test.sh](../tests/session-state-audit.test.sh) | Tests for `session-state-audit.sh` |
 | [session-state-cas.test.sh](../tests/session-state-cas.test.sh) | Tests `session-state.sh --cas` — compare-and-set success, loss, a distinct exit code, and concurrent writers |
+| [session-state-compact.test.sh](../tests/session-state-compact.test.sh) | Tests for `session-state-compact.sh` |
 | [session-state-migration.test.sh](../tests/session-state-migration.test.sh) | Tests the legacy-flat → per-repo migration in `session-state.sh` |
 | [session-state.test.sh](../tests/session-state.test.sh) | Tests for `session-state.sh` |
 | [skill-conventions-audit.test.sh](../tests/skill-conventions-audit.test.sh) | Tests for `skill-conventions-audit.sh` |

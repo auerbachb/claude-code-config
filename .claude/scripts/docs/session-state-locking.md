@@ -22,6 +22,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [safe-close-inventory.sh](../safe-close-inventory.sh) | Read-only inventory of everything a thread started or still owns, with a safe-to-close verdict; each item tagged lost / keeps_running / orphaned / harmless, unreadable categories reported unknown |
 | [safe-close-stop.sh](../safe-close-stop.sh) | Plans, parks, and verifies /safe-close's stop step from the read-only inventory's JSON; reuses /pause's resume record and registry, and never reads a stop's exit status as proof |
 | [session-state-audit.sh](../session-state-audit.sh) | Audit and guarded repair of `~/.claude/session-state.json` |
+| [session-state-compact.sh](../session-state-compact.sh) | Archive old per-PR, per-agent and terminal background-task entries so the state file stays small (issue #2433) |
 | [session-state.sh](../session-state.sh) | Canonical read/write helper for `~/.claude/session-state.json` (atomic, scoped, field-typed) |
 | [state-lock.sh](../state-lock.sh) | *(library — source, do not execute)* Portable mkdir-based advisory lock for session-state writes |
 <!-- catalog:rows:end -->
