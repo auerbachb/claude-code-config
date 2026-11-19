@@ -354,9 +354,13 @@ if [[ -n "$AWAY_STR" || "${AWAY_BARE:-false}" == true ]]; then
           -e 's/^until ([0-9]{1,2})$/until \1:00/' \
           -e 's/^until ([0-9]{1,2}:[0-9]{2})([ap]m)$/until \1 \2/')
         # --next-occurrence: "until 8:00 AM" typed at 9 PM means tomorrow 8 AM.
-        # A 1-12 hour with no am/pm ("back at 10") is the sooner of its AM and PM.
+        # A 1-12 hour with no am/pm ("back at 10", "until 08:00", "until 10:00 et")
+        # is the sooner of its AM and PM.
         AWAY_TRY=("$AWAY_WIN")
-        [[ "$AWAY_WIN" =~ ^until\ ([1-9]|1[0-2]):[0-9]{2}$ ]] && AWAY_TRY=("$AWAY_WIN am" "$AWAY_WIN pm")
+        if [[ "$AWAY_WIN" =~ ^until\ 0?([1-9]|1[0-2]):([0-9]{2})(\ ?(et|est|edt))?$ ]]; then
+          AWAY_HM="${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"
+          AWAY_TRY=("until $AWAY_HM am" "until $AWAY_HM pm")
+        fi
         for AWAY_W in "${AWAY_TRY[@]}"; do
           AWAY_LINE=$("$WINDOW_PLAN_SH" --window "$AWAY_W" --stall-margin 0 --next-occurrence 2>/dev/null) || continue
           AWAY_E=$(printf '%s' "$AWAY_LINE" | sed -n 's/.*deadline_epoch=\([0-9][0-9]*\).*/\1/p')

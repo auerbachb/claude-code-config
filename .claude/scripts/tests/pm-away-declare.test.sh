@@ -76,6 +76,8 @@ run 'back at 10' "$stub" "$night";   expect_call 'bare 10 at 9 PM -> 10 PM tonig
 [[ "$out" == *'Away until Thu 10:00 PM ET.' ]] && ok 'resolved end time is printed' || bad "resolved time: '$out'"
 run 'back at 10' "$stub" "$morning"; expect_call 'bare 10 at 8 AM -> 10 AM today' '^set away --by operator-message --until-epoch 1768489200$'
 run 'back at 10' "$stub" "$late";    expect_call 'bare 10 at 11 PM -> 10 AM tomorrow' '^set away --by operator-message --until-epoch 1768575600$'
+run 'until 10:00 ET' "$stub" "$night"; expect_call 'bare hour with ET suffix -> 10 PM tonight' '^set away --by operator-message --until-epoch 1768532400$'
+run 'until 07:00' "$stub" "$morning"; expect_call 'zero-padded bare hour at 8 AM -> 7 PM today' '^set away --by operator-message --until-epoch 1768521600$'
 run 'until 22:00' "$stub" "$morning"; expect_call '24-hour value keeps its meaning' '^set away --by operator-message --until-epoch 1768532400$'
 run 'until 8:00 AM' "$stub" "$night"; expect_call 'explicit AM keeps its meaning' '^set away --by operator-message --until-epoch 1768568400$'
 run '6 hours';            expect_call 'spelled duration -> --until-epoch' '^set away --by operator-message --until-epoch [0-9]+$'
