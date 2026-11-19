@@ -934,6 +934,27 @@ def checkin_pace_line:
         + "."
     end;
 
+# checkin_waiting_line: the card's "Waiting now" line. Open Decisions show
+# when the input carries `open_decisions`, and the open human tasks when it
+# carries `tasks` (`checkin get --tasks --json`, issue #2542): their count,
+# or that the task list could not be read. Without either it is the Reviews
+# alone, as before.
+def checkin_waiting_line:
+  "Waiting now: "
+  + ([ (if (.open_decisions | type) == "number" then
+          (if .open_decisions > 0 then plan_n(.open_decisions; "open Decision"; "open Decisions")
+           else "no open Decisions" end)
+        else empty end),
+       (if (.unreviewed // 0) > 0 then plan_n(.unreviewed; "unreviewed Review"; "unreviewed Reviews")
+        else "no unreviewed Reviews" end),
+       (if (.tasks | type) != "object" then empty
+        elif .tasks.readable == true and (.tasks.open | type) == "number" then
+          (if .tasks.open > 0 then plan_n(.tasks.open; "open human task"; "open human tasks")
+           else "no open human tasks" end)
+        else "the task list could not be read" end) ]
+     | join(" · "))
+  + ".";
+
 # checkin_card: the morning check-in's card (`checkin get --json`): the
 # measured pace, what waits, and the three questions, as one blockquote; then
 # how to reply. With today's check-in stored (`check-in` again), it says what
@@ -946,7 +967,7 @@ def checkin_card:
         "Now: \(.checkin.hours | checkin_hours_text), energy \(.checkin.energy), budget \(.checkin.budget)"
         + " (\(.read_today // 0) read). A new answer replaces it."
       else empty end),
-     "Waiting now: " + (if (.unreviewed // 0) > 0 then plan_n(.unreviewed; "unreviewed Review"; "unreviewed Reviews") else "no unreviewed Reviews" end) + ".",
+     checkin_waiting_line,
      "1. Hours at the desk today?",
      "2. Energy, in one word? (for example low, ok, high)",
      "3. Anything planned? (a piece of work and its pace, meetings, or none)" ] | quote)

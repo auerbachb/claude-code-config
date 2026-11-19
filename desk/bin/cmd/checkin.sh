@@ -12,6 +12,8 @@
 . "$HQ_BIN_DIR/lib/lifecycle.sh"
 # shellcheck source=../lib/budget.sh
 . "$HQ_BIN_DIR/lib/budget.sh"
+# shellcheck source=../lib/owner-tasks.sh
+. "$HQ_BIN_DIR/lib/owner-tasks.sh"
 
 cmd_usage() {
   cat <<'EOF'
@@ -19,7 +21,7 @@ human-queue.sh checkin — the morning check-in and today's reading budget
 (issue #1770).
 
 USAGE
-  human-queue.sh checkin get [--json]
+  human-queue.sh checkin get [--tasks] [--json]
   human-queue.sh checkin set --session SESSION --hours H --energy WORD
                              [--planned TEXT] [--json]
   human-queue.sh checkin due --session SESSION --at HH:MM [--until HH:MM] [--json]
@@ -50,7 +52,13 @@ THE CHECK-IN
 ACTIONS
   get   today's check-in (null when none was stored today), the measured
         day as it stands now, the factor table, and the running count:
-        Reviews read today, unreviewed Reviews, the budget, and what is left
+        Reviews read today, open Decisions, unreviewed Reviews, the budget,
+        and what is left. --tasks (issue #2542) adds the operator's open
+        human tasks across repos, counted from `owner-task.sh list
+        --all-repos --json` (`tasks --help` says how it is found); the list
+        is read, never stored. A list that cannot be read (offline, gh
+        unavailable, the script missing) is reported, never fatal: the
+        check-in still prints, exit 0
   set   store today's check-in, replacing an earlier one today (its budget
         is computed again). Only the registered control session may (exit 4
         otherwise)
@@ -69,6 +77,8 @@ OUTPUT
     budget 28 Reviews today · 9 read · 19 left · 4 h · energy ok (×1)
     or: no check-in today · 9 Reviews read today · last measured day
     2026-10-07: 7.0 Reviews an hour
+    --tasks adds the counts: `… · 3 open Decisions · 19 unreviewed
+    Reviews · 2 open tasks` (or `· task list could not be read`)
   --json:
     {"now": "...Z", "today": "YYYY-MM-DD",
      "checkin": {"version": 1, "day", "session", "set_at", "hours",
@@ -79,8 +89,10 @@ OUTPUT
      "measured": {...a `stats --json` object...} | null,
      "factors": {...}, "guess": {"items": 30, "lines_per_item": 20,
                                  "min_read": 3, "lookback_days": 7},
-     "read_today": N, "answered_today": N, "unreviewed": N,
-     "budget": N | null, "left": N | null}
+     "read_today": N, "answered_today": N, "open_decisions": N,
+     "unreviewed": N, "budget": N | null, "left": N | null}
+    get --tasks --json adds "tasks": {"readable": true, "open": N,
+    "reason": null} | {"readable": false, "open": null, "reason": "..."}
   due: `due 2026-10-08` the one time it is due, `done 2026-10-08` once
     it was marked today (or the check-in is stored), nothing outside the
     window. --json: {"due": true|false, "done": true|false, "day": "..."}
@@ -171,13 +183,14 @@ SELECT jsonb_build_object(
          'factors', (SELECT fx.t FROM hqb_fx fx),
          'guess', $(hq_sql_budget_guess_json),
          'answered_today', coalesce((SELECT td.answered FROM hqb_td td), 0),
+         'open_decisions', (SELECT count(*) FROM items WHERE kind = 'decision' AND status = 'open'),
          'unreviewed', (SELECT count(*) FROM items WHERE kind = 'review' AND status = 'open'),
 $(hq_sql_budget_fields));
 SQL
     return 0
   fi
   cat <<'SQL'
-SELECT CASE WHEN c.v IS NULL THEN
+SELECT concat_ws(' · ', CASE WHEN c.v IS NULL THEN
          concat_ws(' · ', 'no check-in today',
                    coalesce((SELECT td.reviewed FROM hqb_td td), 0) || ' Reviews read today',
                    coalesce((SELECT 'last measured day ' || to_char(m.day, 'YYYY-MM-DD') || ': '
@@ -194,7 +207,16 @@ SELECT CASE WHEN c.v IS NULL THEN
                    END,
                    coalesce(c.v->>'hours', '?') || ' h',
                    'energy ' || coalesce(c.v->>'energy', '?') || ' (×' || coalesce(c.v->>'factor', '?') || ')')
-       END
+       END,
+       -- `get --tasks`: the open Decision and Review counts, which the
+       -- open-task count follows (issue #2542).
+       CASE WHEN :'hq_counts' = '1' THEN
+         (SELECT count(*) || CASE WHEN count(*) = 1 THEN ' open Decision' ELSE ' open Decisions' END
+            FROM items WHERE kind = 'decision' AND status = 'open')
+         || ' · ' ||
+         (SELECT count(*) || CASE WHEN count(*) = 1 THEN ' unreviewed Review' ELSE ' unreviewed Reviews' END
+            FROM items WHERE kind = 'review' AND status = 'open')
+       END)
   FROM hqb_c c;
 SQL
 }
@@ -306,6 +328,7 @@ SQL
 cmd_run() {
   local action="" json=0 session="" have_session=0 hours="" have_hours=0 energy="" have_energy=0
   local planned="" have_planned=0 at="" have_at=0 until="" have_until=0 errf out rc flag
+  local tasks=0 tasks_obj tasks_text
   case "${1:-}" in
     -h|--help)
       cmd_usage
@@ -324,6 +347,7 @@ cmd_run() {
         exit 0
         ;;
       --json) json=1 ;;
+      --tasks) tasks=1 ;;
       --session|--hours|--energy|--planned|--at|--until)
         flag="$1"
         if [ "$#" -lt 2 ]; then hq_die_validation "checkin $action: $flag needs a value"; fi
@@ -367,6 +391,7 @@ cmd_run() {
       fi
       ;;
     set)
+      if [ "$tasks" -eq 1 ]; then hq_die_validation "checkin set: --tasks goes only with get"; fi
       if [ "$have_at" -eq 1 ] || [ "$have_until" -eq 1 ]; then
         hq_die_validation "checkin set: --at and --until go only with due"
       fi
@@ -380,6 +405,7 @@ cmd_run() {
       fi
       ;;
     due)
+      if [ "$tasks" -eq 1 ]; then hq_die_validation "checkin due: --tasks goes only with get"; fi
       if [ "$have_hours" -eq 1 ] || [ "$have_energy" -eq 1 ] || [ "$have_planned" -eq 1 ]; then
         hq_die_validation "checkin due: --hours, --energy, and --planned go only with set"
       fi
@@ -412,13 +438,14 @@ cmd_run() {
   case "$action" in
     get)
       out=$(hq__checkin_out_sql "$json" | hq_db_script -At -v "hq_tz=$(hq_desk_tz)" \
-              -v "hq_factors=$(hq_budget_factors)" -v "hq_guess=$HQ_BUDGET_GUESS_ITEMS" 2>"$errf") || rc=$?
+              -v "hq_factors=$(hq_budget_factors)" -v "hq_guess=$HQ_BUDGET_GUESS_ITEMS" \
+              -v "hq_counts=$tasks" 2>"$errf") || rc=$?
       ;;
     set)
       out=$(hq__checkin_set_sql "$json" | hq_db_script -At -v "hq_tz=$(hq_desk_tz)" \
               -v "hq_factors=$(hq_budget_factors)" -v "hq_guess=$HQ_BUDGET_GUESS_ITEMS" \
               -v "hq_session=$session" -v "hq_hours=$hours" -v "hq_energy=$energy" \
-              -v "hq_planned=$planned" 2>"$errf") || rc=$?
+              -v "hq_planned=$planned" -v "hq_counts=0" 2>"$errf") || rc=$?
       ;;
     due)
       out=$(hq__checkin_due_sql "$json" | hq_db_script -At -v "hq_tz=$(hq_desk_tz)" \
@@ -431,6 +458,17 @@ cmd_run() {
   hq_problem_check "checkin $action" "$out"
   if [ "$action" != due ] && [ -z "$out" ]; then
     hq_die_error "checkin $action: the store returned nothing"
+  fi
+  if [ "$tasks" -eq 1 ]; then
+    # Read after the store answered: a task list that cannot be read never
+    # hides the Decisions and Reviews (hq_owner_tasks_summary returns 0).
+    hq_owner_tasks_summary tasks_obj tasks_text
+    if [ "$json" -eq 1 ]; then
+      out=$(printf '%s' "$out" | jq -c --argjson t "$tasks_obj" '. + {tasks: $t}') \
+        || hq_die_error "checkin get: could not add the task count to the store's JSON"
+    else
+      out="$out · $tasks_text"
+    fi
   fi
   if [ -n "$out" ]; then
     printf '%s\n' "$out"
