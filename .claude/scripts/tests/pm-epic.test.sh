@@ -644,7 +644,9 @@ check_eq "record: the Wave: line names the child filed last" "Wave: 1 · planned
 check_eq "scope: last is the filing tail" "950" "$("$SCRIPT" scope acme/w 993 | jq -r .last)"
 prs 951 '[{"number":11,"state":"OPEN","isDraft":false}]'
 prs 950 '[]'
+: > "$TMP/calls.log"
 check_eq "wave-due: waits on the last-filed child, not the highest number" "wait 1 - #950" "$("$SCRIPT" wave-due acme/w 993)"
+check_contains "in_review sends owner/name as raw strings (-f), only n as -F" "-f owner=acme -f name=w -F n=950" "$(grep '^api graphql' "$TMP/calls.log")"
 # wave-open re-runs the same eligibility check; a same-wave retry stays a no-op.
 "$SCRIPT" wave-open acme/w 993 2 1 >/dev/null 2>&1; rc=$?
 check_eq "wave-open: refused while the last-filed child is not in review" "8" "$rc"

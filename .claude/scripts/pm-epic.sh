@@ -808,7 +808,9 @@ scope_init() {
 in_review() {
   local repo="$1" m="$2" out q
   q="query(\$owner:String!,\$name:String!,\$n:Int!){repository(owner:\$owner,name:\$name){issue(number:\$n){closedByPullRequestsReferences(first:100,includeClosedPrs:true){pageInfo{hasNextPage} nodes{number state isDraft}}}}}"
-  out=$(gh api graphql -f query="$q" -F owner="${repo%%/*}" -F name="${repo#*/}" -F n="$m" 2>/dev/null) || return 1
+  # -f (raw string) for owner/name: -F would send a numeric or `true`-like
+  # repo name as a non-string and GraphQL would reject the String! variable.
+  out=$(gh api graphql -f query="$q" -f owner="${repo%%/*}" -f name="${repo#*/}" -F n="$m" 2>/dev/null) || return 1
   jq -e '.data.repository.issue.closedByPullRequestsReferences.nodes | type == "array"' <<< "$out" >/dev/null 2>&1 || return 1
   jq -e 'any(.data.repository.issue.closedByPullRequestsReferences.nodes[];
            .state == "MERGED" or (.state == "OPEN" and .isDraft == false))' <<< "$out" >/dev/null 2>&1 && return 0
