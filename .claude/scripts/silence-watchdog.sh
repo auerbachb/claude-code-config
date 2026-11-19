@@ -136,17 +136,39 @@ file_mtime() {
 # has_bgwork() would otherwise return true for any session that ever had
 # background work, even long-idle or dead sessions. Sessions that were never
 # armed (the gap-2 scenario) still fall through to notify() as intended.
+#
+# Lapsed-ceiling exception (Issue #2201): on runtimes that cap Monitor
+# timeout_ms the armed watch expires every 30 minutes and lives only as long
+# as the thread re-arms it. When --status reports the armed watch has stopped
+# ticking (tick_stale) and the lapse is recent (tick_age_s under
+# LAPSE_RECENT_S, so long-finished sessions stay quiet), the armed marker no
+# longer suppresses the alert; CEILING_LAPSED tells notify() which wording to
+# use, and the main loop's existing heartbeat-mtime dedupe keeps it to one
+# alert per stretch of silence.
+LAPSE_RECENT_S=7200
+CEILING_LAPSED=false
 has_bgwork() {
   local sid="$1"
+  CEILING_LAPSED=false
   if [[ -x "$BGWORK_CEILING_SH" ]]; then
-    local status_json bg_count armed RC
+    local status_json bg_count armed stale tick_age RC
     RC=0
     status_json="$("$BGWORK_CEILING_SH" --status --session "$sid" 2>/dev/null)" || RC=$?
     if [[ $RC -eq 0 && -n "$status_json" ]]; then
-      # If the ceiling was armed, the Monitor watch handles detection; skip to
-      # avoid false positives from historical bgwork markers.
+      # If the ceiling was armed and still ticks, the Monitor watch handles
+      # detection; skip to avoid false positives from historical bgwork markers.
       armed="$(printf '%s' "$status_json" | jq -r '.armed // false' 2>/dev/null)"
-      [[ "$armed" == "true" ]] && return 1
+      if [[ "$armed" == "true" ]]; then
+        stale="$(printf '%s' "$status_json" | jq -r '.tick_stale // false' 2>/dev/null)"
+        tick_age="$(printf '%s' "$status_json" | jq -r '.tick_age_s // -1' 2>/dev/null)"
+        bg_count="$(printf '%s' "$status_json" | jq -r '.background_work | if type == "array" then length else 0 end' 2>/dev/null)"
+        [[ "$bg_count" =~ ^[0-9]+$ ]] || bg_count=0
+        if [[ "$stale" == "true" && "$tick_age" =~ ^[0-9]+$ ]] && (( tick_age < LAPSE_RECENT_S && bg_count > 0 )); then
+          CEILING_LAPSED=true
+          return 0
+        fi
+        return 1
+      fi
       # Use -e (error on null/false) and type-check so a schema failure or
       # malformed JSON falls through to the marker check rather than returning
       # "no background work" — failing open on a probe failure is safer here.
@@ -169,7 +191,10 @@ has_bgwork() {
 notify() {
   local session_id="$1" is_bgwork="${2:-false}"
   local title body
-  if [[ "$is_bgwork" == "true" ]]; then
+  if [[ "$CEILING_LAPSED" == "true" ]]; then
+    title="Claude ceiling watch stopped ticking"
+    body="Session ${session_id}: ceiling watch stopped ticking; re-arm (its Monitor most likely expired)."
+  elif [[ "$is_bgwork" == "true" ]]; then
     title="Claude stalled — background work in flight"
     body="Session ${session_id} has been silent for ${THRESHOLD_MINUTES}+ minutes while background work is in flight."
   else
@@ -191,6 +216,7 @@ now=$(date +%s)
 shopt -s nullglob
 for heartbeat in "${HEARTBEAT_PREFIX}"*; do
   [[ -f "$heartbeat" ]] || continue
+  CEILING_LAPSED=false   # set only by has_bgwork for THIS session
 
   base="$(basename "$heartbeat")"
 

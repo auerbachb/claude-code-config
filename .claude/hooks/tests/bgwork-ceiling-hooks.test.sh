@@ -238,4 +238,68 @@ OUT=$("$CEILING" --tick --session "$SID")
   fail "the armed watch must break the silence with zero intervening tool calls, got: '$OUT'"
 ok "end-to-end: spawn → blocked → armed → turn ends → watch breaks the silence unaided"
 
+# --- 16. Arm wording fits a runtime whose Monitor expires (Issue #2201) -----
+SID=$(new_sid wording)
+CTX=$(run_arm "$SID" Agent | context_of)
+[[ "$CTX" == *"timeout_ms at the runtime maximum"* ]] || fail "the advisory must ask for the maximum timeout_ms, got: '$CTX'"
+[[ "$CTX" == *"only if the tool schema lists it"* ]] || fail "persistent: true must be conditional, got: '$CTX'"
+[[ "$CTX" == *"every expiry notice"* ]] || fail "the advisory must require re-arm on expiry, got: '$CTX'"
+REASON=$(run_guard "$SID" | jq -r '.reason')
+[[ "$REASON" == *"timeout_ms at the runtime maximum"* && "$REASON" == *"every expiry notice"* ]] || \
+  fail "the block reason must carry the expiring-runtime wording, got: '$REASON'"
+ok "arm advisory and block reason name timeout_ms, conditional persistent, and re-arm on expiry"
+
+# --- 17. A lapsed watch is reported at Stop, once per lapse, never blocking --
+backdate() { touch -t "$(date -v-"$2"M +%Y%m%d%H%M 2>/dev/null || date -d "$2 minutes ago" +%Y%m%d%H%M)" "$1"; }
+SID=$(new_sid lapse)
+run_arm "$SID" Agent >/dev/null
+run_arm "$SID" Monitor "$("$CEILING" --arm-command --session "$SID")" >/dev/null
+"$CEILING" --tick --session "$SID" >/dev/null
+OUT=$(run_guard "$SID")
+[[ "$(printf '%s' "$OUT" | context_of)" == "" ]] || fail "a ticking watch must produce no Stop notice, got: '$OUT'"
+backdate "$CLAUDE_BGWORK_MARKER_DIR/claude-bgceiling-armed-$SID" 40
+backdate "$CLAUDE_BGWORK_MARKER_DIR/claude-bgceiling-ticked-$SID" 35
+"$CEILING" --check --session "$SID"; RC=$?
+[[ $RC -eq 3 ]] || fail "--check must exit 3 for an armed watch that stopped ticking, got $RC"
+OUT=$(run_guard "$SID")
+[[ "$(printf '%s' "$OUT" | jq -r '.decision // ""')" != "block" ]] || fail "a lapsed watch must not block the turn"
+[[ "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.hookEventName // ""')" == "Stop" ]] || \
+  fail "the lapse notice must be a Stop hookSpecificOutput, got: '$OUT'"
+CTX=$(printf '%s' "$OUT" | context_of)
+[[ "$CTX" == *"CEILING LAPSED"* && "$CTX" == *"bgwork-ceiling.sh --tick --session $SID"* ]] || \
+  fail "the lapse notice must name the lapse and carry the re-arm command, got: '$CTX'"
+[[ "$CTX" == *"do not re-arm"* ]] || fail "the lapse notice must say not to re-arm when no work remains, got: '$CTX'"
+[[ "$(run_guard "$SID" | context_of)" == "" ]] || fail "the same lapse must be reported once, not on every Stop"
+[[ "$(run_guard "$SID" true | context_of)" == "" ]] || fail "a continued Stop must not repeat the lapse notice"
+[[ "$(run_arm "$SID" Read | context_of)" == "" ]] || fail "the arm hook must not nag about a lapse on every tool call"
+ok "a lapsed watch gets one non-blocking Stop notice per lapse, with the re-arm command"
+
+# Re-arming clears the lapse; a later lapse is reportable again.
+run_arm "$SID" Monitor "$("$CEILING" --arm-command --session "$SID")" >/dev/null
+"$CEILING" --check --session "$SID" || fail "re-arming must make --check pass again"
+backdate "$CLAUDE_BGWORK_MARKER_DIR/claude-bgceiling-armed-$SID" 20
+[[ "$(run_guard "$SID" | context_of)" == *"CEILING LAPSED"* ]] || fail "a new lapse after re-arming must be reported again"
+ok "re-arming clears the lapse, and the next lapse is reported again"
+
+# --- 18. A watch pinned to another session is named, not silently rejected ---
+SID=$(new_sid mismatch)
+run_arm "$SID" Agent >/dev/null
+WRONG=$("$CEILING" --arm-command --session default)
+CTX=$(run_arm "$SID" Monitor "$WRONG" | context_of)
+[[ "$CTX" == *"SESSION MISMATCH"* && "$CTX" == *"targets session default"* && "$CTX" == *"this session is $SID"* ]] || \
+  fail "a mismatched watch must produce the mismatch advisory, got: '$CTX'"
+"$CEILING" --check --session "$SID" && fail "a mismatched watch must not count as armed"
+CTX=$(run_arm "$SID" Bash "grep -rn 'bgwork-ceiling.sh --tick --session default' ." | context_of)
+[[ "$CTX" != *"SESSION MISMATCH"* ]] || fail "merely mentioning another session's tick must not draw the mismatch advisory"
+ok "a watch armed for another session gets a mismatch advisory naming both ids"
+
+# --- 19. A bare --arm-command uses the SessionStart handoff id --------------
+SID=$(new_sid handoff)
+ADVISED=$(run_arm "$SID" Agent | context_of)
+BARE=$(env -u CLAUDE_SESSION_ID -u CLAUDE_CODE_SESSION_ID CLAUDE_BGCEILING_SESSION_ID="$SID" "$CEILING" --arm-command)
+[[ "$ADVISED" == *"$BARE"* ]] || fail "the bare --arm-command must equal the advisory's command, got '$BARE'"
+run_arm "$SID" Monitor "$BARE" >/dev/null
+"$CEILING" --check --session "$SID" || fail "submitting the bare --arm-command output must arm session $SID"
+ok "a bare --arm-command with the handoff id matches the advisory and arms the session"
+
 echo "OK: bgwork-ceiling hook tests passed"

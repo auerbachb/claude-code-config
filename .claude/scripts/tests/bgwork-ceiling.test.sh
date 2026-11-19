@@ -189,4 +189,57 @@ else
 fi
 chmod u+w "$RO_DIR"
 
+# --- 19. Session resolution never guesses for the agent-facing modes --------
+# (Issue #2201: a bare --arm-command printed `--session default`, which the arm
+# hook then rejected.) env -u strips every id the shell could carry.
+NOID=(env -u CLAUDE_SESSION_ID -u CLAUDE_CODE_SESSION_ID -u CLAUDE_BGCEILING_SESSION_ID)
+for mode in --arm-command --check; do
+  OUT=$("${NOID[@]}" "$SCRIPT" "$mode" 2>"$TMP_DIR/err"); RC=$?
+  [[ $RC -eq 4 ]] || fail "$mode with no session id should exit 4, got $RC"
+  [[ -z "$OUT" ]] || fail "$mode with no session id must print no command, got: '$OUT'"
+  grep -q 'session unknown' "$TMP_DIR/err" || fail "$mode with no session id must say the session is unknown"
+done
+grep -q -- '-default$' <<<"$(ls "$CLAUDE_BGWORK_MARKER_DIR")" && fail "an unresolved session must not create a default marker"
+ok "--arm-command and --check refuse (exit 4) when no session id resolves"
+
+OUT=$("${NOID[@]}" CLAUDE_BGCEILING_SESSION_ID=handoff-id "$SCRIPT" --arm-command)
+[[ "$OUT" == *"--session handoff-id;"* ]] || fail "the SessionStart handoff id must be used, got: $OUT"
+OUT=$("${NOID[@]}" CLAUDE_BGCEILING_SESSION_ID=a CLAUDE_SESSION_ID=b CLAUDE_CODE_SESSION_ID=c "$SCRIPT" --arm-command)
+[[ "$OUT" == *"--session a;"* ]] || fail "CLAUDE_BGCEILING_SESSION_ID must win, got: $OUT"
+OUT=$("${NOID[@]}" CLAUDE_SESSION_ID=b CLAUDE_CODE_SESSION_ID=c "$SCRIPT" --arm-command)
+[[ "$OUT" == *"--session b;"* ]] || fail "CLAUDE_SESSION_ID must beat CLAUDE_CODE_SESSION_ID, got: $OUT"
+OUT=$("${NOID[@]}" CLAUDE_CODE_SESSION_ID=c "$SCRIPT" --arm-command)
+[[ "$OUT" == *"--session c;"* ]] || fail "CLAUDE_CODE_SESSION_ID must be the last fallback, got: $OUT"
+OUT=$("${NOID[@]}" CLAUDE_BGCEILING_SESSION_ID=a "$SCRIPT" --arm-command --session x)
+[[ "$OUT" == *"--session x;"* ]] || fail "an explicit --session must win, got: $OUT"
+ok "session precedence: --session, handoff, CLAUDE_SESSION_ID, CLAUDE_CODE_SESSION_ID"
+
+"$SCRIPT" --arm-command --session "" >/dev/null 2>&1; [[ $? -eq 2 ]] || fail "an empty --session should be a usage error"
+"$SCRIPT" --check --session -x >/dev/null 2>&1;      [[ $? -eq 2 ]] || fail "a flag-looking --session should be a usage error"
+"${NOID[@]}" "$SCRIPT" --status >/dev/null 2>&1 || fail "--status keeps the default fallback"
+ok "empty and flag-looking --session values are rejected for --arm-command / --check"
+
+# --- 20. Liveness: an armed watch that stops ticking is detectable ----------
+SID2="tick-$SID"
+backdate() { touch -t "$(stamp_minutes_ago "$2")" "$1"; }
+"$SCRIPT" --note-started Agent --session "$SID2"
+"$SCRIPT" --record-armed --session "$SID2"
+"$SCRIPT" --check --session "$SID2" || fail "a freshly armed watch counts as live before its first tick"
+"$SCRIPT" --tick --session "$SID2" >/dev/null
+[[ -f "$CLAUDE_BGWORK_MARKER_DIR/claude-bgceiling-ticked-$SID2" ]] || fail "--tick must touch the liveness marker"
+backdate "$CLAUDE_BGWORK_MARKER_DIR/claude-bgceiling-armed-$SID2" 40
+"$SCRIPT" --check --session "$SID2" || fail "a recent tick keeps an old arming live"
+backdate "$CLAUDE_BGWORK_MARKER_DIR/claude-bgceiling-ticked-$SID2" 35
+"$SCRIPT" --check --session "$SID2"; RC=$?
+[[ $RC -eq 3 ]] || fail "an armed watch with no tick past the threshold should exit 3, got $RC"
+ST=$("$SCRIPT" --status --session "$SID2")
+[[ "$(jq -r '.tick_stale' <<<"$ST")" == "true" ]] || fail "--status must report tick_stale, got: $ST"
+(( $(jq -r '.tick_age_s' <<<"$ST") >= 2000 )) || fail "--status must report the tick age, got: $ST"
+CLAUDE_BGCEILING_TICK_STALE_SECONDS=86400 "$SCRIPT" --check --session "$SID2" || fail "the stale threshold must be configurable"
+"$SCRIPT" --tick --session "$SID2" >/dev/null
+"$SCRIPT" --check --session "$SID2" || fail "a new tick makes the watch live again"
+"$SCRIPT" --clear --session "$SID2"
+[[ -f "$CLAUDE_BGWORK_MARKER_DIR/claude-bgceiling-ticked-$SID2" ]] && fail "--clear must remove the tick marker"
+ok "--tick stamps liveness; --check exits 3 and --status reports a lapsed watch"
+
 echo "OK: bgwork-ceiling.sh tests passed"

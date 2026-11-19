@@ -36,8 +36,20 @@ The issue left this open. All three create turn boundaries; only one satisfies e
 
 1. **Turn-independent.** The watch is an OS process, not a scheduled prompt. It runs while the thread has no turn at all — the failing case.
 2. **Conditional.** Parent-silence checks and child-progress observations run independently. They emit only deduplicated investigative notices; the caller applies the output policy. A fresh parent does not hide a quiet child.
-3. **Armed once per session.** `persistent: true` covers the whole session, so the ceiling is armed on the first background work and every later spawn is already covered. This also sidesteps having to detect *completion* of background work — the watch stays correct whatever the cause of silence.
-4. **Out of reach of stable-state backoff.** `scheduling-reliability.md` widens polls to 5m/15m and calls `CronDelete` at streak ≥9. Those operate on cron jobs; a `Monitor` is stopped only by `TaskStop`. Backoff therefore *structurally* cannot push silence past the ceiling — no prose carve-out required.
+3. **One live watch covers every spawn.** The trip point is silence-based, so a running watch covers every later spawn too. This also sidesteps having to detect *completion* of background work — the watch stays correct whatever the cause of silence. It is **not** armed once per session, though: on runtimes that cap `timeout_ms` (the desktop app: 30 minutes, no `persistent` parameter) the watch expires and must be re-armed on its expiry notice (Issue #2201, [`monitor-expiry.md`](monitor-expiry.md)).
+4. **Out of reach of stable-state backoff.** `scheduling-reliability.md` widens polls to 5m/15m and calls `CronDelete` at streak ≥9. Those operate on cron jobs; backoff never touches a `Monitor`, which ends only by `TaskStop`, its own exit, or runtime expiry. Backoff therefore *structurally* cannot push silence past the ceiling — no prose carve-out required.
+
+### Liveness: detecting a watch that lapsed
+
+"Armed" only proves arming was observed. Every `--tick` therefore touches `claude-bgceiling-ticked-<id>`, and `--check` exits **3** once `now − max(armed, last tick)` passes `CLAUDE_BGCEILING_TICK_STALE_SECONDS` (default 150s, five polls); `--status` reports `tick_age_s` / `tick_stale`. Three observers that do not expire with the watch read it:
+
+- **Stop guard** (`bgwork-ceiling-guard.sh`) — exit 3 becomes one non-blocking Stop `additionalContext` notice per lapse (deduped on the arm/tick marker mtimes), carrying the re-arm command and "do not re-arm if no work remains". Never a block: the background-work marker is append-only, so a block would fire on every Stop after the work ended.
+- **Arm hook** — stays silent on exit 3 for the same reason (the Stop notice owns it).
+- **launchd watchdog** (`silence-watchdog.sh`, macOS, optional) — an idle session whose armed ceiling lapsed within the last two hours no longer hides behind the armed marker; it gets a "ceiling watch stopped ticking; re-arm" notification, once per heartbeat silence.
+
+### Session identity
+
+`--arm-command` / `--check` resolve `--session`, then `CLAUDE_BGCEILING_SESSION_ID` (exported by `session-start-sync.sh` through `CLAUDE_ENV_FILE`), then `CLAUDE_SESSION_ID`, then `CLAUDE_CODE_SESSION_ID`, and **exit 4** when none resolves — they used to print `--session default`, which the arm hook (keyed on the payload id) silently rejected. The arm hook now names a mismatched watch: "targets session X; this session is Y".
 
 ## Why the number is not published
 

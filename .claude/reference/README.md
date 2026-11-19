@@ -130,6 +130,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `workspace-sweep-cadence.md` — finished-only post-merge, PM tick and daily scheduling; registry, interval, logging and safety boundary (Issue #1962)
 - `lean-orchestrator.md` — delegate-first rule for a premium parent: permitted direct work, quiet unchanged ticks, compact worker results, the nested-worker answer, parent-run steps in `/pm` and `/subagent`, and the pending before/after measurement (Issue #2435)
 - `bgwork-ceiling.md` — why background work arms a turn-independent silence ceiling, why `Monitor` over `ScheduleWakeup`/`CronCreate`, and why the number stays unpublished (#803)
+- `monitor-expiry.md` — every `Monitor` can expire (desktop: 30-minute cap, no `persistent`): runtime facts, the re-arm procedure, the expiry receipt, per-workflow terminal conditions, missed-re-arm detectors, and the ceiling's session-id handoff (Issue #2201)
 - `decision-only-output.md` — canonical decision-only human output, recoverable evidence, and monitor caller audit (Issue #1873)
 - `skill-sync-hooks.md` — skills worktree sync and hook registration narrative
 - `session-start-sync-hotspot-decision.md` — KEEP the SessionStart sync hook (Issue #1821); three counted changes, no recorded conflicts, and a shared lock and deadline

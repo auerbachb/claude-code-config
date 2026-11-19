@@ -256,4 +256,36 @@ grep -q 'cannot write' "$TMP_DIR/ro.err" \
 chmod 700 "$RO_DIR"
 ok "unwritable marker dir suppresses (3 calls, 0 advisories) and reports on stderr"
 
+# ── Stop event (Issue #2201): the idle-thread case PostToolUse cannot reach ──
+run_stop() {
+  jq -cn '{session_id: "test-session", hook_event_name: "Stop", stop_hook_active: false}' | bash "$HOOK"
+}
+reset_markers
+write_state "$PR" "$(jq -n --arg t "$(ago 40)" \
+  '{babysit:{active:true,last_tick_at:$t,cadence_effective_minutes:5,monitor_task_id:"task-77"}}')"
+out="$(run_stop)"
+[[ "$(jq -r '.hookSpecificOutput.hookEventName' <<<"$out")" == "Stop" ]] || fail "Stop run must emit a Stop hookSpecificOutput, got: $out"
+ctx="$(context_of <<<"$out")"
+grep -q "no persisted tick observed" <<<"$ctx" || fail "Stop notice must say no persisted tick observed, got: $ctx"
+grep -q "test/repo PR #${PR}" <<<"$ctx" || fail "Stop notice must name repo and PR, got: $ctx"
+grep -q "task-77" <<<"$ctx" || fail "Stop notice must name the recorded task id, got: $ctx"
+grep -q "monitor-expiry.md" <<<"$ctx" || fail "Stop notice must point at the expiry procedure, got: $ctx"
+grep -qiE "expired|dead" <<<"$ctx" && fail "Stop notice must not claim the watch expired or died, got: $ctx"
+[[ "$(jq -r '.decision // ""' <<<"$out")" != "block" ]] || fail "Stop notice must never block"
+[[ -z "$(run_stop | context_of)" ]] || fail "Stop notice must fire once per stale stretch"
+ok "Stop — stale watcher gets one non-blocking notice naming repo, PR and task"
+
+# The Stop namespace is separate: a PostToolUse warning does not swallow it.
+reset_markers
+run_hook >/dev/null
+[[ -n "$(run_stop | context_of)" ]] || fail "a PostToolUse warning must not suppress the Stop notice"
+[[ -n "$(run_hook | context_of)" ]] && fail "the Stop notice must not re-arm the PostToolUse warning"
+ok "Stop and PostToolUse dedupe independently"
+
+reset_markers
+write_state "$PR" "$(jq -n --arg t "$(ago 3)" \
+  '{babysit:{active:true,last_tick_at:$t,cadence_effective_minutes:5}}')"
+[[ -z "$(run_stop | context_of)" ]] || fail "Stop must stay silent for a fresh tick"
+ok "Stop negative control — fresh tick is silent"
+
 echo "All babysit-tick-watchdog tests passed."

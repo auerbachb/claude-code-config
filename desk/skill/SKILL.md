@@ -147,7 +147,7 @@ Each stdout line of the loop arrives as a notification. A line whose generation 
 | `desk-tick <GEN> replaced` | Another session registered as the desk. The loop has exited. Write `.desk=null` (skip with `SESSION_STATE_SH` empty), say `The desk moved to another session; this one has stopped ticking.`, and arm nothing |
 | `desk-tick <GEN> error <cmd> exit <n>: <line>` | One line, action first: `Desk can't reach the store (<cmd> exit <n>) — still retrying every <N> min; once the last tick is older than the live-desk bound (15 min by default), worker threads show their own menus again.` The loop keeps going |
 | `desk-tick <GEN> recovered` | One line: `Store reachable again — desk live.` |
-| The Monitor exited or expired | Re-arm: steps 5–7 with a new generation (no new registration; `register-control` is only for start) |
+| The Monitor exited or expired | Re-arm: steps 5–7 with a new generation (no new registration; `register-control` is only for start). Expiry contract: `.claude/reference/monitor-expiry.md` |
 
 A quiet tick prints nothing, and the desk says nothing about it.
 

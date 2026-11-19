@@ -232,7 +232,17 @@ done
 
 Backoff (issue #2445): the sleep may use `.claude/scripts/lib/gh-rate-budget.sh --interval <seconds>` (same number unless GitHub reports the allowance low; bare value if it prints nothing numeric).
 
-Arm that command through `Monitor` with `persistent: true`; store the returned task ID in
+Arm that command through `Monitor` with `timeout_ms` at the runtime maximum (1800000 where capped)
+and `persistent: true` only if the Monitor schema lists it. On a capped runtime it expires
+(Issue #2201): an expiry notice naming the exact recorded `.pmm.auto_wake_monitor_task_id` while
+the recorded generation is unchanged is an expiry receipt (`.claude/reference/monitor-expiry.md`) —
+if the fleet is still paused and not stopped, first run the scan itself when it is already due
+(time since the expired wake was armed ≥ the auto-wake cadence — a cadence longer than the maximum
+`timeout_ms` would otherwise restart its sleep on every re-arm and never scan), then re-arm with a
+fresh generation and the **remaining** sleep. Publish the new pair by compare-and-set against the
+captured pause marker and the expired identity (never a blind write); if that compare fails the
+fleet resumed or stopped meanwhile, so stop the newly armed task. The receipt stands in for the exact
+stop of that one ID; otherwise re-arm nothing. Store the returned task ID in
 `.pmm.auto_wake_monitor_task_id` and the fresh generation in
 `.pmm.auto_wake_monitor_generation` in one atomic write. Resume and stop use the ID to terminate
 the exact process; the wake skill uses the generation to reject events already queued by an older,

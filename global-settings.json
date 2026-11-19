@@ -61,6 +61,11 @@
           },
           {
             "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/babysit-tick-watchdog.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/trust-flag-repair.sh",
             "timeout": 10
           },

@@ -18,7 +18,7 @@ These apply to EVERY parent-agent message. No exceptions, no degradation, no ski
 2. **Action first.** Surface owner-only blockers, safety events, ambiguous calls, and decisions immediately: action needed, practical options and consequence, then a useful evidence link. No ceremony-only timestamp prefix. Include monitoring counts or times only when useful to the decision.
 3. **Evidence survives silence.** Preserve full CI/review diagnostics, AC results, safety events, resumable state, and machine reports in their existing records/raw logs. Suppress human narration only; never change failure exits, gate outcomes, dispatch, or state persistence. A genuine stall still surfaces through the bgwork ceiling; a clean auto-merge emits `merged PR #N` (with `/wrap`'s no-review-override suffix when applicable).
 
-4. **`Monitor` for recurring polls.** Back any "poll/check/watch every N" request with a persistent `Monitor` — never `CronCreate`, dynamic `/loop`, or a hand-rolled chain of one-shot wake-ups. Decision tree + pre-exit checklist: `scheduling-reliability.md`.
+4. **`Monitor` for recurring polls.** Back any "poll/check/watch every N" request with a `Monitor` — never `CronCreate`, dynamic `/loop`, or a hand-rolled chain of one-shot wake-ups. Decision tree + pre-exit checklist: `scheduling-reliability.md`.
 5. **Dedicated monitor mode.** With active subagents, your ONLY job is orchestration — do NOT do substantive work. See `monitor-mode.md` "Dedicated Monitor Mode" for full rules.
 
 After context compaction, your FIRST action is to reconstruct monitoring state silently (see "Post-Compaction Recovery" in `monitor-mode.md`). Message if recovery reveals a blocker, failure, or decision needing input.

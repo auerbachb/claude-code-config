@@ -10,6 +10,27 @@
 hook_stdin=$(cat)
 session_source=$(jq -r '.source // empty' <<<"$hook_stdin" 2>/dev/null)
 
+# --- Session-id handoff for the silence ceiling (Issue #2201) ---
+# Bash and Monitor commands often run without CLAUDE_SESSION_ID, so a bare
+# `bgwork-ceiling.sh --arm-command` could not name the session the arm hook
+# keys on. Where the host offers CLAUDE_ENV_FILE, append a validated export of
+# this payload's id, for EVERY source (a resumed/forked/compacted session must
+# not inherit a parent's value). Append only, never truncate. The id alphabet
+# is checked, so single-quoting cannot be broken out of. No CLAUDE_ENV_FILE
+# (e.g. the desktop app) is a supported degraded mode: the script then refuses
+# loudly instead of guessing (.claude/reference/monitor-expiry.md).
+_bgceiling_notice=""
+if [[ -n "${CLAUDE_ENV_FILE:-}" ]]; then
+  _bg_sid=$(jq -r '.session_id // empty' <<<"$hook_stdin" 2>/dev/null)
+  if [[ ${#_bg_sid} -ge 1 && ${#_bg_sid} -le 256 && "$_bg_sid" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+    if ! printf "\nexport CLAUDE_BGCEILING_SESSION_ID='%s'\n" "$_bg_sid" >> "$CLAUDE_ENV_FILE" 2>/dev/null; then
+      _bgceiling_notice="SESSION ID HANDOFF DEGRADED: could not append to CLAUDE_ENV_FILE, so a bare bgwork-ceiling.sh --arm-command will refuse; use the exact command from the bgwork-ceiling hook advisory."
+    fi
+  else
+    _bgceiling_notice="SESSION ID HANDOFF DEGRADED: the SessionStart payload carried no usable session_id, so a bare bgwork-ceiling.sh --arm-command will refuse; use the exact command from the bgwork-ceiling hook advisory."
+  fi
+fi
+
 # Whether the config-sync lock had to be WAITED for. Set at the acquire below
 # from state-lock.sh's own STATE_LOCK_WAITED, and read by the restart-marker
 # clear near the end: waiting is unambiguous evidence that another sync was in
@@ -1088,6 +1109,12 @@ ${notices}"
   else
     notices="$_config_sync_notice"
   fi
+fi
+
+if [[ -n "$_bgceiling_notice" ]]; then
+  notices="${notices:+$notices
+
+}${_bgceiling_notice}"
 fi
 
 # Strip control characters before they reach jq. `$errors` carries raw git
