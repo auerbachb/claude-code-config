@@ -77,7 +77,7 @@ done
 check_contains "parse-arg names the expected form" "/pm epic #123" "$("$SCRIPT" parse-arg '' 2>&1)"
 
 # ---- a parent with three open children + noise ---------------------------------
-BODY100=$'Theme text that says epic epic epic.\n\n- [ ] not an issue line\n- [ ] other/repo#900 cross-repo child\n- [x] #100 self\n- [ ] #105 a PR, not an issue\n- [ ] #106 missing issue\n- [ ] #104 task-list child\nSee #999 in prose (not a task list).\n\n## Increment chain\n\nDecomposed.\n\n- [ ] #101\n- [x] #102\n'
+BODY100=$'Theme text that says epic epic epic.\n\n- [ ] not an issue line\n- [ ] other/repo#900 cross-repo child\n- [x] #100 self\n- [ ] #105 a PR, not an issue\n- [ ] #106 missing issue\n- [ ] #104 task-list child\nSee #999 in prose (not a task list).\n\n```\n- [ ] #200 fenced example\n```\n\n## Increment chain\n\nDecomposed.\n\n- [ ] #101\n- [x] #102\n'
 issue 100 open "Parent theme" "$BODY100"
 issue 101 open "Child one" "- Parent: #100"
 issue 102 closed "Child two" "- Depends on #101"
@@ -98,7 +98,7 @@ check_eq "children: same-repo children in first-seen order" "104,101,102,103" "$
 check_eq "children: open set excludes the closed child" "104,101,103" "$(jq -r '.open | join(",")' <<< "$out")"
 check_eq "children: closed set" "102" "$(jq -r '.closed | join(",")' <<< "$out")"
 check_eq "children: a missing number is reported, not a child" "106" "$(jq -r '.missing | join(",")' <<< "$out")"
-check_eq "children: never the parent, a PR, prose #N or another repo" "false" \
+check_eq "children: never the parent, a PR, prose #N, a fenced example or another repo" "false" \
   "$(jq -r '[.children[].number] | any(. == 100 or . == 105 or . == 999 or . == 900 or . == 200)' <<< "$out")"
 check_eq "children: checklist source recorded" '["increment-chain"]' "$(jq -c '.children[] | select(.number == 101) | .sources' <<< "$out")"
 check_eq "children: body + sub-issue sources merged" '["task-list","sub-issue"]' "$(jq -c '.children[] | select(.number == 104) | .sources' <<< "$out")"
@@ -148,6 +148,13 @@ check_eq "close-if-done: no close call on a partial child list" "0" "$(grep -c '
 echo '[]' > "$TMP/fx/sub-500.json"
 check_eq "close-if-done: closes once every child is closed" "closed #500 (2 children)" "$("$SCRIPT" close-if-done acme/w 500)"
 check_contains "close-if-done: the close comment names the children" "#501, #502" "$(grep '^issue close 500' "$TMP/calls.log")"
+issue 600 open "Parent with a dead reference" $'- [x] #501\n- [x] #699\n'
+echo '[]' > "$TMP/fx/sub-600.json"
+: > "$TMP/calls.log"
+err=$("$SCRIPT" close-if-done acme/w 600 2>&1 >/dev/null); rc=$?
+check_eq "close-if-done: a missing listed child never closes (exit 1)" "1" "$rc"
+check_contains "close-if-done: missing child named" "#699" "$err"
+check_eq "close-if-done: no close call with a missing child" "0" "$(grep -c '^issue close' "$TMP/calls.log")"
 check_eq "close-if-done: idempotent on a closed parent" "already-closed #500" "$("$SCRIPT" close-if-done acme/w 500)"
 "$SCRIPT" close-if-done acme/w 300 >/dev/null; rc=$?
 check_eq "close-if-done: a childless parent is never closed" "5" "$rc"

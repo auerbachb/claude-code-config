@@ -19,6 +19,7 @@
 #   2. GitHub sub-issues (`repos/<repo>/issues/<N>/sub_issues`), same-repo
 #      only. Not every token can read them: a failed read is reported as
 #      `"sub_issues": "unavailable"` and the checklist and task list stand.
+#   Lines inside fenced code blocks (``` or ~~~) are examples, never children.
 #   The parent itself, pull requests and missing numbers are never children
 #   (missing ones are listed under `missing`).
 #
@@ -43,7 +44,8 @@
 #                  and, when there is at least one child and every child is
 #                  CLOSED, closes the parent with a comment naming them.
 #                  It never closes on a partial child list: when the
-#                  sub-issues read failed it exits 1 and leaves the parent open.
+#                  sub-issues read failed, or a listed child cannot be found
+#                  (`missing`), it exits 1 and leaves the parent open.
 #                  Prints `closed #N (k children)`, `already-closed #N`, or
 #                  `open #N (j of k children open)`.
 #
@@ -95,6 +97,8 @@ fetch_issue() {
 body_children() {
   local body="$1" self="$2"
   printf '%s\n' "$body" | tr -d '\r' | awk -v self="$self" '
+    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
+    fence { next }
     /^##[[:space:]]/ { chain = ($0 ~ /^##[[:space:]]+Increment chain[[:space:]]*$/) }
     {
       if (match($0, /^[[:space:]]*[-*+][[:space:]]+\[[ xX]\][[:space:]]+#[0-9]+/)) {
@@ -187,6 +191,9 @@ close_if_done() {
   fi
   if [[ "$(jq -r '.sub_issues' <<< "$json")" != read ]]; then
     die 1 "sub-issues of #$n unreadable; not closing on a partial child list"
+  fi
+  if [[ "$(jq -r '.missing | length' <<< "$json")" -gt 0 ]]; then
+    die 1 "#$n lists children GitHub cannot find ($(jq -r '[.missing[] | "#\(.)"] | join(", ")' <<< "$json")); not closing"
   fi
   names=$(jq -r '[.children[].number | "#\(.)"] | join(", ")' <<< "$json")
   gh issue close "$n" --repo "$repo" \
