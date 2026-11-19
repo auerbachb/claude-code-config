@@ -66,7 +66,7 @@ Through `unreviewed-merge-ledger.sh backfill --status <s> --detail-json -`:
 | Idle bound per review | `--timeout` | — | `900` |
 | Failed post-review attempts before a row is skipped | `--max-row-attempts` | `BACKFILL_MAX_ROW_ATTEMPTS` | `3` |
 
-`--channels` drops a repeated name, so a failed channel is never retried in the same row. `--ignore-window` runs now (a manual pass); `--dry-run` lists the rows it would review and writes no ledger row, issue or label (like any run, it still takes the run lock and appends to the usage and run logs; the Dry run paragraph under Range mode names the files). The ledger is cross-repo: one run handles the repo checked out at `--repo-dir`. An explicit `--repo` that differs from a GitHub origin of `--repo-dir` exits 2 (credentialed and port-qualified GitHub URLs are parsed; an unparseable GitHub origin also exits 2, and the URL is printed with any credential redacted), so findings never land in the wrong repo.
+`--channels` drops a repeated name, so a failed channel is never retried in the same row. `--ignore-window` runs now (a manual pass); `--dry-run` lists the rows it would review and writes no ledger row, issue or label (like any run, it still appends to the usage and run logs, and takes the run lock once inside the quiet window or under `--ignore-window`; the Dry run paragraph under Range mode names the files). The ledger is cross-repo: one run handles the repo checked out at `--repo-dir`. An explicit `--repo` that differs from a GitHub origin of `--repo-dir` exits 2 (credentialed and port-qualified GitHub URLs are parsed; an unparseable GitHub origin also exits 2, and the URL is printed with any credential redacted), so findings never land in the wrong repo.
 
 ## Scheduling
 
