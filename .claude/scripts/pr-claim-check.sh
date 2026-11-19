@@ -19,7 +19,10 @@
 #     unknown, not_found, closed issue, unreadable claim or PR line -> unverifiable
 #     two different claim-holder lines in the PR body -> unverifiable (fails closed)
 #   A claim-holder line counts only when it stands alone on its line, outside
-#   fenced code blocks; a mention inside a sentence is ignored.
+#   fenced code blocks; a mention inside a sentence is ignored. Fences follow
+#   GFM: an opener or closer is indented at most three spaces (a tab or four
+#   spaces is not a fence), and a backtick opener whose info string holds a
+#   backtick is not a fence.
 #   Overall skipped: bot author (bot_author), or no closing keyword (no_linked_issue).
 #
 # NEVER PRINTS THE RAW HOLDER
@@ -70,6 +73,9 @@ usage_err() {
 PR=""
 REPO=""
 REPORT=0
+# Linked issues; set before any exit path so report_outcome never reads an
+# unset (set -u abort) or an inherited environment value.
+LINKED=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
@@ -217,19 +223,32 @@ jq -r '.body // ""' "$TMPD/pr.json" >"$TMPD/body.md"
 # or a claim line the author did not mean.
 strip_body() {
   awk -v keep="$1" '
-    # A fence opens with 3+ backticks or tildes and closes only with the same
-    # character, at least as long, and nothing else on the line.
+    # GFM fences (the rules review-tier.sh strip_hidden uses): a fence opens
+    # with 3+ backticks or tildes indented at most three spaces (a tab or four
+    # spaces is indented code, not a fence); a backtick opener whose info
+    # string holds a backtick is inline code, not a fence. It closes only on
+    # the same character, at least as long, indented at most three spaces,
+    # with nothing but spaces or tabs after it. An unclosed fence hides the rest.
     BEGIN { fence = 0; fch = ""; flen = 0; com = 0 }
+    # A CRLF body ends lines in "\r\n"; drop the CR so a closing fence still closes.
+    { sub(/\r$/, "") }
     {
-      t = $0; sub(/^[[:space:]]*/, "", t)
-      ch = substr(t, 1, 1)
-      n = 0
-      if (ch == "`" || ch == "~") { while (substr(t, n + 1, 1) == ch) n++ }
       if (fence) {
-        if (n >= flen && ch == fch && substr(t, n + 1) ~ /^[[:space:]]*$/) fence = 0
+        if ($0 ~ /^ ? ? ?[`~]/) {
+          t = $0; sub(/^ */, "", t)
+          n = 0
+          while (substr(t, n + 1, 1) == fch) n++
+          if (n >= flen && substr(t, n + 1) ~ /^[ \t]*$/) fence = 0
+        }
         next
       }
-      if (n >= 3) { fence = 1; fch = ch; flen = n; next }
+      if (match($0, /^ ? ? ?(```+|~~~+)/)) {
+        t = substr($0, RSTART, RLENGTH); sub(/^ */, "", t)
+        info = substr($0, RSTART + RLENGTH)
+        if (!(substr(t, 1, 1) == "`" && index(info, "`") > 0)) {
+          fence = 1; fch = substr(t, 1, 1); flen = length(t); next
+        }
+      }
     }
     fence { next }
     {
@@ -327,7 +346,11 @@ for N in $LINKED; do
   # The throwaway holder is unguessable per run, so it can never equal a real
   # claim holder. Even so, `mine` and `claimed` both carry the winning holder
   # and are compared by digest below; only unclaimed/stale skip the comparison.
-  CLAIM_OUT="$(bash "$ISSUE_CLAIM" "$N" --check --json --repo "$REPO" --holder "pr-claim-check-$$-$RANDOM" 2>/dev/null)" || true
+  # --no-viewer: the Actions installation token cannot call GET /user, and the
+  # comparison below needs only the winning holder (issue #2412). An older
+  # installed helper rejects the flag and prints no JSON, which lands in the
+  # unverifiable/claim_state_unreadable arm: a warning and exit 0, never a match.
+  CLAIM_OUT="$(bash "$ISSUE_CLAIM" "$N" --check --json --no-viewer --repo "$REPO" --holder "pr-claim-check-$$-$RANDOM" 2>/dev/null)" || true
   VERDICT="$(printf '%s' "$CLAIM_OUT" | jq -r '.verdict // ""' 2>/dev/null)" || VERDICT=""
   case "$VERDICT" in
     unclaimed|stale)
@@ -414,8 +437,14 @@ Stop this work, or if that claim is stale, take it over first with \`issue-claim
     printf 'pr-claim-check: %s on PR #%s\n' "$OVERALL" "$PR" >>"$GITHUB_STEP_SUMMARY"
   fi
 
-  # Dedupe: one comment per PR per outcome and issue set.
-  if ! gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" >"$TMPD/comments.json" 2>/dev/null; then
+  # Dedupe: one comment per PR per outcome and issue set. Best effort: GitHub
+  # has no compare-and-set, so two writers can still race between the list and
+  # the POST; pr-claim-check.yml serializes its own runs per PR.
+  # With no resolved repository there is nowhere to read or post; the warning,
+  # the step summary and the JSON above still stand.
+  if [[ -z "$REPO" || -z "$PR" ]]; then
+    echo "pr-claim-check: repository or PR unresolved; not posting" >&2
+  elif ! gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" >"$TMPD/comments.json" 2>/dev/null; then
     echo "pr-claim-check: could not list PR comments; not posting" >&2
   else
     EXISTING="$(jq -s --arg m "$MARKER" '[ (add // [])[] | select(((.body // "") | startswith($m))) ] | length' "$TMPD/comments.json" 2>/dev/null)" || EXISTING=""

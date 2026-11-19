@@ -18,8 +18,16 @@ Each entry in `BOOTSTRAP_FILES` is `"relative-path|file-mode"` (e.g. `".claude/s
 | `.github/workflows/ac-gate.yml` | 644 | CI gate that rejects PRs with unchecked AC boxes |
 | `.claude/scripts/ac-gate.sh` | 644 | Logic for the AC gate (called by the workflow) |
 | `.claude/scripts/pr-issue-ref.sh` | 755 | Extracts linked issue numbers from PR bodies; must be executable because callers test `[[ -x ]]` |
-| `.github/workflows/pr-claim-check.yml` | 644 | Non-required PR claim check (issue #2288); passes with a notice when `issue-claim.sh` is not on the base branch |
-| `.claude/scripts/pr-claim-check.sh` | 644 | Compares a PR's `claim-holder` line with each linked issue's winning claim (called by the workflow with `--report`) |
+| `.github/workflows/pr-claim-check.yml` | 644 | Non-required PR claim check (issue #2288); passes with a notice only while the checker or `issue-claim.sh` is not yet on the base branch — including the PR that installs them, because the workflow checks out the base SHA |
+| `.claude/scripts/pr-claim-check.sh` | 644 | Compares a PR's `claim-holder` line with each linked issue's winning claim (called by the workflow with `--report`; reads claims with `issue-claim.sh --check --no-viewer`) |
+| `.claude/scripts/issue-claim.sh` | 755 | The claim helper the checker reads (issue #2412); without it the check never compares ownership. Executable because the `AGENTS.md` claim block calls it directly |
+| `.claude/scripts/pr-claim-line.sh` | 755 | Prints the PR body's `claim-holder` line, as the `AGENTS.md` claim block documents (issue #2412). Optional `session-state.sh` absent → it falls through to the given holder |
+
+Not provisioned: `session-state.sh` and `issue-claim-batch.sh`. Both are optional — `pr-claim-line.sh` works without session state, and the claim block falls back to one-issue claims when the batch helper is absent.
+
+### Upgrading a repo that already has the claim check
+
+`--apply` is add-only, so a repo bootstrapped before issue #2412 gets the two new helpers but keeps its older `pr-claim-check.sh` and workflow. That older checker does not pass `--no-viewer`, so under the Actions token its helper call still fails the viewer lookup and CI keeps reporting `unverifiable` (a warning, exit 0). Replace both template files by hand with the current ones to fix it — and `issue-claim.sh` too if the repo already had one older than `--no-viewer`, since `--apply` keeps it and the new checker's flag would be rejected (still `unverifiable`). The PR carrying those replacements still runs the old base-SHA checker, so merge it first, then confirm on a later PR — one whose base holds the updated files — that links an issue with a known live claim. A green run alone is not evidence that ownership was compared: inspect the verdict in the run log for `match` or `foreign`.
 
 ## Per-file add-only guarantee
 
