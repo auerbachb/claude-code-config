@@ -17,7 +17,7 @@ for phase in preconditions arm tick teardown recovery park-reactive park-preempt
 done
 
 for pair in resume:load resume:fetch resume:present rank:load rank:fetch rank:score \
-    rank:present shared:priority shared:window-fit shared:ownership flow:cleanup flow:forgotten-prs \
+    rank:present shared:priority shared:window-fit shared:ownership shared:config flow:cleanup flow:forgotten-prs \
     flow:monitor flow:launch flow:track flow:progress flow:refill flow:handoff; do
   operation=${pair%:*}
   phase=${pair#*:}
@@ -92,6 +92,7 @@ trace_route() {
 [[ "$(trace_route 'Resume existing work')" == 'resume/load.md resume/fetch.md resume/present.md' ]]
 [[ "$(trace_route 'Cold start or explicit ranking')" == 'rank/load.md rank/fetch.md rank/score.md rank/present.md' ]]
 [[ "$(trace_route 'Existing Step 1C cleanup gate')" == 'flow/cleanup.md' ]]
+[[ "$(trace_route 'Config refresh of an existing file (cold start and resume) or whole-remainder `refresh config` (cold start only)')" == 'shared/config.md' ]]
 [[ "$(trace_route 'Existing Step 1D forgotten-PR gate')" == 'flow/forgotten-prs.md' ]]
 [[ "$(trace_route 'Selected eligible dispatch')" == 'flow/launch.md' ]]
 [[ "$(trace_route 'Available-capacity evaluation')" == 'flow/refill.md' ]]

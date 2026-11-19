@@ -331,6 +331,15 @@ class PMReadTrace(unittest.TestCase):
         self.assertIn('if the first whitespace-delimited token of the remaining `$ARGUMENTS` is exactly `resume`', skill)
         self.assertNotIn('contains "resume"', skill)
 
+    def test_refresh_config_matches_only_the_whole_remainder(self):
+        skill = (ROOT / '.claude/skills/pm/SKILL.md').read_text()
+        self.assertIn('If what is left is exactly `refresh config` (the whole remainder)', skill)
+        self.assertNotIn('contains the phrase `refresh config`', skill)
+        self.assertIn('`/pm refresh config`: explicit refresh, then cold-start ranking.', skill)
+        self.assertIn('`/pm refresh config loading in the dashboard`: cold-start ranking against the full goal, with no explicit refresh.', skill)
+        self.assertIn('`/pm day refresh config`: `day` is stripped first', skill)
+        self.assertIn('explicit refresh on the cold-start route in day mode', skill)
+
 
 unittest.main(argv=[sys.argv[0]], verbosity=2)
 PY
