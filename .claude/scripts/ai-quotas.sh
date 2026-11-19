@@ -1559,39 +1559,42 @@ apply_last_known() { # <doc-json-file> — saved figures for accounts with no us
       + ($r | with_entries(select(.key as $k | (akeys | index($k)) != null and .value != null)));
     . as $doc
     | ([ .rows[] | select(usable) | key ]) as $ok
+    # The unusable rows of accounts with no usable row, in live-row order. Only
+    # these can receive a saved series (#2330).
+    | ([ $doc.rows | to_entries[]
+         | select((.value | usable) | not)
+         | .value as $r | select(([ $ok[] | select(. == ($r | key)) ] | length) == 0)
+         | {i: .key, k: (.value | key), m: (.value | (.pool // .window))} ]) as $cand
+    # Each saved series is claimed ONCE per account: by the first such row whose
+    # window or pool is its own, else (an orphan, e.g. a 5-hour reading under a
+    # 7-day account-wide failure placeholder) by the first such row of the account.
+    # A row that claims nothing, a later duplicate-key row included, and every row
+    # of an account with no saved series, is left exactly as read.
+    | (reduce $series[] as $x ({};
+        ([ $cand[] | select(.k == {provider: $x.provider, label: $x.label}) ]) as $rows
+        | if ($rows | length) == 0 then .
+          else ([ $rows[] | select(.m == ($x.pool // $x.window)) ] | first) as $hit
+            | if $hit != null then .[$hit.i | tostring].own += [$x]
+              else .[$rows[0].i | tostring].orphan += [$x] end
+          end)) as $claims
     | .rows = [ $doc.rows | to_entries[] | .key as $i | .value as $r
-        | if ($ok | any(. == ($r | key))) then $r
-          else
-            # A saved series belongs to the live row with its own window or pool. A
-            # saved series that no live row of this account carries (e.g. a 5-hour
-            # reading under a 7-day account-wide failure placeholder) goes to the
-            # first unusable row for the account only, so it is not repeated.
-            ([ $doc.rows[] | select(.provider == $r.provider and .label == $r.label) | (.pool // .window) ]) as $live_keys
-            | ([ $doc.rows[0:$i][] | select(usable | not) | select(key == ($r | key)) ] | length > 0) as $dup
-            | ([ $series[] | select(.provider == $r.provider and .label == $r.label)
-                         | (.pool // .window) as $k
-                         | select($r.provider == "cursor" or $k == ($r.pool // $r.window)) ]) as $own
-            | ([ $series[] | select(.provider == $r.provider and .label == $r.label)
-                         | (.pool // .window) as $k
-                         | select($r.provider != "cursor" and (($live_keys | index($k)) == null)) ]) as $orphan
-            | (if $dup then $own else $own + $orphan end) as $saved
-            | if ($own | length) == 0 and $dup then empty
-              elif ($saved | length) == 0 then $r
-              else $saved[] as $x
-                | $r + {
-                    window: (if $x.provider == "cursor" then "billing-cycle" else $x.window end),
-                    pool: (if $x.provider == "cursor" then ($x.pool // $x.window) else null end),
-                    status: (if $r.status == "ok" then "unreadable" else $r.status end),
-                    detail: (if $r.status == "ok" then "live read returned no usable figure" else $r.detail end),
-                    last_known_used_pct: $x.used_pct,
-                    last_known_at_epoch: $x.fetched_at_epoch,
-                    last_known_at_et: $x.fetched_at_et,
-                    last_known_source: $x.source,
-                    last_known_resets_at_epoch: $x.resets_at_epoch,
-                    last_known_resets_et: $x.resets_et,
-                    last_known_expired: $x.expired
-                  } + acct_for($r)
-              end
+        | (($claims[$i | tostring] // {}) | (.own // []) + (.orphan // [])) as $saved
+        | if ($saved | length) == 0 then $r
+          else $saved[] as $x
+            | $r + {
+                window: (if $x.provider == "cursor" then "billing-cycle" else $x.window end),
+                pool: (if $x.provider == "cursor" then ($x.pool // $x.window) else null end),
+                used_pct: null,
+                status: (if $r.status == "ok" then "unreadable" else $r.status end),
+                detail: (if $r.status == "ok" then "live read returned no usable figure" else $r.detail end),
+                last_known_used_pct: $x.used_pct,
+                last_known_at_epoch: $x.fetched_at_epoch,
+                last_known_at_et: $x.fetched_at_et,
+                last_known_source: $x.source,
+                last_known_resets_at_epoch: $x.resets_at_epoch,
+                last_known_resets_et: $x.resets_et,
+                last_known_expired: $x.expired
+              } + acct_for($r)
           end
       ]' "$1" > "$TMP/lk-doc.json" 2>/dev/null && mv "$TMP/lk-doc.json" "$1" \
     || warn "DEGRADED: could not place saved figures in the report — showing live status only"

@@ -31,6 +31,10 @@
 #        with cr-review-hourly.sh --record-explicit.
 #     3. codeant missing → `@codeant-ai review`.
 #        (Graphite was a step here until its retirement on 2026-11-03, #1889.)
+#        Each successful CodeRabbit or CodeAnt post (both paths) is logged by
+#        review-availability.sh record-request --reason fixpr_step3b in the
+#        account-wide `.review_requests` log (issue #2276); a failed or missing
+#        log only warns on stderr.
 #     4. BugBot (`@cursor review`): skipped when bugbot-tier-excluded.sh
 #        excludes BugBot, then when bugbot-refused-head.sh says BugBot already
 #        refused the pushed SHA, then — LAST — when review-daily-cap.sh answers
@@ -114,6 +118,25 @@ REVIEW_DAILY_CAP_SH="$(resolve review-daily-cap.sh || true)"
 PR_BODY_NOTE_SH="$(resolve pr-body-review-note.sh || true)"
 TRIGGERS_SH="$(resolve review-triggers-allowed.sh || true)"
 PAID_GRANT_SH="$(resolve paid-review-grant.sh || true)"
+REVIEW_AVAILABILITY_SH="$(resolve review-availability.sh || true)"
+
+# Logs one successful free-reviewer post in the account-wide `.review_requests` log, so
+# `review-availability.sh choose` ranks this request too (issue #2276). Called only after
+# `gh pr comment` succeeded, for coderabbit and codeant (BugBot is paid, never logged). Best
+# effort and one attempt — a retry after a partial write could log the request twice. Always
+# returns 0: a logging failure never releases a claim or stops the next reviewer's post.
+record_free_request() { # <coderabbit|codeant>
+  local err=""
+  if [[ -z "$REVIEW_AVAILABILITY_SH" ]]; then
+    echo "[REVIEWERS] review-availability.sh not found (checked beside this script and the three standard paths) — the $1 request is not in the free-reviewer request log (#2276)" >&2
+    return 0
+  fi
+  if ! err="$("$REVIEW_AVAILABILITY_SH" record-request --repo "$REPO_FULL" --pr "$PR_NUMBER" --head "$PUSHED_SHA" \
+      --reviewer "$1" --reason fixpr_step3b 2>&1 >/dev/null)"; then
+    echo "[REVIEWERS] posted the $1 request but could not log it in the free-reviewer request log (#2276): ${err:-no detail}" >&2
+  fi
+  return 0
+}
 
 # BugBot's last step (issue #1898): spend an owner grant for this PR and pushed
 # SHA, or print the #1897 approval skip. paid-review-grant.sh posts the trigger
@@ -168,6 +191,7 @@ post_cr() { # posts @coderabbitai full review under the per-PR cap; 0 posted, 1 
       if [[ -n "$CR_HOURLY_SCRIPT" ]]; then
         "$CR_HOURLY_SCRIPT" --record-explicit "$PR_NUMBER" || true
       fi
+      record_free_request coderabbit
       return 0
     fi
     echo "[REVIEWERS] FAILED to post @coderabbitai full review — check gh auth scopes; not recording explicit trigger" >&2
@@ -215,8 +239,11 @@ if [[ "$TRIGGER_MODE" == "legacy" ]]; then
   # ---- the pre-#1749 Step 3b, unchanged in order and conditions ----
   if ! active coderabbit; then post_cr || true; fi
   if ! active codeant; then
-    gh pr comment "$PR_NUMBER" --repo "$REPO_FULL" --body "@codeant-ai review" \
-      || echo "[REVIEWERS] FAILED to post @codeant-ai review" >&2
+    if gh pr comment "$PR_NUMBER" --repo "$REPO_FULL" --body "@codeant-ai review"; then
+      record_free_request codeant
+    else
+      echo "[REVIEWERS] FAILED to post @codeant-ai review" >&2
+    fi
   fi
   # BugBot may ALREADY have refused this fresh HEAD: it auto-runs on push, so by
   # the time Step 3b executes a usage-limit refusal can be sitting on the very
@@ -300,6 +327,8 @@ for key in coderabbit codeant cursor; do
       if [[ "$key" == "coderabbit" && -n "$CR_HOURLY_SCRIPT" ]]; then
         "$CR_HOURLY_SCRIPT" --record-explicit "$PR_NUMBER" || true
       fi
+      # The local guard above never lets cursor reach "allowed": a free reviewer posted.
+      record_free_request "$key"
     else
       echo "[REVIEWERS] FAILED to post $body — releasing its claim" >&2
       "$TRIGGERS_SH" "$PR_NUMBER" --repo "$REPO_FULL" --release "$key" >/dev/null 2>&1 \

@@ -2003,6 +2003,24 @@ JSON fields: `last_known_used_pct`, `last_known_at_epoch`, `last_known_at_et`,
 `last_known_source`, `last_known_resets_at_epoch`, `last_known_resets_et`,
 `last_known_expired`.
 
+**Readers stay live-only (#2330).** The Claude and Codex readers emit only what the live
+read returned: an account-wide failure is one figureless `7-day` placeholder. They never
+emit saved windows. `apply_last_known` in `ai-quotas.sh` alone attaches saved series, and it
+runs after history, last-known recording, forecasting and notifications, so none of those
+ever sees a cached figure. That placeholder is enough to show every saved window: a saved
+`5-hour` series appears under it even without `--five-hour`.
+
+**Placement.** Each saved series is placed once per account, in live-row order: on the first
+unusable row whose window (Cursor: pool) is its own, else on the account's first unusable
+row. A row's own series come before such orphans. An unusable row that receives no saved
+series, a later row with a duplicate window included, is shown unchanged with its own status
+and detail. Accounts with no saved series are not touched.
+
+**Partial success is not enriched.** An account with any usable live row is not looked up,
+so a failed sibling window (a figureless Codex `5-hour` next to a live weekly row) shows no
+saved figure. The helper still keeps that series' saved reading. Showing it is a separate
+follow-up.
+
 **Owner readings.** `/quotas-setup report <label> <window> <used_pct> [<reset>] [<provider>]`
 records one reading as `owner-reported`. Cursor pools are `cursor-models` and `other-models`.
 The reset accepts `YYYY-MM-DD` (midnight Eastern), an ISO-8601 timestamp, or epoch seconds.

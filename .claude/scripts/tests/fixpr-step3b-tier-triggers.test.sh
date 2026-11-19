@@ -14,7 +14,8 @@
 #   session-state.sh, pr-body-review-note.sh. Stubbed: review-tier.sh,
 #   reviewer-activity.sh, bugbot-refused-head.sh, review-daily-cap.sh,
 #   cr-review-hourly.sh, and `gh`, which records every posted comment and adds
-#   it to the PR's comments the way GitHub would.
+#   it to the PR's comments the way GitHub would. review-availability.sh is a
+#   logging stub (issue #2276) except in one case that runs the real helper.
 
 set -uo pipefail
 
@@ -72,9 +73,27 @@ cat > "$S/cr-review-hourly.sh" <<'EOF'
 printf 'cr-hourly %s\n' "$*" >> "$CALLS"
 exit 0
 EOF
+# The free-reviewer request log (issue #2276): a stub recorder beside the script under
+# test (the sibling the resolver finds first) writes one line per record-request call into
+# the same ordered EVENTS log the gh stub writes each post to.
+cat > "$S/review-availability.sh" <<'EOF'
+#!/usr/bin/env bash
+sub="$1"; shift
+repo=""; pr=""; head=""; reviewer=""; reason=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo) repo="$2" ;; --pr) pr="$2" ;; --head) head="$2" ;;
+    --reviewer) reviewer="$2" ;; --reason) reason="$2" ;;
+  esac
+  shift 2
+done
+echo "record $sub $reviewer repo=$repo pr=$pr head=$head reason=$reason" >> "$EVENTS"
+[[ -n "${FIXTURE_RECORD_FAIL:-}" ]] && { echo "state write refused" >&2; exit 5; }
+echo '{"recorded":true}'
+EOF
 chmod +x "$S"/*.sh
 
-export FX="$TMP/fx" POSTED_LOG="$TMP/posted" CALLS="$TMP/calls" GH_BODY="$TMP/body.md"
+export FX="$TMP/fx" POSTED_LOG="$TMP/posted" CALLS="$TMP/calls" GH_BODY="$TMP/body.md" EVENTS="$TMP/events"
 mkdir -p "$FX" "$TMP/bin"
 cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -95,6 +114,7 @@ case "$args" in
   "pr comment"*)
     [[ -n "${FIXTURE_POST_FAIL:-}" && "$body" == "$FIXTURE_POST_FAIL" ]] && exit 1
     echo "$body" >> "$POSTED_LOG"
+    echo "post $body" >> "$EVENTS"
     jq --arg b "$body" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       '. + [{user: {login: "me"}, body: $b, created_at: $at, updated_at: $at}]' "$FX/comments.json" > "$FX/c.tmp" \
       && mv "$FX/c.tmp" "$FX/comments.json" ;;
@@ -125,17 +145,17 @@ checks() { # <conclusion|null> <secs ago> [status]
 }
 OK_CAP='{"platform":"bugbot","date":"2026-10-08","spent_usd":1,"add_usd":1.58,"cap_usd":10,"status":"ok"}'
 reset() { # <tier json>
-  export FIXTURE_TIER_OUT="$1" FIXTURE_HEAD="$SHA" FIXTURE_ACTIVE="" FIXTURE_POST_FAIL=""
+  export FIXTURE_TIER_OUT="$1" FIXTURE_HEAD="$SHA" FIXTURE_ACTIVE="" FIXTURE_POST_FAIL="" FIXTURE_RECORD_FAIL=""
   export FIXTURE_CAP_OUT="$OK_CAP" FIXTURE_CAP_RC=0
   rm -f "$HOME/.claude/session-state.json"
-  : > "$POSTED_LOG"; : > "$CALLS"
+  : > "$POSTED_LOG"; : > "$CALLS"; : > "$EVENTS"
   echo '[]' > "$FX/comments.json"
   printf '## Summary\n\nA change.\n\n## Test plan\n\n- [ ] works\n' > "$GH_BODY"
   checks success 7200
 }
-OUT=""
-step3b() { OUT="$(cd "$WORK" && bash "$S/fixpr-reviewer-triggers.sh" "$PR" --repo acme/one \
-  --pushed-sha "$SHA" --pushed-at "$(ago 150)" 2>"$TMP/err")"; }
+OUT=""; RC=0
+step3b() { RC=0; OUT="$(cd "$WORK" && bash "$S/fixpr-reviewer-triggers.sh" "$PR" --repo "${STEP3B_REPO:-acme/one}" \
+  --pushed-sha "$SHA" --pushed-at "$(ago 150)" 2>"$TMP/err")" || RC=$?; }
 posted() { tr '\n' ';' < "$POSTED_LOG"; }
 says() { [[ "$OUT" == *"$1"* ]] && echo yes || echo no; }
 ledger() { ( cd "$WORK" && bash "$S/session-state.sh" --repo acme/one --get-json ".prs[\"$PR\"].review_trigger_ledger.$1.count" 2>/dev/null ) || echo null; }
@@ -213,6 +233,85 @@ step3b
 check_eq "CodeAnt not posted" "" "$(posted)"
 check_eq "  its claim released" "0:null" "$(ledger codeant):$(ledger cursor)"
 check_eq "  and said so" "yes" "$(grep -q 'FAILED to post @codeant-ai review — releasing its claim' "$TMP/err" && echo yes || echo no)"
+
+echo "== the free-reviewer request log: each successful post is recorded once, right after it (#2276) =="
+events() { tr '\n' ';' < "$EVENTS"; }
+records() { grep -c '^record ' "$EVENTS" | tr -d ' '; }
+rec_line() { printf 'record record-request %s repo=%s pr=%s head=%s reason=fixpr_step3b' "$1" "${2:-acme/one}" "$PR" "$SHA"; }
+reset "$(tier_json absent legacy)"
+STEP3B_REPO=acme/target CLAUDE_SESSION_REPO=other/elsewhere step3b
+check_eq "legacy: post, record, post, record — CodeRabbit then CodeAnt, under --repo (not CLAUDE_SESSION_REPO or the origin)" \
+  "post @coderabbitai full review;$(rec_line coderabbit acme/target);post @codeant-ai review;$(rec_line codeant acme/target);" "$(events)"
+
+reset "$(tier_json absent legacy)"
+export FIXTURE_POST_FAIL="@coderabbitai full review"
+step3b
+check_eq "legacy: a failed CodeRabbit post records nothing for CodeRabbit" "post @codeant-ai review;$(rec_line codeant);" "$(events)"
+reset "$(tier_json absent legacy)"
+export FIXTURE_POST_FAIL="@codeant-ai review"
+step3b
+check_eq "legacy: a failed CodeAnt post records nothing for CodeAnt" "post @coderabbitai full review;$(rec_line coderabbit);" "$(events)"
+
+reset "$(tier_json absent legacy)"
+export FIXTURE_ACTIVE='{"coderabbit":true,"codeant":true}'
+step3b
+check_eq "legacy: active reviewers are not posted, so not recorded" "" "$(events)"
+reset "$(tier_json absent legacy)"
+jq -cn --arg at "$(ago 600)" '[range(2) | {user: {login: "me"}, body: "@coderabbitai full review", created_at: $at}]' > "$FX/comments.json"
+step3b
+check_eq "legacy: the two-per-hour CodeRabbit skip records nothing for CodeRabbit" "post @codeant-ai review;$(rec_line codeant);" "$(events)"
+
+reset "$(tier_json present ci+codeant-one-round)"
+step3b
+check_eq "tiered: the allowed CodeAnt post is recorded once" "post @codeant-ai review;$(rec_line codeant);" "$(events)"
+reset "$(tier_json present ci+codeant-one-round)"
+export FIXTURE_POST_FAIL="@codeant-ai review"
+step3b
+check_eq "tiered: a failed post records nothing" "" "$(events)"
+check_eq "  and its claim is released as before" "0" "$(ledger codeant)"
+reset "$(tier_json present ci-only)"
+step3b
+check_eq "tiered: excluded reviewers record nothing" "" "$(events)"
+reset "$(tier_json present full)"
+checks null 60 in_progress
+step3b
+check_eq "tiered: CI pending defers, records nothing" "" "$(events)"
+reset "$(tier_json present full)"
+export FIXTURE_ACTIVE='{"coderabbit":false,"codeant":true}'
+step3b
+check_eq "tiered: an active reviewer records nothing" "" "$(events)"
+
+echo "== a failing or missing recorder changes nothing but the log (#2276) =="
+reset "$(tier_json absent legacy)"
+export FIXTURE_RECORD_FAIL=1
+step3b
+check_eq "exit 0" "0" "$RC"
+check_eq "both free reviewers still posted, one record attempt each" "@coderabbitai full review;@codeant-ai review;:2" "$(posted):$(records)"
+check_eq "  [REVIEWERS] lines and the mode line intact" "yes:yes" \
+  "$(says '[REVIEWERS] coderabbit: missing'):$(grep -qx 'TRIGGER_MODE=legacy' <<<"$(tail -1 <<<"$OUT")" && echo yes || echo no)"
+check_eq "  the failure is named on stderr" "2" "$(grep -c 'could not log it in the free-reviewer request log' "$TMP/err" | tr -d ' ')"
+reset "$(tier_json present ci+codeant-one-round)"
+export FIXTURE_RECORD_FAIL=1
+step3b
+check_eq "tiered: posted, and the claim is kept" "@codeant-ai review;:1" "$(posted):$(ledger codeant)"
+mv "$S/review-availability.sh" "$TMP/review-availability.stub"
+reset "$(tier_json absent legacy)"
+step3b
+check_eq "no helper anywhere (deliberately removed): both still post, exit 0" "@coderabbitai full review;@codeant-ai review;:0" "$(posted):$RC"
+check_eq "  and the missing helper is named on stderr" "yes" "$(grep -q 'review-availability.sh not found' "$TMP/err" && echo yes || echo no)"
+
+echo "== the real review-availability.sh writes .review_requests (#2276) =="
+cp "$REPO_ROOT/.claude/scripts/review-availability.sh" "$S/"
+chmod +x "$S/review-availability.sh"
+reset "$(tier_json absent legacy)"
+step3b
+check_eq "two entries: coderabbit then codeant, this PR and pushed SHA, reason fixpr_step3b" \
+  "coderabbit:$PR:$SHA:fixpr_step3b;codeant:$PR:$SHA:fixpr_step3b;" \
+  "$(jq -r '.review_requests[] | "\(.reviewer):\(.pr):\(.head_sha):\(.reason)"' "$HOME/.claude/session-state.json" 2>/dev/null | tr '\n' ';')"
+check_eq "  the choice is on the PR under --repo" "codeant" \
+  "$( ( cd "$WORK" && bash "$S/session-state.sh" --repo acme/one --get ".prs[\"$PR\"].review_request_choices[\"$SHA\"].reviewer" 2>/dev/null ) || echo unreadable)"
+rm -f "$S/review-availability.sh"
+mv "$TMP/review-availability.stub" "$S/review-availability.sh"
 
 echo "== usage =="
 RC=0; bash "$S/fixpr-reviewer-triggers.sh" "$PR" --repo acme/one --pushed-at x >/dev/null 2>&1 || RC=$?
