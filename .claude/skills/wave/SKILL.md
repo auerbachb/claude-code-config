@@ -186,7 +186,7 @@ Start from the ranked order and remove, in this sequence:
 
    Respect issue #732 the same way item 3 does: a **collaborator's** claim — or an owner that is a collaborator's thread — drops the issue as context, but it never counts toward *your* `IN_FLIGHT` ceiling and is never overwritten. The `IN_FLIGHT` formula below is items 1–3 only, so a sweep-dropped candidate never enters the ceiling count.
 
-5. **Explicitly blocked labels.** Drop `blocked`, `on-hold`, `wontfix`, `duplicate`, `human-tasks` (the owner's to-do list issue, #2539; `/pm` 1B.4 already excludes these — this is a cheap re-check, not a re-ranking).
+5. **Explicitly blocked labels.** Drop `blocked`, `on-hold`, `wontfix`, `duplicate`, `human-tasks` (the owner's to-do list issue, #2539; `/pm` 1B.4 already excludes these — this is a cheap re-check, not a re-ranking). Match label names case-insensitively — `Human-Tasks` is the same label.
 
 Every issue removed here is **silent** — it is not a wave exclusion and does not appear in the excluded list (Step 9). The excluded list is for issues that were genuine candidates and lost on independence or cap.
 

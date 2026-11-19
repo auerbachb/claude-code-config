@@ -129,7 +129,7 @@ Sort candidates into four tiers — **Critical**, **High**, **Medium**, **Low**.
 6. **Exclusions:**
    - Skip issues that already have an open PR (per the in-flight signal cross-referenced in 1B.3 — a closing keyword in an open PR body means in flight)
    - Skip issues assigned to someone else (unless stale > 14 days)
-   - Skip issues labeled `blocked`, `on-hold`, `wontfix`, `duplicate`, or `human-tasks` (the owner's own to-do list issue — never agent work, #2539)
+   - Skip issues labeled `blocked`, `on-hold`, `wontfix`, `duplicate`, or `human-tasks` (the owner's own to-do list issue — never agent work, #2539). Compare label names case-insensitively, as 1B.2's new-issue filter does (`Human-Tasks` is the same label)
 
 7. **Operator order (`/desk`) — last, after every exclusion.** Skip this step when 1B.1a found no override (`.order` and `.parked` both empty) or the file was unreadable. Otherwise flatten the surviving candidates into one ranked list — Critical first, each tier in its final order — and overlay the operator's order on it:
 
