@@ -25,7 +25,16 @@ printf 'presence: away, until later\n'
 STUB
 chmod +x "$stub"
 export PRESENCE_CALLS="$tmp/calls"
-window="$root/.claude/scripts/window-plan.sh"
+# Pin the clock so the clock-time cases do not depend on when the test runs.
+# 10:00Z is 05:00 ET on 2026-01-15, before every clock time used below;
+# 23:00Z is 18:00 ET, after them, for the next-occurrence case.
+pin_window() {  # pin_window <path> <ISO now>
+  printf '#!/usr/bin/env bash\nexec %q "$@" --now %q\n' \
+    "$root/.claude/scripts/window-plan.sh" "$2" > "$1"
+  chmod +x "$1"
+}
+window="$tmp/window-plan.sh"; pin_window "$window" 2026-01-15T10:00:00Z
+evening="$tmp/window-plan-evening.sh"; pin_window "$evening" 2026-01-15T23:00:00Z
 
 pass=0 fail=0
 ok() { pass=$((pass + 1)); printf 'ok   — %s\n' "$1"; }
@@ -52,6 +61,8 @@ run open-ended;           expect_call 'open-ended -> --open-ended' '^set away --
 run 'until 8:00 AM';      expect_call 'clock time -> --until-epoch' '^set away --by operator-message --until-epoch [0-9]+$'
 run 'back at 10';         expect_call 'bare hour is padded' '^set away --by operator-message --until-epoch [0-9]+$'
 run 'until 8am';          expect_call 'glued am/pm' '^set away --by operator-message --until-epoch [0-9]+$'
+run 'until 8:00 AM' "$stub" "$evening"
+                          expect_call 'passed clock time -> tomorrow 08:00 ET' '^set away --by operator-message --until-epoch 1768568400$'
 run '6 hours';            expect_call 'spelled duration -> --until-epoch' '^set away --by operator-message --until-epoch [0-9]+$'
 run '6h';                 [[ "$out" == 'presence: away, until later' ]] && ok 'presence output is printed for the operator' || bad "printed: '$out'"
 

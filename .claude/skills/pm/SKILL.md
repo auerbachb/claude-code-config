@@ -325,7 +325,7 @@ with the parse or persistence failure.
 
 ## Step 0c: Away declaration (when --away is set)
 
-Runs right after Step 0b on a user invocation, before 2D.1 and Step 1, only when `AWAY_STR` is non-empty; never on `--tick` or `--probe-wake`. It gives `/pm` the existing presence switch and nothing else: the declaration is stored only through `presence.sh set away --by operator-message` (`.claude/skills/presence/SKILL.md`, `.claude/reference/presence-windows.md`), which also arms unattended mode for the same window. The value is read by the parsers that already exist: `presence.sh` for `overnight` (`--rest-of-day`, ends 08:00 local), `open-ended` and `<N>h`/`<N>m`, and `window-plan.sh` for clock times and spelled-out durations (`until 8:00 AM`, `back at 10`, `6 hours`). Closing the laptop is `/leave-by`, not this flag.
+Runs right after Step 0b on a user invocation, before 2D.1 and Step 1, only when `AWAY_STR` is non-empty; never on `--tick` or `--probe-wake`. It gives `/pm` the existing presence switch and nothing else: the declaration is stored only through `presence.sh set away --by operator-message` (`.claude/skills/presence/SKILL.md`, `.claude/reference/presence-windows.md`), which also arms unattended mode for the same window. The value is read by the parsers that already exist: `presence.sh` for `overnight` (`--rest-of-day`, ends 08:00 local), `open-ended` and `<N>h`/`<N>m`, and `window-plan.sh` for clock times and spelled-out durations (`until 8:00 AM`, `back at 10`, `6 hours`); a clock time already past today means its next occurrence, tomorrow. Closing the laptop is `/leave-by`, not this flag.
 
 <!-- test-anchor: pm-away-declare -->
 ```bash
@@ -351,7 +351,8 @@ if [[ -n "${AWAY_STR:-}" ]]; then
           -e 's/^until ([0-9]{1,2}) ?([ap]m)$/until \1:00 \2/' \
           -e 's/^until ([0-9]{1,2})$/until \1:00/' \
           -e 's/^until ([0-9]{1,2}:[0-9]{2})([ap]m)$/until \1 \2/')
-        if AWAY_LINE=$("$WINDOW_PLAN_SH" --window "$AWAY_WIN" --stall-margin 0 2>/dev/null); then
+        # --next-occurrence: "until 8:00 AM" typed at 9 PM means tomorrow 8 AM.
+        if AWAY_LINE=$("$WINDOW_PLAN_SH" --window "$AWAY_WIN" --stall-margin 0 --next-occurrence 2>/dev/null); then
           AWAY_VAL=$(printf '%s' "$AWAY_LINE" | sed -n 's/.*deadline_epoch=\([0-9][0-9]*\).*/\1/p')
           [[ -z "$AWAY_VAL" ]] || AWAY_FLAG=--until-epoch
         fi
