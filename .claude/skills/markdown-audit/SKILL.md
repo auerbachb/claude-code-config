@@ -213,8 +213,10 @@ and the report path. Then:
 1. Build proposed issues **only from `.findings` in `$MDA_RUN/report.json`** —
    already validated and free of keep conflicts — never from `findings.jsonl`.
    Group the non-`keep` rows that share one fix: all findings in one file, or
-   in one file pair. Invalid rows, conflicts, and pair findings whose pair has
-   no `"reviewed"` coverage line (`report` lists them apart) are never offered.
+   in one file pair. Invalid rows, conflicts, and pair findings whose pair the
+   report does not list as reviewed — no `"reviewed"` coverage line, or a pair
+   absent from the candidate list (`report` lists them apart) — are never
+   offered.
 2. `--no-file`, or the session is unattended (`human-queue.md`): STOP here.
    Unattended runs record the pending filing question for the operator's return.
 3. Otherwise ask once, multi-select, **Skip first**: `"Skip — file nothing"`,

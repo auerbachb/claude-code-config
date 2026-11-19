@@ -374,6 +374,29 @@ except mdaudit.EscapeError:
     print("refused")
 ' "$(dirname "$MDAUDIT")" "$WORK/fx-race" "$WORK/race-out")"
 check "walk: parent swapped for an outside link mid-walk is refused" "$RACE" "refused"
+# A leaf link is read on the parent descriptor: swapping the parent after the
+# leaf check (simulated on the leaf stat) still yields the in-checkout link.
+mkdir -p "$WORK/fx-lrace/docs" "$WORK/lrace-out"
+ln -s inside-target "$WORK/fx-lrace/docs/l.md"
+ln -s outside-target "$WORK/lrace-out/l.md"
+LRACE="$(with_timeout python3 -I -B -c '
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import mdaudit
+top, out = sys.argv[2], sys.argv[3]
+real_stat, state = os.stat, {"swapped": False}
+def swapping_stat(path, *a, **k):
+    r = real_stat(path, *a, **k)
+    if not state["swapped"] and path == "l.md":
+        state["swapped"] = True
+        os.rename(os.path.join(top, "docs"), os.path.join(top, "docs-old"))
+        os.symlink(out, os.path.join(top, "docs"))
+    return r
+os.stat = swapping_stat
+st, data = mdaudit.open_in_checkout(top, "docs/l.md")
+print(data.decode())
+' "$(dirname "$MDAUDIT")" "$WORK/fx-lrace" "$WORK/lrace-out")"
+check "walk: leaf link read on the parent descriptor despite a parent swap" "$LRACE" "inside-target"
 
 # HEAD recorded by inventory must match the baseline.
 jq '.head = "0000000000000000000000000000000000000000"' "$WORK/snap-special.json" > "$WORK/snap-oldhead.json"

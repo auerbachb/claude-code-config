@@ -152,7 +152,7 @@ def read_bytes(top, rel):
         die("%s now resolves outside the checkout; restart the audit" % rel)
     except OSError as exc:
         die("cannot read %s: %s" % (rel, exc))
-    if data is None:
+    if data is None or not stat.S_ISREG(st.st_mode):
         die("%s is no longer a regular file; restart the audit" % rel)
     return data
 
@@ -165,7 +165,8 @@ class EscapeError(Exception):
 def open_in_checkout(top, rel, read=False):
     """Walk rel from a descriptor on the checkout root, one component at a
     time, never following a symlink in any component. Returns (lstat result
-    of the leaf, bytes or None). Bytes are read only when read=True and the
+    of the leaf, bytes or None). A symlink leaf returns its target string,
+    read on the parent descriptor. File bytes are read only when read=True and the
     leaf is a regular, non-environment file, opened non-blocking with
     O_NOFOLLOW on the descriptor the check used, so no swap between check and
     open can redirect it. Raises EscapeError for a symlinked or non-directory
@@ -187,6 +188,10 @@ def open_in_checkout(top, rel, read=False):
             fd = nfd
         leaf = parts[-1]
         st = os.stat(leaf, dir_fd=fd, follow_symlinks=False)
+        if stat.S_ISLNK(st.st_mode):
+            # Read the link on the same parent descriptor: a parent swapped
+            # after this point cannot redirect it.
+            return st, os.fsencode(os.readlink(leaf, dir_fd=fd))
         if not read or not stat.S_ISREG(st.st_mode) or is_env_file(leaf):
             return st, None
         try:
@@ -646,10 +651,7 @@ def path_digest(full, top=None):
     if stat.S_ISDIR(st.st_mode):
         return None
     if stat.S_ISLNK(st.st_mode):
-        try:
-            return "link:" + hashlib.sha256(os.fsencode(os.readlink(full))).hexdigest()
-        except OSError:
-            return "link:unreadable"
+        return "link:" + hashlib.sha256(data).hexdigest()
     meta = "meta:%o:%d:%d" % (st.st_mode, st.st_size, st.st_mtime_ns)
     return meta if data is None else hashlib.sha256(data).hexdigest()
 
@@ -1057,7 +1059,8 @@ def render(r):
         out.append("- %s (level %d, %s) — %s" % (loc(f), f["level"], f["action"], cell(f["reason"])))
     upf = r.get("unreviewed_pair_findings", [])
     out += ["", "## Pair findings without a reviewed pair (%d)" % len(upf), "",
-            "No \"reviewed\" coverage line for the pair. Excluded from the tallies and from filing.", ""]
+            "The pair is not listed as reviewed: no \"reviewed\" coverage line, or the pair is not in the "
+            "candidate list (--pairs). Excluded from the tallies and from filing.", ""]
     for f in upf:
         out.append("- %s (level %d, %s) — %s" % (loc(f), f["level"], f["action"], cell(f["reason"])))
     keeps =[f for f in r["findings"] if f["action"] == "keep"]
