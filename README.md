@@ -31,7 +31,7 @@ After setup, Claude Code will automatically:
 - **Review locally, then on GitHub** — Runs CodeRabbit CLI reviews before pushing (instant feedback, no PR noise). After PR creation, CodeRabbit is the primary reviewer and CodeAnt provides a supplemental AI review signal; BugBot (Cursor) and Greptile are paid and run only on an owner grant spent through `paid-review-grant.sh` (#1897, #1898); without one, agents keep polling for a free review or the no-review override.
 - **Verify and merge** — Checks every acceptance criteria checkbox against the code, confirms CI is green, then squash-merges. The running worktree and branch are left intact and reaped out-of-band by `/pm-clean`.
 - **Orchestrate multi-agent work** — Decomposes large tasks into phases (fix, review, merge) with health monitoring, handoff files, and heartbeat enforcement.
-- **Manage your project** — 37 slash commands for backlog prioritization, OKR-aware ranking, daily standups, PR-fleet monitoring, and cross-thread orchestration.
+- **Manage your project** — 38 slash commands for backlog prioritization, OKR-aware ranking, daily standups, PR-fleet monitoring, and cross-thread orchestration.
 
 Review ownership is sticky once a fallback tier takes over:
 
@@ -111,7 +111,7 @@ ls -la ~/.claude/skills/       # each skill -> ~/.claude/skills-worktree/.claude
 
 ## Slash Commands
 
-All 37 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
+All 38 commands are invoked as `/command` in a Claude Code session. They are defined as skill files in `.claude/skills/` and symlinked globally.
 
 | Command | Category | Description |
 |---------|----------|-------------|
@@ -135,6 +135,7 @@ All 37 commands are invoked as `/command` in a Claude Code session. They are def
 | `/pr-status` | Workflow | Dashboard of open PRs with review state |
 | `/review-stack-audit` | Workflow | Monthly re-measure of the AI review stack — each tool's billed state, observed caps, throughput, and unique value, compared against the recorded baseline; files one issue per drift finding, advisory only, never edits |
 | `/memory-clean` | Workflow | Audit the durable memory store — report orphaned files, dangling index pointers, index size, advisory stale entries; prune only on confirmation |
+| `/markdown-audit` | Workflow | Bottom-up audit of a Markdown file, folder or the whole repo at seven levels (sentence, block, section, page, document, sibling group, repo) — located findings with cut/merge/move/keep and words removable per level; read-only, stores the report outside the checkout, files only the findings you accept, and feeds (does not replace) the weekly slimming pass |
 | `/quotas` | Workflow | How much of each registered account's weekly cap is gone and when it resets — one row per account per window (used %, remaining %, reset in Eastern, countdown) for `claude` and `codex`; display only, never a dispatch or spend gate |
 | `/quotas-setup` | Workflow | Register the AI subscription accounts whose quotas you track — one isolated login profile per account (`claude`, `codex`, `cursor`), the provider's own login flow launched for each, and a report of which are logged in; labels and paths only, never a credential, and never a dispatch or spend gate |
 | `/go-on` | Workflow | Universal resume — classify the stoppage from recorded evidence (`/pause`, `/end`, token-exhaustion handoff, crash, stalled review loop) and continue from the right place; refill stays paused without `--resume-refill` |
