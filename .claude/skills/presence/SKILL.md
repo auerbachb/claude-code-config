@@ -129,7 +129,8 @@ denies menus once it is armed), take one bounded round:
    an exit 5 the refused text goes nowhere: `<what>` and `<why>` below, the record and every printed
    line use only the rewritten text that names the variable or account, never the refused value.
    Record it instead with `unattended.sh record --question
-   "Human task: <what>" --did "not saved to the human-task list: <why>"` and leave it open, so it is
+   "Human task: <what>" --did "not saved to the human-task list: <why>" --repo <owner/name of the work>` (the same repo
+   as `add`, so the question lands in that repo's list) and leave it open, so it is
    listed on his return, then print one line: `not saved to the human-task list: <why>
    (owner-task.sh <not found|exit N>); recorded as U-<n>`. If `record` also fails, claim no `U-<n>`:
    print the task in full and say neither save worked. Every other answer is recorded as above.

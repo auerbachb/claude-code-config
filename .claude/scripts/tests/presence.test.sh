@@ -453,7 +453,9 @@ has "presence: other answers keep their destinations" "$pskill" 'Every other ans
 has "presence: existing answer destination unchanged" "$pskill" 'then `unattended.sh answer U-<n> --answer … --by operator`'
 has "afk: deferred answer saved as a human task" "$askill" 'saved as a human task with `owner-task.sh add`'
 has "afk: receipt printed before away" "$askill" 'its receipt is printed before away is set'
-has "afk: fallback to an unattended question" "$askill" 'recorded as an open unattended question (`unattended.sh record`)'
+has "afk: fallback to an unattended question" "$askill" 'recorded as an open unattended question in the work'"'"'s repo (`unattended.sh record --repo`)'
+has "afk: exit 5 retries once without the refused text" "$askill" 'after exit 5, only once a rewrite naming the variable is also refused, and never with the refused text'
+has "presence: fallback question lands in the work's repo" "$pskill" '--did "not saved to the human-task list: <why>" --repo <owner/name of the work>'
 has "afk: says the task was not saved" "$askill" 'the thread says the task was not saved'
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
