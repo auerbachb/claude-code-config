@@ -214,6 +214,11 @@ OUT=$(cd "$REPO2C" && bash "$SUT" --apply 2>&1)
 RC=$?
 check_eq "case2c: install all, exits 1 (BP gap remains)" "1" "$RC"
 
+# Issue #2539: the installed plan trigger skips the owner's human-tasks list.
+check_contains "case2c: installed cr-plan-on-issue.yml skips the human-tasks label" \
+  "!contains(github.event.issue.labels.*.name, 'human-tasks')" \
+  "$(cat "$REPO2C/.github/workflows/cr-plan-on-issue.yml")"
+
 HELP_OUT="$(bash "$REPO2C/.claude/scripts/ac-gate.sh" --help 2>&1)"
 HELP_RC=$?
 check_eq "case2c: installed gate loads its shared library" "0" "$HELP_RC"
