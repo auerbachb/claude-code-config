@@ -76,7 +76,8 @@ def parse_choice(choice):
     require(isinstance(choice, dict) and choice.get("model") in MODELS,
             "parent_choice must be an object naming a known model")
     reason = choice.get("reason")
-    require(text(reason) and len(reason.strip().splitlines()) == 1 and len(reason) <= 500,
+    # Any line separator in the original text is refused, leading or trailing ones included.
+    require(text(reason) and reason.splitlines() == [reason] and len(reason) <= 500,
             "parent_choice.reason is required: one line saying why this model departs from the recommendation")
     return {"by": "parent", "model": choice["model"], "reason": reason.strip(), "applied": False}
 
@@ -227,7 +228,8 @@ def decide(request):
         return finish("complete", "Task finished; verify its independent acceptance and merge gates.")
     if request.get("launch_allowed") is not True or request.get("permissions_preserved") is not True:
         return finish("blocked", "Launch controls or unchanged permission/tool boundaries are not explicitly clear.")
-    if current == "fable" and owner is None and mode != "speed":
+    if current == "fable" and owner is None and mode != "speed" and (choice is None or choice["model"] == "fable"):
+        # An eligible parent choice away from an unpinned Fable worker is applied below.
         return finish("blocked", "Retain the explicit owner choice for a tier outside the unattended ladder.")
     runtime = request.get("runtime", {})
     version = runtime.get("version") if isinstance(runtime, dict) else None

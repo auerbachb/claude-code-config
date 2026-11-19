@@ -81,8 +81,10 @@ This reverses the version-pinning call made in #749. That change wanted the docs
 reviews and repairs, C verifies and wraps, PM gathers structured data, and the
 researcher stays read-only. Those roles keep their existing tool boundaries;
 none mandates a premium model. Use the current runtime's capability/context
-checks and the existing reserve/budget controls before routing. Fable is only an
-explicit owner selection, never an automatic fallback. Do not rely on
+checks and the existing reserve/budget controls before routing. Outside speed
+mode Fable is only an explicit owner selection; in speed mode it may also be an
+eligible `parent_choice` or the escalation above Opus. It is never a starting
+tier. Do not rely on
 `CLAUDE_CODE_SUBAGENT_MODEL` or inherited parent models instead of routing.
 
 ## Spawning Pattern

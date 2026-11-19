@@ -240,6 +240,8 @@ with tempfile.TemporaryDirectory() as tmp:
     assert result['choice'] == dict(by='parent', model='sonnet', reason=WHY, applied=True), result
     for label, bad in [('no reason', dict(model='sonnet')), ('blank reason', dict(model='sonnet', reason='  ')),
                        ('multi-line reason', dict(model='sonnet', reason='one\ntwo')),
+                       ('reason wrapped in line breaks', dict(model='sonnet', reason='\nuse sonnet\n')),
+                       ('reason with a trailing line break', dict(model='sonnet', reason='use sonnet\n')),
                        ('unknown model', dict(model='gpt', reason=WHY))]:
         data['parent_choice'] = bad
         refused = check('parent choice refused: ' + label, data, 'invalid', code=2)
@@ -287,6 +289,15 @@ with tempfile.TemporaryDirectory() as tmp:
     row_of(data, 'sonnet')['capable'] = False
     row_of(data, 'sonnet')['capability_gap'] = dict(GAP)
     check('parent choice cannot override a documented gap', data, 'blocked', code=3, gaps=[('sonnet', 'tool')])
+    data = copy.deepcopy(base)
+    data.update(current_model='haiku', attempts=[attempt(1)])
+    row_of(data, 'haiku')['capable'] = False
+    row_of(data, 'haiku')['capability_gap'] = dict(GAP)
+    check('current tier with a documented gap blocks without a choice', data, 'blocked', code=3,
+          gaps=[('haiku', 'tool')])
+    data['parent_choice'] = dict(model='sonnet', reason='haiku lacks the required tool')
+    check('a reasoned parent choice moves off a current tier with a documented gap', data, 'escalate', 'sonnet',
+          gaps=[('haiku', 'tool')])
     data = copy.deepcopy(base)
     data.update(launch_allowed=False, parent_choice=dict(model='sonnet', reason=WHY))
     check('parent choice never bypasses launch gates', data, 'blocked', code=3)
@@ -464,6 +475,15 @@ with tempfile.TemporaryDirectory() as tmp:
     check('speed fable worker retries on fable', fable_run, 'retry', 'fable')
     fable_run['mode'] = 'default'
     check('default mode does not keep an unpinned fable worker', fable_run, 'blocked', code=3)
+    fable_run['parent_choice'] = dict(model='opus', reason='mode left speed; move off fable')
+    result = check('parent choice moves an unpinned fable worker off fable outside speed', fable_run,
+                   'escalate', 'opus', reason=['Parent choice opus'])
+    assert result['recommended_model'] is None and result['choice']['applied'] is True, result
+    fable_run['parent_choice'] = dict(model='fable', reason='keep fable')
+    check('parent choice cannot keep an unpinned fable worker outside speed', fable_run, 'blocked', code=3)
+    fable_run.update(owner_model='sonnet', parent_choice=dict(model='opus', reason='mode left speed'))
+    check('owner pin still wins over a parent choice off fable', fable_run, 'start', 'sonnet',
+          reason=['Owner pin wins over the parent choice of opus'])
     # A mode change affects only later launches: a running cheap-tier worker keeps its model.
     running = copy.deepcopy(base)
     running.update(mode='speed', current_model='opus',

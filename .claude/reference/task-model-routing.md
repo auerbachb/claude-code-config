@@ -113,8 +113,9 @@ model other than the recommendation, lower or higher. No missing tool and no
 failed attempt is needed first. The rules:
 
 - `reason` is required: one nonblank line (at most 500 characters). A choice
-  without one, or naming an unknown model, is refused as invalid (exit 2) with an
-  error naming `parent_choice.reason`.
+  without one is refused as invalid (exit 2) with an error naming
+  `parent_choice.reason`; one naming an unknown model is refused the same way with
+  an error naming `parent_choice`.
 - The chosen row must pass the same eligibility as any other: available, within
   budget and reserve, with evidence, and not `capable: false`. An ineligible
   choice blocks (exit 3); the router never substitutes silently.
@@ -186,7 +187,9 @@ same inventory row:
   recorded in `capability_fallback` (`Owner pin kept <tier>`), not treated as a
   blocker. A valid gap on the pinned row blocks (exit 3), lists it in
   `capability_gaps`, and never substitutes another tier. A retry whose current
-  tier has a valid gap blocks the same way rather than moving to another tier.
+  tier has a valid gap blocks the same way rather than moving to another tier,
+  unless a `parent_choice` names another eligible model: that explicit, reasoned
+  move is not a silent substitution.
 
 Name the missing requirement when there is one; otherwise your judgment is
 enough. To pick a specific model rather than skip a tier, use `parent_choice`.
