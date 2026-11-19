@@ -404,9 +404,14 @@ add_pr() { case " $PR_NUMS " in *" $1 "*) ;; *) PR_NUMS="$PR_NUMS $1" ;; esac; }
 default_ref() { # <wt> -> remote default branch ref, or empty
   local r
   r="$(git -C "$1" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null)" && { printf '%s' "${r#refs/remotes/}"; return; }
+  # Without origin/HEAD the default is only knowable when exactly one of main/master exists;
+  # with both present it is ambiguous, so resolve nothing and let the branch get its PR checks.
+  local found="" n=0
   for r in origin/main origin/master; do
-    git -C "$1" rev-parse --verify --quiet "$r" >/dev/null 2>&1 && { printf '%s' "$r"; return; }
+    git -C "$1" rev-parse --verify --quiet "$r" >/dev/null 2>&1 && { found="$r"; n=$((n + 1)); }
   done
+  (( n == 1 )) && printf '%s' "$found"
+  return 0
 }
 
 if [[ -z "$WT" ]]; then

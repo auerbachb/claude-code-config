@@ -357,6 +357,14 @@ OUT="$(runD)"
 [[ "$(nbranch main)" == 0 ]] || fail "fallback origin/main default produced a branch item"
 head_called main && fail "fallback default was looked up as a PR head"
 ok "with origin/HEAD absent the origin/main fallback still exempts main"
+
+# ambiguous: origin/HEAD absent and both origin/main and origin/master exist -> no exemption for main
+git -C "$D" symbolic-ref --delete refs/remotes/origin/HEAD 2>/dev/null
+git -C "$D" update-ref refs/remotes/origin/master "$(git --git-dir="$TMP/origin.git" rev-parse main)"
+OUT="$(runD)"
+head_called main || fail "ambiguous main/master default exempted main from PR inspection"
+git -C "$D" update-ref -d refs/remotes/origin/master
+ok "with both origin/main and origin/master and no origin/HEAD, main is not exempted"
 unset STUB_CALL_LOG
 echo '{}' > "$STATE"
 
