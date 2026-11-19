@@ -28,7 +28,9 @@
 #                refuses (exit 3) when none is armed — run /leave-by first
 #       --rest-of-day  here: until local midnight; away: until 08:00 local (overnight)
 #       --generation   the token `ask` printed; released after the write
-#   presence.sh ask                 claim the one dialog; see exit codes
+#   presence.sh ask [--afk]         claim the one dialog; see exit codes. --afk: the operator just said "afk"
+#                                   with no duration, so a live declaration or recent dismissal does not block;
+#                                   refused (12) while he already reads as away (the unattended guard denies menus)
 #   presence.sh release --generation <token> [--dismissed]
 #                                   give the claim back; --dismissed (no answer) pauses `ask` for an hour
 #   presence.sh expire              a window ran out? Claim it once for all threads and print what to do.
@@ -45,6 +47,15 @@
 #                                   or with --now claim it for this turn (nothing was saved). Exit 0 done, else 1
 #   presence.sh probe               one read, one word for a hook: lapsed | lapsed-claimed | returning | dialog | none
 #   presence.sh push-result sent|missed --generation <epoch>   record whether the expiry push was delivered
+#   presence.sh declared-epoch      the stored declaration's opaque identity, or `none`; capture it before an
+#                                   ask-now round: ID=$(presence.sh declared-epoch)
+#   set ... --if-declared "$ID"     that captured identity, passed back unchanged: write only while it is
+#                                   still the stored declaration (exit 10 otherwise)
+#   presence.sh afk-parse --by <source> [--] <text>   read "afk" phrasing (issue #2418); pure, writes nothing.
+#                                   Prints the `set away` flags (--for 30m | --rest-of-day | --open-ended), exit 0;
+#                                   no or unreadable duration prints `ask`, exit 4 (ask how long once); not an afk
+#                                   trigger, exit 1; laptop wording, exit 3 (go through /leave-by); --by other than
+#                                   operator-message prints the source-gate refusal line, exit 5
 #   Global flags: --repo <owner/name> | --cwd DIR resolve which repo's /leave-by deadline `closing` reads.
 #
 # STATE  ~/.claude/session-state.json `.presence` = {state, until_epoch|null, declared_epoch,
@@ -55,7 +66,8 @@
 #
 # EXIT CODES
 #   0 ok / ask granted (prints the token); 1 is-away false, or a write failed; 2 usage error;
-#   3 closing with no armed leave deadline; 10 another thread holds the dialog, or a set used a stale token (read `status`);
+#   3 closing with no armed leave deadline (afk-parse: laptop wording); 4 afk-parse read no duration (ask);
+#   5 afk-parse refused words that did not come from the operator; 10 another thread holds the dialog, or a set used a stale token (read `status`);
 #   12 a live declaration exists, or a window ran out and the operator has not spoken since (printed; do not ask);
 #   13 the dialog was dismissed in the last hour;
 #   20 the claim could not be verified (do not ask).
@@ -207,7 +219,7 @@ leave_deadline() { # prints "<repo key> <armed /leave-by deadline epoch>", or re
 
 # --- set ----------------------------------------------------------------------
 cmd_set() {
-  local want="${1-}" by="" dur="" until="" open=0 rod=0 gen="" n given=0 machine=true out rc closing_repo=""
+  local want="${1-}" by="" dur="" until="" open=0 rod=0 gen="" n given=0 machine=true out rc closing_repo="" ifdecl=""
   [ -n "$want" ] || die_usage "set needs here, away or closing"
   shift
   case "$want" in here|away|closing) ;; *) die_usage "set takes here, away or closing" ;; esac
@@ -219,6 +231,7 @@ cmd_set() {
       --rest-of-day) rod=1; given=$((given + 1)); shift ;;
       --open-ended) open=1; given=$((given + 1)); shift ;;
       --generation) [ $# -ge 2 ] || die_usage "--generation needs a value"; gen="$2"; GEN_HELD="$gen"; trap release_held_claim EXIT; shift 2 ;;
+      --if-declared) [ $# -ge 2 ] && [ -n "$2" ] || die_usage "--if-declared needs a value"; ifdecl="$2"; shift 2 ;;
       *) die_usage "unknown argument to set: $1" ;;
     esac
   done
@@ -301,6 +314,32 @@ cmd_set() {
   local res="" cas=() cur
   cur=$("$SESSION_STATE_SH" --get-json ".presence.declared_epoch" 2>/dev/null) || cur=null
   case "$cur" in ''|*[!0-9]*) cur=null ;; esac
+  # --if-declared (issue #2418): the identity `declared-epoch` printed before an ask-now round. The
+  # write below guards every part of that identity under the same lock, so a declaration another
+  # thread stored during the round (even in the same second) is never overwritten.
+  local decl_guard=()
+  if [ -n "$ifdecl" ]; then
+    # One snapshot: its identity is checked, and every write guard is built from that same read.
+    local snap="{}" cur_id f v
+    if [ -f "$STATE_FILE" ]; then
+      snap=$("$JQ" -c '{presence: (.presence // null)}' "$STATE_FILE" 2>/dev/null) || {
+        printf 'presence.sh: cannot read the stored declaration; nothing written\n' >&2; return 1; }
+    fi
+    cur_id=$(printf '%s' "$snap" | "$JQ" -r "$DECL_ID_JQ" 2>/dev/null) || {
+      printf 'presence.sh: cannot read the stored declaration; nothing written\n' >&2; return 1; }
+    v=$(printf '%s' "$snap" | "$JQ" -r '.presence.declared_epoch // "null" | tostring' 2>/dev/null) || v=""
+    case "$v" in ''|*[!0-9]*) v=null ;; esac
+    if [ "$ifdecl" != "$cur_id" ] || [ "$v" != "$cur" ]; then
+      printf 'presence.sh: another declaration was stored since %s; nothing written, read presence.sh status\n' "$ifdecl" >&2
+      return 10
+    fi
+    if [ "$cur_id" != none ]; then
+      for f in $DECL_ID_FIELDS; do
+        v=$(printf '%s' "$snap" | "$JQ" -c ".presence.$f") || { printf 'presence.sh: cannot read the stored declaration; nothing written\n' >&2; return 1; }
+        decl_guard+=(--expect-at ".presence.$f" "$v")
+      done
+    fi
+  fi
   if [ "$cur" != null ] && [ "$cur" -gt "$n" ]; then
     printf 'presence.sh: a newer declaration is already stored; nothing written, read presence.sh status\n' >&2
     return 10
@@ -325,7 +364,7 @@ cmd_set() {
   fi
 
   rc=0
-  "$SESSION_STATE_SH" "${cas[@]}" "${sets[@]}" >/dev/null || rc=$?
+  "$SESSION_STATE_SH" "${cas[@]}" ${decl_guard[@]+"${decl_guard[@]}"} "${sets[@]}" >/dev/null || rc=$?
   case "$rc" in
     0) ;;
     7) printf 'presence.sh: the dialog claim or the stored declaration changed while answering; nothing written, read presence.sh status\n' >&2; return 10 ;;
@@ -372,8 +411,20 @@ release_held_claim() {
 # 0 = free to ask; 12 = a live declaration exists (printed); 13 = dismissed in the last hour (printed).
 ask_blocker() {
   local j state expired dis n
+  # --afk (issue #2418): the operator just said "afk" in chat with no duration. He asked to change his
+  # declaration, so neither a live one (12) nor a recent dismissal (13) blocks this one question;
+  # the one-asker claim still does. While he already reads as away, unattended mode is armed and its
+  # guard denies every menu, so the question could never reach him: refuse (12) and let the caller
+  # keep the stored window instead of granting a claim nobody can answer.
   n=$(now)
   j=$(effective_json)
+  if [ "$ASK_AFK" -eq 1 ]; then
+    if [ "$(printf '%s' "$j" | "$JQ" -r '.away == true')" = true ]; then
+      status_line "$j"
+      return 12
+    fi
+    return 0
+  fi
   state=$(printf '%s' "$j" | "$JQ" -r '.state')
   expired=$(printf '%s' "$j" | "$JQ" -r '.expired')
   if [ "$state" != unset ] && [ "$expired" != true ]; then
@@ -394,8 +445,14 @@ ask_blocker() {
   return 0
 }
 
+ASK_AFK=0
 cmd_ask() {
   local out rc brc
+  case "${1-}" in
+    "") ;;
+    --afk) ASK_AFK=1 ;;
+    *) die_usage "unknown argument to ask: $1" ;;
+  esac
   brc=0; ask_blocker || brc=$?
   [ "$brc" -eq 0 ] || return "$brc"
   rc=0
@@ -739,6 +796,72 @@ cmd_push_result() {
     --expect-at ".presence.expiry_claim.generation" "$gen" >/dev/null 2>&1 || true
 }
 
+# The stored declaration's identity for `set --if-declared`: `none`, or
+# <declared_epoch>:<state>:<until_epoch>:<declared_by>:<machine_on>:<closing_repo> (absent parts read
+# null). More than the epoch, so two different declarations stored in the same second still differ
+# (a move to closing changes machine_on); `set` guards every part in its write (DECL_ID_FIELDS).
+DECL_ID_FIELDS="state until_epoch declared_by machine_on closing_repo"
+DECL_ID_JQ='.presence as $p | if ($p | type) == "object" and ($p.declared_epoch | type) == "number"
+  then [$p.declared_epoch, $p.state, $p.until_epoch, $p.declared_by, $p.machine_on, $p.closing_repo]
+    | map(if . == null then "null" else tostring end) | join(":")
+  else "none" end'
+cmd_declared_epoch() {
+  local id
+  if [ -f "$STATE_FILE" ]; then
+    id=$("$JQ" -r "$DECL_ID_JQ" "$STATE_FILE" 2>/dev/null) || {
+      printf 'presence.sh: cannot read the stored declaration\n' >&2; return 1; }
+  else
+    id=none
+  fi
+  printf '%s\n' "$id"
+}
+
+# --- afk-parse (issue #2418) ---------------------------------------------------------
+# Read "afk" phrasing into the flags `set away` takes. Pure: reads and writes no state. The source
+# gate is the first check: words that did not come from a live operator message set nothing.
+cmd_afk_parse() {
+  local by="" text="" lc rest re n unit
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --by) [ $# -ge 2 ] || die_usage "--by needs a value"; by="$2"; shift 2 ;;
+      --) shift; text="${text:+$text }$*"; break ;;
+      *) text="${text:+$text }$1"; shift ;;
+    esac
+  done
+  [ -n "$by" ] || die_usage "afk-parse needs --by operator-message (the source of the words)"
+  if [ "$by" != operator-message ]; then
+    printf 'Presence not set — "%s" came from %s, not from you.\n' "$text" "$by"
+    return 5
+  fi
+  lc=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' | tr ',;' '  ' |
+    sed -E "s/’/'/g; s/^[[:space:]]+//; s/[[:space:]]+\$//; s/[[:space:]]+/ /g; s/[.!]+\$//")
+  re="^(/afk|((i'?m|i am) )?(going |gone )?afk)( (.*))?\$"
+  [[ "$lc" =~ $re ]] || return 1
+  rest="${BASH_REMATCH[6]}"
+  rest=$(printf '%s' "$rest" | sed -E 's/^(now |for about |for |about |back in |~ ?)+//')
+  case "$rest" in
+    *clos*laptop*|*laptop*clos*|*shut*laptop*|*laptop*shut*)
+      printf 'closing the laptop goes through /leave-by, then presence.sh set closing\n' >&2
+      return 3 ;;
+    "") printf 'ask\n'; return 4 ;;
+    overnight|"rest of day"|"rest of the day"|"the rest of the day") printf -- '--rest-of-day\n'; return 0 ;;
+    open-ended|indefinitely|"until i say otherwise"|"until further notice") printf -- '--open-ended\n'; return 0 ;;
+    "an hour"|"a hour"|"one hour"|"an hr") printf -- '--for 1h\n'; return 0 ;;
+    "half an hour"|"half hour"|"a half hour") printf -- '--for 30m\n'; return 0 ;;
+    "an hour and a half"|"one and a half hours"|"1.5 hours"|"1.5h"|"1.5 h") printf -- '--for 90m\n'; return 0 ;;
+  esac
+  re='^([1-9][0-9]{0,4}) ?(m|min|mins|minute|minutes|h|hr|hrs|hour|hours)$'
+  if [[ "$rest" =~ $re ]]; then
+    n="${BASH_REMATCH[1]}"
+    case "${BASH_REMATCH[2]}" in m*) unit=m ;; *) unit=h ;; esac
+    printf -- '--for %s%s\n' "$n" "$unit"
+    return 0
+  fi
+  printf 'presence.sh: cannot read "%s" as a duration; ask how long once\n' "$rest" >&2
+  printf 'ask\n'
+  return 4
+}
+
 # --- main -----------------------------------------------------------------------
 [ $# -gt 0 ] || { usage; exit 2; }
 sub="$1"; shift
@@ -759,7 +882,7 @@ case "$sub" in
   status) cmd_status "$@" ;;
   is-away) cmd_is_away ;;
   set) cmd_set "$@" ;;
-  ask) cmd_ask ;;
+  ask) cmd_ask "$@" ;;
   release) cmd_release "$@" ;;
   expire) cmd_expire "$@" ;;
   return) cmd_return "$@" ;;
@@ -768,5 +891,7 @@ case "$sub" in
   dialog-ready) cmd_dialog_ready "$@" ;;
   push-result) cmd_push_result "$@" ;;
   probe) cmd_probe ;;
+  afk-parse) cmd_afk_parse "$@" ;;
+  declared-epoch) cmd_declared_epoch ;;
   *) die_usage "unknown subcommand: $sub" ;;
 esac

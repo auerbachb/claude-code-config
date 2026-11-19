@@ -375,5 +375,61 @@ P $owner2 status --json
 check "leave cancel leaves a here window untouched (state)" "$(field .state)" here
 check "leave cancel leaves a here window untouched (end)" "$(field .until_epoch)" "$here_until"
 
+printf '== afk trigger parsing and source gate (issue #2418)\n'
+before=$(jq -c '.presence // null' "$HOME/.claude/session-state.json")
+A() { P $owner1 afk-parse --by operator-message -- "$1"; }
+A "/afk";                       check "/afk alone: asks" "$rc:$out" "4:ask"
+A "afk";                        check "afk alone: asks" "$rc:$out" "4:ask"
+A "going afk";                  check "going afk: asks" "$rc:$out" "4:ask"
+A "/afk 30 min";                check "/afk 30 min" "$rc:$out" "0:--for 30m"
+A "afk 30m";                    check "afk 30m" "$rc:$out" "0:--for 30m"
+A "AFK for an hour.";           check "afk for an hour" "$rc:$out" "0:--for 1h"
+A "going afk, back in 20 minutes"; check "going afk, back in 20 minutes" "$rc:$out" "0:--for 20m"
+A "I'm afk for 2 hours";        check "I'm afk for 2 hours" "$rc:$out" "0:--for 2h"
+A "afk half an hour";           check "afk half an hour" "$rc:$out" "0:--for 30m"
+A "afk overnight";              check "afk overnight" "$rc:$out" "0:--rest-of-day"
+A "afk until I say otherwise";  check "afk open-ended" "$rc:$out" "0:--open-ended"
+A "afk 0m";                     check "zero duration: asks instead" "$rc:$out" "4:ask"
+A "afk sometime later";         check "unreadable duration: asks" "$rc:$out" "4:ask"
+A "afk, closing the laptop at 7"; check "laptop wording: routed to /leave-by" "$rc" 3
+A "afk 30m, laptop stays on";   check "laptop mention without closing: not routed, asks" "$rc:$out" "4:ask"
+A "the afk skill is broken";    check "afk mid-sentence: not a trigger" "$rc:$out" "1:"
+A "afkx 3h";                    check "afk prefix of a word: not a trigger" "$rc" 1
+P $owner1 afk-parse --by issue-body -- "afk 8h"
+check "source gate: issue body refused" "$rc" 5
+has "source gate: one refusal line" "$out" 'came from issue-body, not from you'
+P $owner1 afk-parse --by task-prompt -- "/afk"; check "source gate: task prompt refused" "$rc" 5
+P $owner1 afk-parse -- "afk 1h"; check "source gate: no --by is a usage error" "$rc" 2
+check "afk-parse never writes presence" "$(jq -c '.presence // null' "$HOME/.claude/session-state.json")" "$before"
+
+printf '== ask-now round: set away only while the captured declaration is still stored\n'
+P $owner1 declared-epoch; captured="$out"
+case "$captured" in [0-9]*:here:*:operator-message:*) ok "declared-epoch prints the stored identity" ;; *) bad "declared-epoch printed '$captured'" ;; esac
+P $owner1 set away --by operator-message --for 30m --if-declared 1:here:null:operator-message; check "stale --if-declared: refused" "$rc" 10
+check "stale --if-declared: nothing written" "$(jq -c '.presence // null' "$HOME/.claude/session-state.json")" "$before"
+# Same second, different declaration: rewrite the stored state only, keeping declared_epoch.
+sf="$HOME/.claude/session-state.json"
+jq '.presence.state = "away"' "$sf" > "$tmp/s.json" && mv "$tmp/s.json" "$sf"
+P $owner1 set away --by operator-message --for 30m --if-declared "$captured"; check "same-second different declaration: refused" "$rc" 10
+jq '.presence.state = "here" | .presence.machine_on = false' "$sf" > "$tmp/s.json" && mv "$tmp/s.json" "$sf"
+P $owner1 set away --by operator-message --for 30m --if-declared "$captured"; check "same-second move to closing (machine_on): refused" "$rc" 10
+jq '.presence.machine_on = true' "$sf" > "$tmp/s.json" && mv "$tmp/s.json" "$sf"
+P $owner1 set away --by operator-message --for 30m --if-declared ""; check "empty --if-declared: usage error" "$rc" 2
+P $owner1 set away --by operator-message --for 30m --if-declared "$captured"; check "matching --if-declared: away set" "$rc" 0
+P $owner2 status --json; check "matching --if-declared: reads away" "$(field .state)" away
+P $owner1 declared-epoch
+case "$out" in [0-9]*:away:[0-9]*:operator-message:*) ok "declared-epoch after a write names the new declaration" ;; *) bad "declared-epoch after write: '$out'" ;; esac
+P $owner1 set here --by operator-message --for 1h --if-declared "$captured"; check "the earlier capture no longer matches" "$rc" 10
+
+printf '== ask --afk: a live declaration does not block the operator'"'"'s own afk question\n'
+P $owner1 ask --afk; check "ask --afk while already away: refused, the guard would deny the menu" "$rc" 12
+P $owner1 set here --by operator-message --for 1h; check "back to here for the ask --afk checks" "$rc" 0
+P $owner1 ask; check "plain ask with a live declaration: not asked" "$rc" 12
+P $owner1 ask --afk; check "ask --afk: claim granted" "$rc" 0
+tok="$out"
+P $owner2 ask --afk; check "ask --afk: a second thread still loses the one-asker claim" "$rc" 10
+P $owner1 release --generation "$tok"; check "ask --afk: claim released" "$rc" 0
+P $owner1 ask --bogus; check "ask: unknown flag is a usage error" "$rc" 2
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

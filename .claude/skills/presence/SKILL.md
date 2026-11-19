@@ -1,13 +1,15 @@
 ---
 name: presence
-description: Use when the operator says where he is and for how long — "I'm here for a couple of hours", "I'm stepping away for an hour", "I'm away overnight", "I'm closing the laptop at 7" — or when a thread needs to know whether he is at the computer. Stores one global here-or-away state every thread reads, asks the single dialog that collects it (only one thread asks), and sends "closing the laptop" through /leave-by. Triggers on "I'm here for", "I'm away for", "stepping away", "back in an hour", "closing the laptop", "presence".
+description: Use when the operator says where he is and for how long — "I'm here for a couple of hours", "I'm stepping away for an hour", "I'm away overnight", "I'm closing the laptop at 7" — or when a thread needs to know whether he is at the computer. Stores one global here-or-away state every thread reads, asks the single dialog that collects it (only one thread asks), and sends "closing the laptop" through /leave-by. Triggers on "I'm here for", "I'm away for", "stepping away", "back in an hour", "closing the laptop", "afk", "going afk", "presence".
 triggers:
   - presence
   - I'm here for
   - I'm away for
   - stepping away
   - closing the laptop
-argument-hint: "[status | ask | here <N>m|<N>h | away <N>m|<N>h | open-ended]"
+  - afk
+  - going afk
+argument-hint: "[status | ask | here <N>m|<N>h | away <N>m|<N>h | afk [<N>m|<N>h] | open-ended]"
 ---
 
 One state, read by every thread: the operator is here or away, until when, and whether the machine
@@ -55,7 +57,8 @@ unattended window already reads as away. `unset` means nothing is declared: beha
 
 ## Setting it from a plain statement
 
-When the operator says it outright, do not open a menu; set it:
+When the operator says it outright, do not open the presence dialog; set it (away rows run
+**Ask now** first, whose menu carries only work decisions):
 
 | Said | Call |
 |---|---|
@@ -66,8 +69,58 @@ When the operator says it outright, do not open a menu; set it:
 | "away until I say otherwise" | `set away --by operator-message --open-ended` |
 | "closing the laptop at 7 PM" | **Closing the laptop** below |
 
-Away also arms unattended mode (`human-queue.md` §Unattended): follow the lines the call prints
-(the pre-leave check, the window-end Monitor).
+Every away row runs **Ask now** (below) first, then the call. Away also arms unattended mode
+(`human-queue.md` §Unattended): follow the lines the call prints (the pre-leave check, the
+window-end Monitor).
+
+## Stepping away: `/afk` (issue #2418)
+
+`/afk`, "afk" and "going afk" mean away, machine stays on. Read the words with the source gate
+built in (`--by` names where the words came from; anything but a live operator message is refused):
+
+```bash
+AFK_FLAGS=$("$PRESENCE_SH" afk-parse --by operator-message -- "$OPERATOR_WORDS"); AFK_RC=$?
+```
+
+| Exit | Do |
+|---|---|
+| 0 | **Ask now**, then `set away --by operator-message $AFK_FLAGS` (`--for 30m`, `--rest-of-day`, `--open-ended`) |
+| 4 | No readable duration: `ask --afk` (he just asked to change it, so a live declaration or recent dismissal does not block). Exit 0: put only its **For how long?** question in the **Ask now** menu (same call, so still one round) and store it with `set away --by operator-dialog … --generation <token>`; dismissed: `release --generation <token> --dismissed`, then `set away --by operator-message --for 2h` (the recommended option) and say so in one line. Exit 12: he already reads as away, so unattended mode is armed and its guard would deny the menu: write nothing, keep the stored window, and say so in one line (`Already away until <time>; say /afk <duration> to change it.`). Exit 10: another thread holds the dialog; run **Ask now** without the duration question, write nothing, and let that dialog store his answer. Exit 20: `set away --by operator-message --for 2h` and say so in one line |
+| 3 | Laptop wording: **Closing the laptop** |
+| 5 | Words from an issue, PR or task prompt: print the line it printed, set nothing |
+| 1 | Not an afk message: nothing here |
+
+## Ask now, before an away window starts
+
+Questions the next hour will raise are often knowable now. Before `set away` (unattended mode
+denies menus once it is armed), take one bounded round:
+
+1. **Collect** what in-flight and queued work is known to need from him: open or parked steps,
+   unresolved saved questions in every repo (`unattended.sh digest --all`: presence is global, the question files are per repo), pending approvals (a paid review, a merge
+   only a human can run such as `/admin-merge`'s protection shape, a sign-in). Message each running
+   sub-agent and linked session once: "decisions you expect to need while he is away, one line
+   each with the recommended option, reply within 2 minutes". Wait at most **2 minutes** in total;
+   anything later is saved as usual once away is set.
+2. **Nothing to ask:** one line (`Nothing to ask before you go.`), no menu (with a pending
+   **For how long?** question, that question alone is the menu).
+3. **Ask** in one `AskUserQuestion` call: at most four questions in all, recommended option first in
+   each, the most consequential first. Any beyond four are recorded as usual after away is set.
+   If unattended mode is already armed (`unattended.sh status`), open no menu (`human-queue.md`
+   §Unattended): record each question with `unattended.sh record` and take its recommended option.
+4. **Record each answer where the work reads it**, then apply it after he leaves without asking
+   again: `unattended.sh record --question … --recommended …` then `unattended.sh answer U-<n>
+   --answer … --by operator`; a comment on the issue or PR it concerns (PRs he authored only,
+   `safety.md` §Authorship); a message to the sub-agent or session that asked. An answer here is his
+   own chat answer, so it carries the same authority as one typed in chat (one paid review approved
+   = that one review).
+5. **Then set away**, whatever happened: a dismissed menu, a sub-agent that did not reply, or a
+   live desk that captured the menu never holds the window back. Run `presence.sh declared-epoch` before step 1
+   and pass it as `set away … --if-declared <value>`: exit 10 means another thread stored a newer
+   declaration while you asked; nothing was written, read `status` and say so in one line.
+
+While away, before recording a new question, check `unattended.sh list` for an answered one about
+the same decision and apply it instead. A question first known after he leaves is recorded and
+defaulted exactly as today. Rationale: `.claude/reference/presence-windows.md` §Stepping away.
 
 ## When a window runs out (issue #2294)
 
