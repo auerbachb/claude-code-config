@@ -71,15 +71,63 @@ if [[ ! -x "$PAUSE_SH" ]]; then
   exit 0
 fi
 
+# Bounded status retry (issue #2433). The status read stays serialized under
+# the state lock — an unlocked read can observe a half-applied activation or
+# clear — but a lock that is merely BUSY is retried briefly instead of refusing
+# on the first exit 6. Only exit 6 is retried; `active` blocks at once. The
+# whole loop fits CLAUDE_PAUSE_GATE_BUDGET_MS (default 3500 ms), leaving margin
+# for payload parsing and repo resolution under the 5 s host hook timeout in
+# global-settings.json. Each attempt waits at most
+# CLAUDE_PAUSE_GATE_ATTEMPT_TIMEOUT seconds (default 1) for the lock, and a new
+# attempt starts only when a full attempt still fits in the budget.
+now_ms() {
+  if [[ -n "${EPOCHREALTIME:-}" ]]; then
+    local t="${EPOCHREALTIME/[.,]/}"
+    printf '%s' "$(( 10#${t:0:${#t}-3} ))"
+  elif command -v perl >/dev/null 2>&1; then
+    perl -MTime::HiRes=time -e 'printf "%d", time()*1000'
+  else
+    printf '%s' "$(( $(date +%s) * 1000 ))"
+  fi
+}
+BUDGET_MS="${CLAUDE_PAUSE_GATE_BUDGET_MS:-3500}"
+[[ "$BUDGET_MS" =~ ^[0-9]+$ ]] || BUDGET_MS=3500
+ATTEMPT_TIMEOUT="${CLAUDE_PAUSE_GATE_ATTEMPT_TIMEOUT:-1}"
+[[ "$ATTEMPT_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || ATTEMPT_TIMEOUT=1
+# Overrides can never outlive the 5 s host timeout: the budget is capped at
+# 4000 ms, and a single attempt (the first one included) must fit inside it.
+(( BUDGET_MS <= 4000 )) || BUDGET_MS=4000
+(( ATTEMPT_TIMEOUT * 1000 <= BUDGET_MS )) || ATTEMPT_TIMEOUT=1
+GATE_START_MS="$(now_ms)"
+
+status_attempt() {
+  if [[ -n "$CWD" && -d "$CWD" ]]; then
+    (cd "$CWD" && CLAUDE_STATE_LOCK_TIMEOUT="$ATTEMPT_TIMEOUT" CLAUDE_EXECUTION_PAUSE_LAUNCH_CHECK=1 \
+      "$PAUSE_SH" --repo "$REPO_KEY" --status --session "$SESSION_ID" 2>&1)
+  else
+    CLAUDE_STATE_LOCK_TIMEOUT="$ATTEMPT_TIMEOUT" CLAUDE_EXECUTION_PAUSE_LAUNCH_CHECK=1 \
+      "$PAUSE_SH" --repo "$REPO_KEY" --status --session "$SESSION_ID" 2>&1
+  fi
+}
+
 STATUS=""
 RC=0
-if [[ -n "$CWD" && -d "$CWD" ]]; then
-  STATUS="$(cd "$CWD" && CLAUDE_STATE_LOCK_TIMEOUT=3 CLAUDE_EXECUTION_PAUSE_LAUNCH_CHECK=1 \
-    "$PAUSE_SH" --repo "$REPO_KEY" --status --session "$SESSION_ID" 2>/dev/null)" || RC=$?
-else
-  STATUS="$(CLAUDE_STATE_LOCK_TIMEOUT=3 CLAUDE_EXECUTION_PAUSE_LAUNCH_CHECK=1 \
-    "$PAUSE_SH" --repo "$REPO_KEY" --status --session "$SESSION_ID" 2>/dev/null)" || RC=$?
-fi
+ATTEMPTS=0
+LAST_DIAG=""
+while :; do
+  ATTEMPTS=$(( ATTEMPTS + 1 ))
+  RC=0
+  OUT="$(status_attempt)" || RC=$?
+  # stdout carries exactly `active` / `inactive`; anything else is stderr.
+  STATUS="$(printf '%s\n' "$OUT" | grep -E '^(active|inactive)$' | tail -n 1)"
+  [[ "$RC" -eq 6 ]] || break
+  LAST_DIAG="$(printf '%s\n' "$OUT" | grep 'state-lock:' | tail -n 1)"
+  ELAPSED=$(( $(now_ms) - GATE_START_MS ))
+  # Jittered 100-290 ms back-off, then retry only if a whole attempt still fits.
+  JITTER_MS=$(( 100 + RANDOM % 20 * 10 ))
+  (( ELAPSED + JITTER_MS + ATTEMPT_TIMEOUT * 1000 <= BUDGET_MS )) || break
+  sleep "0.$(printf '%03d' "$JITTER_MS")"
+done
 
 # A confirmed active state includes the marker-backed fail-closed path when
 # session-state.json became unreadable after the pause was armed. Hook parse or
@@ -89,7 +137,14 @@ if [[ "$RC" -eq 0 && "$STATUS" == active ]]; then
   exit 2
 fi
 if [[ "$RC" -eq 6 ]]; then
-  echo "BLOCKED: pause state is lock-contended and cannot be verified within the launch-hook budget; refusing to start $TOOL_NAME." >&2
+  # Three distinct blocking outcomes (paused above, busy, unavailable) — all
+  # exit 2, because none of them proves the session is NOT paused.
+  if [[ -n "$LAST_DIAG" && "$LAST_DIAG" != *"not contention"* && "$LAST_DIAG" == *"held by pid "* ]]; then
+    HOLDER="$(printf '%s' "$LAST_DIAG" | sed -n 's/.*(\(\(last observed \)\{0,1\}held by pid [^ ]* on [^ ]*\).*/\1/p')"
+    echo "BLOCKED: pause state is lock-busy (${HOLDER:-holder unknown}) after $ATTEMPTS attempt(s) within ${BUDGET_MS}ms; this is NOT a pause and retrying the launch is safe. Refusing to start $TOOL_NAME. [$LAST_DIAG]" >&2
+  else
+    echo "BLOCKED: pause status could not be verified (${LAST_DIAG:-no lock diagnostic}) after $ATTEMPTS attempt(s); this is not lock contention. Refusing to start $TOOL_NAME." >&2
+  fi
   exit 2
 fi
 exit 0
