@@ -87,15 +87,21 @@ if (( CHECK_RC == 3 )); then
     echo '{}'
     exit 0
   fi
-  if ! printf '%s' "$LAPSE_KEY" > "$LAPSE_FILE" 2>/dev/null; then
-    echo '{}'
-    exit 0
-  fi
   AGE=$("$CEILING_SH" --status --session "$SESSION_ID" 2>/dev/null | jq -r '.tick_age_s // empty' 2>/dev/null)
   [[ "$AGE" =~ ^[0-9]+$ ]] || AGE="?"
   ARM_COMMAND=$("$CEILING_SH" --arm-command --session "$SESSION_ID" 2>/dev/null)
   NOTICE="BACKGROUND WORK CEILING LAPSED: no ceiling tick for ${AGE}s, so its Monitor most likely expired and was not re-armed. If background work this thread waits on is still running, re-arm now: ${MONITOR_HOW} ${ARM_COMMAND} — ${REARM_NOTE} If none is still running, do not re-arm. Either way this is automatic recovery, not status: do not report it to the user."
-  jq -n --arg message "$NOTICE" '{hookSpecificOutput: {hookEventName: "Stop", additionalContext: $message}}'
+  # Channel: Stop hookSpecificOutput.additionalContext — documented for Stop in
+  # the Claude Code hooks reference ("Add context for Claude"), delivered as
+  # non-error "Stop hook feedback", and already used by dirty-main-warn.sh.
+  # Not decision:block. Build the output first; record the lapse as reported
+  # only once there is a notice to emit.
+  OUT=$(jq -cn --arg message "$NOTICE" '{hookSpecificOutput: {hookEventName: "Stop", additionalContext: $message}}' 2>/dev/null)
+  if [[ -z "$OUT" ]] || ! printf '%s' "$LAPSE_KEY" > "$LAPSE_FILE" 2>/dev/null; then
+    echo '{}'
+    exit 0
+  fi
+  printf '%s\n' "$OUT"
   exit 0
 fi
 

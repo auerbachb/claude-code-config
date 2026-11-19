@@ -265,6 +265,8 @@ write_state "$PR" "$(jq -n --arg t "$(ago 40)" \
   '{babysit:{active:true,last_tick_at:$t,cadence_effective_minutes:5,monitor_task_id:"task-77"}}')"
 out="$(run_stop)"
 [[ "$(jq -r '.hookSpecificOutput.hookEventName' <<<"$out")" == "Stop" ]] || fail "Stop run must emit a Stop hookSpecificOutput, got: $out"
+[[ "$(jq -c '[keys, (.hookSpecificOutput | keys)]' <<<"$out")" == '[["hookSpecificOutput"],["additionalContext","hookEventName"]]' ]] \
+  || fail "Stop notice must be exactly {hookSpecificOutput:{hookEventName,additionalContext}} (no decision/reason/continue), got: $out"
 ctx="$(context_of <<<"$out")"
 grep -q "no persisted tick observed" <<<"$ctx" || fail "Stop notice must say no persisted tick observed, got: $ctx"
 grep -q "test/repo PR #${PR}" <<<"$ctx" || fail "Stop notice must name repo and PR, got: $ctx"

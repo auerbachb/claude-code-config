@@ -100,6 +100,7 @@ marker_dir="${CLAUDE_BABYSIT_WATCHDOG_MARKER_DIR:-/tmp}"
 
 now=$(date -u +%s)
 stalled=()
+written=()
 
 marker_ns="claude-babysit-tickwarn"
 repo_key=""
@@ -151,6 +152,7 @@ while IFS=$'\x1f' read -r pr last_tick cadence task_id; do
     echo "babysit-tick-watchdog: cannot write $marker — suppressing the PR #${pr} advisory rather than repeating it every tool call" >&2
     continue
   fi
+  written+=( "$marker" )
 
   if [[ "$hook_event" == "Stop" ]]; then
     stalled+=( "${repo_key} PR #${pr} (Monitor task ${task_id}): no persisted tick observed for ${age_min}m (cadence ${cadence}m, warn at ${warn_min}m)" )
@@ -163,9 +165,20 @@ done <<< "$records"
 
 printf -v body '%s; ' "${stalled[@]}"
 if [[ "$hook_event" == "Stop" ]]; then
-  emit_context "BABYSIT WATCH LAPSE SUSPECTED — ${body%; }. On a runtime that caps Monitor timeout_ms the watch ends after 30 minutes and must be re-armed on its expiry notice. If that task's expiry notice arrived, re-arm under the expiry procedure in /babysit-pr (.claude/reference/monitor-expiry.md); otherwise run /babysit-pr-stop <PR> FIRST, then /babysit-pr <PR>. If the watch is finished, /babysit-pr-stop alone is enough. Surface one line to the user only if you cannot restore the watch."
+  message="BABYSIT WATCH LAPSE SUSPECTED — ${body%; }. On a runtime that caps Monitor timeout_ms the watch ends after 30 minutes and must be re-armed on its expiry notice. If that task's expiry notice arrived, re-arm under the expiry procedure in /babysit-pr (.claude/reference/monitor-expiry.md); otherwise run /babysit-pr-stop <PR> FIRST, then /babysit-pr <PR>. If the watch is finished, /babysit-pr-stop alone is enough. Surface one line to the user only if you cannot restore the watch."
+else
+  message="BABYSIT WATCHER NOT TICKING — ${body%; }. A recorded Monitor task can still be stale, so treat this as a dead poll, not a quiet one (issues #914 and #924; scheduling-failure-modes.md Pattern 7). TO RECOVER, run /babysit-pr-stop <PR> FIRST, then /babysit-pr <PR>: re-arming on its own is refused as a duplicate until the watcher ages past max(3 x cadence, 30m), which is deliberately wider than this warning's 2 x cadence window — so a bare re-arm here silently no-ops. /babysit-pr records the replacement persistent Monitor task ID; never substitute CronCreate, either /loop mode, or a chained one-shot wake-up. If the watch is simply finished, /babysit-pr-stop alone is enough. The silence ceiling is a backstop, not this poll's cadence."
+fi
+
+# Build the output before committing to it: if it cannot be built, withdraw
+# this run's dedupe markers so the notice is retried instead of being recorded
+# as delivered when nothing was emitted.
+out=$(emit_context "$message")
+if [[ -z "$out" ]]; then
+  rm -f "${written[@]}" 2>/dev/null || true
+  echo "babysit-tick-watchdog: could not build the ${hook_event} notice — dedupe markers withdrawn so it retries" >&2
   exit 0
 fi
-emit_context "BABYSIT WATCHER NOT TICKING — ${body%; }. A recorded Monitor task can still be stale, so treat this as a dead poll, not a quiet one (issues #914 and #924; scheduling-failure-modes.md Pattern 7). TO RECOVER, run /babysit-pr-stop <PR> FIRST, then /babysit-pr <PR>: re-arming on its own is refused as a duplicate until the watcher ages past max(3 x cadence, 30m), which is deliberately wider than this warning's 2 x cadence window — so a bare re-arm here silently no-ops. /babysit-pr records the replacement persistent Monitor task ID; never substitute CronCreate, either /loop mode, or a chained one-shot wake-up. If the watch is simply finished, /babysit-pr-stop alone is enough. The silence ceiling is a backstop, not this poll's cadence."
+printf '%s\n' "$out"
 
 exit 0

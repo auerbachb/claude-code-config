@@ -265,6 +265,8 @@ OUT=$(run_guard "$SID")
 [[ "$(printf '%s' "$OUT" | jq -r '.decision // ""')" != "block" ]] || fail "a lapsed watch must not block the turn"
 [[ "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.hookEventName // ""')" == "Stop" ]] || \
   fail "the lapse notice must be a Stop hookSpecificOutput, got: '$OUT'"
+[[ "$(printf '%s' "$OUT" | jq -c '[keys, (.hookSpecificOutput | keys)]')" == '[["hookSpecificOutput"],["additionalContext","hookEventName"]]' ]] || \
+  fail "the lapse notice must be exactly {hookSpecificOutput:{hookEventName,additionalContext}} (no decision/reason/continue), got: '$OUT'"
 CTX=$(printf '%s' "$OUT" | context_of)
 [[ "$CTX" == *"CEILING LAPSED"* && "$CTX" == *"bgwork-ceiling.sh --tick --session $SID"* ]] || \
   fail "the lapse notice must name the lapse and carry the re-arm command, got: '$CTX'"

@@ -43,7 +43,7 @@ The issue left this open. All three create turn boundaries; only one satisfies e
 
 "Armed" only proves arming was observed. Every `--tick` therefore touches `claude-bgceiling-ticked-<id>`, and `--check` exits **3** once `now − max(armed, last tick)` passes `CLAUDE_BGCEILING_TICK_STALE_SECONDS` (default 150s, five polls); `--status` reports `tick_age_s` / `tick_stale`. Three observers that do not expire with the watch read it:
 
-- **Stop guard** (`bgwork-ceiling-guard.sh`) — exit 3 becomes one non-blocking Stop `additionalContext` notice per lapse (deduped on the arm/tick marker mtimes), carrying the re-arm command and "do not re-arm if no work remains". Never a block: the background-work marker is append-only, so a block would fire on every Stop after the work ended.
+- **Stop guard** (`bgwork-ceiling-guard.sh`) — exit 3 becomes one non-blocking Stop `additionalContext` notice per lapse (a channel the Claude Code hooks reference documents for Stop, delivered as "Stop hook feedback" — the one `dirty-main-warn.sh` already uses; deliberately not `decision: block`) (deduped on the arm/tick marker mtimes), carrying the re-arm command and "do not re-arm if no work remains". Never a block: the background-work marker is append-only, so a block would fire on every Stop after the work ended.
 - **Arm hook** — stays silent on exit 3 for the same reason (the Stop notice owns it).
 - **launchd watchdog** (`silence-watchdog.sh`, macOS, optional) — an idle session whose armed ceiling lapsed within the last two hours no longer hides behind the armed marker; it gets a "ceiling watch stopped ticking; re-arm" notification, once per heartbeat silence.
 
