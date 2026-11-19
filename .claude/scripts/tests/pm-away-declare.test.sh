@@ -69,7 +69,9 @@ run '6h';                 [[ "$out" == 'presence: away, until later' ]] && ok 'p
 run 'until 25:99';        expect_refusal 'impossible clock time refused' 'is not a return time I can read'
 run 'whenever';           expect_refusal 'nonsense refused' 'is not a return time I can read'
 run 'closing the laptop at 7'; expect_refusal 'laptop wording redirected' '/leave-by'
-run 6h '';                expect_refusal 'missing presence.sh refused' 'presence.sh not found'
+run 6h '';                if [[ "$out" == 'Away not set — presence.sh not found (checked all three paths); presence could not be checked, so any earlier away window stays in force.' ]]; then ok 'missing presence.sh refused without claiming attended'; else bad "missing presence.sh: '$out'"; fi
+AWAY_BARE=true run '';    expect_refusal 'bare --away refused' '--away needs a return time'
+AWAY_BARE=true PRESENCE_AWAY=1 run ''; if [[ -z "$calls" && "$out" == 'Away not changed — --away needs a return time'*'stays in force.' ]]; then ok 'bare --away under an active window keeps it'; else bad "bare while away: '$out'"; fi
 run 'until 8:00 AM' "$stub" ''; expect_refusal 'missing window-plan.sh refused' 'window-plan.sh not found'
 PRESENCE_FAIL=1 run 6h;   if [[ "$out" == 'Away not set — presence.sh refused it (rc=1); continuing attended.' ]]; then ok 'presence refusal is one line'; else bad "presence refusal: '$out'"; fi
 PRESENCE_FAIL=1 PRESENCE_AWAY=1 run 6h; if [[ "$out" == 'Away not changed — presence.sh refused it (rc=1); the earlier away window stays in force.' ]]; then ok 'refusal under an active window keeps it'; else bad "refusal while away: '$out'"; fi
