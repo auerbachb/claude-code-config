@@ -938,15 +938,24 @@ check_eq "zero-padded grace is read as decimal" "1" "$(grep -c $'^retained\ttoo 
 check_eq "oversized --grace-seconds is a usage error" "2" "$(bash "$SWEEP" --grace-seconds 99999999999 >/dev/null 2>&1; echo $?)"
 rm -rf "$STATE_FILE.lock.rel.123-4"
 
-# Symlink-swap races between validation and deletion. Each case swaps the
-# aside's NAME for a symlink to the live lock at a fixed point inside the
-# sweep (deterministic hooks: `pwd` and `rm` are shadowed by functions that
-# swap once, then defer to the real command). The live lock must survive.
-swap_case() { # hook(pwd|rm) -> prints sweep output; leaves fixtures for asserts
+# Swap races between validation and deletion. Each case replaces the aside's
+# NAME at a fixed point inside the sweep (deterministic hooks: `pwd` and `rm`
+# are shadowed by functions that swap once, then defer to the real command):
+# with a symlink to the live lock (pwd, rm) or with a fresh same-name real
+# directory (pwd-dir). Nothing outside the validated inode may be deleted.
+swap_case() { # hook(pwd|pwd-dir|rm) -> prints sweep output; leaves fixtures for asserts
   bash -c '
     source "$1"; c="$2"; lock="$3"; flag="$4"; hook="$5"
-    swap() { [[ -e "$flag" ]] && return; : > "$flag"; mv "$c" "$c.moved"; ln -s "$lock" "$c"; }
-    if [[ "$hook" == pwd ]]; then
+    swap() {
+      [[ -e "$flag" ]] && return; : > "$flag"; mv "$c" "$c.moved"
+      if [[ "$hook" == pwd-dir ]]; then
+        # Same-name replacement: a real, owned, old directory with an owner file.
+        mkdir "$c"; printf "pid=new\n" > "$c/owner"; touch -t 202601010000 "$c"
+      else
+        ln -s "$lock" "$c"
+      fi
+    }
+    if [[ "$hook" == pwd || "$hook" == pwd-dir ]]; then
       # First pwd = the parent-path probe, i.e. after re-validation and
       # before the sweep enters the aside.
       pwd() { swap; builtin pwd "$@"; }
@@ -957,20 +966,26 @@ swap_case() { # hook(pwd|rm) -> prints sweep output; leaves fixtures for asserts
     state_lock_sweep_asides "$6" apply
   ' _ "$LOCK_LIB" "$STATE_FILE.lock.rel.42-1" "$LOCK_DIR" "$HOME/swap-2402.flag" "$1" "$STATE_FILE"
 }
-for hook in pwd rm; do
+for hook in pwd pwd-dir rm; do
   reset_state; command rm -rf "$STATE_FILE".lock.rel.* "$HOME/swap-2402.flag"
   mkdir -p "$LOCK_DIR"; printf 'pid=live\n' > "$LOCK_DIR/owner"
   mk_aside lock.rel.42-1 owner
   swap_out="$(swap_case "$hook")"; swap_rc=$?
-  check_eq "swap via $hook: the swap fired" "1" "$([[ -L "$STATE_FILE.lock.rel.42-1" ]] && echo 1 || echo 0)"
+  check_eq "swap via $hook: the swap fired" "1" "$([[ -e "$STATE_FILE.lock.rel.42-1.moved" ]] && echo 1 || echo 0)"
   check_eq "swap via $hook: live lock owner survives" "pid=live" "$(cat "$LOCK_DIR/owner" 2>/dev/null)"
-  check_eq "swap via $hook: symlink itself not followed or removed" "1" "$([[ -L "$STATE_FILE.lock.rel.42-1" ]] && echo 1 || echo 0)"
+  if [[ "$hook" == pwd-dir ]]; then
+    check_eq "same-name replacement refused as a different directory" "1" "$(grep -c $'^failed\tchanged before removal: different directory\t' <<<"$swap_out")"
+    check_eq "same-name replacement keeps its owner file" "pid=new" "$(cat "$STATE_FILE.lock.rel.42-1/owner" 2>/dev/null)"
+    check_eq "same-name replacement: original keeps its file" "1" "$([[ -f "$STATE_FILE.lock.rel.42-1.moved/owner" ]] && echo 1 || echo 0)"
+  else
+    check_eq "swap via $hook: symlink itself not followed or removed" "1" "$([[ -L "$STATE_FILE.lock.rel.42-1" ]] && echo 1 || echo 0)"
+  fi
   check_eq "swap via $hook: reported failed, not removed" "1" "$(grep -c $'^failed\t' <<<"$swap_out")"
   check_eq "swap via $hook: sweep exits 1" "1" "$swap_rc"
   if [[ "$hook" == pwd ]]; then
     check_eq "swap before entry: refused as resolving elsewhere" "1" "$(grep -c $'^failed\tchanged before removal: resolves elsewhere\t' <<<"$swap_out")"
     check_eq "swap before entry: moved original keeps its file" "1" "$([[ -f "$STATE_FILE.lock.rel.42-1.moved/owner" ]] && echo 1 || echo 0)"
-  else
+  elif [[ "$hook" == rm ]]; then
     check_eq "swap after entry: final rmdir refuses the symlink" "1" "$(grep -c $'^failed\trmdir failed\t' <<<"$swap_out")"
     check_eq "swap after entry: unlink stayed bound to the original inode" "0" "$([[ -e "$STATE_FILE.lock.rel.42-1.moved/owner" ]] && echo 1 || echo 0)"
   fi

@@ -888,7 +888,9 @@ _state_lock_install_trap() {
 #   - a real directory, not a symlink, owned by the current user;
 #   - mtime older than grace-seconds (default 3600; a real lock lives
 #     milliseconds, a stale one is broken at 120 s);
-#   - it holds only regular, non-symlink `owner` / `.owner.*` files.
+#   - it holds only regular, non-symlink `owner` / `.owner.*` files;
+#   - at deletion time, entered by `cd -P`, it is the same physical path,
+#     the same inode, and still older than the grace.
 # Files are removed one by one, then `rmdir` — never `rm -rf`, never a
 # followed symlink. Anything else is retained and reported with its reason.
 # Candidates beyond max-candidates (default 500) are counted unexamined.
@@ -900,7 +902,7 @@ _state_lock_install_trap() {
 # Returns 0, 1 when any removal failed, 2 on a usage error.
 state_lock_sweep_asides() (
   local state_file="${1:-}" mode="${2:-inventory}" grace="${3:-3600}" cap="${4:-500}"
-  local dir base now c name entry reason mtime examined=0 phys_dir
+  local dir base now c name entry reason mtime examined=0 phys_dir ino
   local removed=0 removable=0 retained=0 failed=0 unexamined=0
   # Bounded digit strings, read as decimal (a leading 0 must not mean octal).
   [[ -n "$state_file" && ( "$mode" == inventory || "$mode" == apply ) &&
@@ -913,6 +915,9 @@ state_lock_sweep_asides() (
   shopt -s nullglob dotglob
   now="$(_state_lock_now)"
   report() { printf '%s\t%s\t%s\n' "$1" "$2" "$3"; }
+  # Inode of a directory itself (never a symlink target: callers have
+  # already refused symlinks). `ls -di` is portable across GNU and BSD.
+  dir_inode() { local i; i="$(ls -di -- "$1" 2>/dev/null)" || return 1; i="${i%% *}"; [[ "$i" =~ ^[0-9]+$ ]] && printf '%s' "$i"; }
   # One entry's verdict: empty when it is an expected lock file, or when it
   # vanished (a concurrent releaser finishing the same cleanup).
   entry_problem() {
@@ -938,6 +943,7 @@ state_lock_sweep_asides() (
     elif [[ ! -O "$c" ]]; then reason="foreign owner"
     elif ! mtime="$(_state_lock_file_mtime "$c")"; then reason="age unknown"
     elif (( now - mtime < grace )); then reason="too young ($((now - mtime))s < ${grace}s)"
+    elif ! ino="$(dir_inode "$c")"; then reason="inode unknown"
     else
       for entry in "$c"/*; do
         reason="$(entry_problem "$entry")"
@@ -960,13 +966,19 @@ state_lock_sweep_asides() (
     fi
     # Delete from INSIDE the verified directory, bound to its inode: enter it,
     # confirm the physical path is the aside itself (a swap to a symlink would
-    # land elsewhere, e.g. in the live lock), and unlink entries relative to
-    # it, so a later swap of the name cannot redirect a deletion.
+    # land elsewhere, e.g. in the live lock), confirm it is the same inode the
+    # checks above validated and still old enough (a same-name replacement
+    # directory is refused), and unlink entries relative to it, so a later
+    # swap of the name cannot redirect a deletion.
     phys_dir="$(cd -P -- "$dir" 2>/dev/null && pwd -P)" || phys_dir=""
     reason="$(
       [[ -n "$phys_dir" ]] || { echo "parent directory unresolvable"; exit 0; }
       cd -P -- "$c" 2>/dev/null || { [[ -e "$c" || -L "$c" ]] && echo "could not enter"; exit 0; }
       [[ "$(pwd -P)" == "${phys_dir%/}/$name" && -O . ]] || { echo "changed before removal: resolves elsewhere"; exit 0; }
+      [[ "$(dir_inode .)" == "$ino" ]] || { echo "changed before removal: different directory"; exit 0; }
+      if ! mtime="$(_state_lock_file_mtime .)" || (( now - mtime < grace )); then
+        echo "changed before removal: no longer old enough"; exit 0
+      fi
       for entry in ./*; do
         problem="$(entry_problem "$entry")"
         [[ -z "$problem" ]] || { echo "changed before removal: $problem"; exit 0; }
