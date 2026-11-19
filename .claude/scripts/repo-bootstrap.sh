@@ -130,7 +130,9 @@ permissions:
 jobs:
   trigger-cr-plan:
     runs-on: ubuntu-latest
-    if: "!endsWith(github.event.issue.user.login, '[bot]')"
+    # Skip bot-filed issues and the owner's `human-tasks` list issue (#2539):
+    # neither is agent work, so neither gets a coding plan.
+    if: "!endsWith(github.event.issue.user.login, '[bot]') && !contains(github.event.issue.labels.*.name, 'human-tasks')"
     steps:
       - name: Comment @coderabbitai plan
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -1723,7 +1725,10 @@ REPO_BOOTSTRAP_FILE_EOF
 # EXIT STATUS
 #   0  startable / authorized — unclaimed, mine, stale, or an --allow-claimed
 #      override; also every successful --claim / --release.
-#   1  blocked   — a fresh claim held by another thread or person.
+#   1  blocked   — a fresh claim held by another thread or person, or (--check
+#                  / --claim) the issue carries the `human-tasks` label: the
+#                  owner's own to-do list, never agent work (issue #2539).
+#                  Verdict `claimed`; --allow-claimed does not lift it.
 #   2  usage     — bad/missing issue number, unknown or conflicting flags.
 #   3  not_found — no such issue.
 #   4  unknown   — claim state undetermined. FAIL-CLOSED: treat as claimed.
@@ -1821,6 +1826,8 @@ if [[ -n "${HOME:-}" ]]; then
 fi
 
 CLAIM_LABEL="in-progress"
+# The owner's own to-do list issue (#2539): never startable.
+HUMAN_TASKS_LABEL="human-tasks"
 GUARD_REF="the issue-claim guard (.claude/rules/issue-planning.md)"
 
 print_help() {
@@ -2236,6 +2243,18 @@ HAS_LABEL="$(printf '%s' "$ISSUE_JSON" | jq -r --arg l "$CLAIM_LABEL" '[.labels[
 [[ "$HAS_LABEL" == "ERR" ]] && fail_closed "could not parse issue #$ISSUE_NUMBER labels"
 ASSIGNEES="$(printf '%s' "$ISSUE_JSON" | jq -r '[.assignees[]?.login] | join(" ")' 2>/dev/null || echo "ERR")"
 [[ "$ASSIGNEES" == "ERR" ]] && fail_closed "could not parse issue #$ISSUE_NUMBER assignees"
+
+# The owner's `human-tasks` list issue (#2539) holds the owner's own to-dos: it is never
+# agent work, so --check and --claim report it as not startable (verdict
+# `claimed`, exit 1 — the existing "skip it" contract every caller already
+# honours). --allow-claimed does not lift it; --release and --renew are unaffected.
+if [[ "$ACTION" == check || "$ACTION" == claim ]]; then
+  IS_HUMAN_TASKS="$(printf '%s' "$ISSUE_JSON" | jq -r --arg l "$HUMAN_TASKS_LABEL" '[.labels[]?.name | ascii_downcase] | index($l) != null' 2>/dev/null || echo "ERR")"
+  [[ "$IS_HUMAN_TASKS" == "ERR" ]] && fail_closed "could not parse issue #$ISSUE_NUMBER labels"
+  if [[ "$IS_HUMAN_TASKS" == "true" ]]; then
+    emit claimed 1 "issue #$ISSUE_NUMBER is the owner's $HUMAN_TASKS_LABEL list — the owner's own to-dos, never agent work; not startable, and --allow-claimed does not override it"
+  fi
+fi
 
 # --- read the claim comment ----------------------------------------------------
 # The marker is an HTML comment so it renders invisibly, and carries the holder

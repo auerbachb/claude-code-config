@@ -149,6 +149,25 @@ section_lines() {
     inside { print }'
 }
 
+# --- sync-reviews: the human-tasks list issue is never a Review (#2539) --------
+# Runs the real row program (extracted from sync-reviews.sh) over a search
+# result holding a captured issue and the owner's human-tasks list issue, with
+# and without the footer. Only the ordinary captured issue becomes a row.
+SYNC_SRC="$HQ_T_DESK_DIR/bin/cmd/sync-reviews.sh"
+awk '/^hq__sync_jq\(\) \{/ { f = 1; next } f && /^JQ$/ { exit } f && seen { print } f && /<<.JQ.$/ { seen = 1 }' \
+  "$SYNC_SRC" >"$TMP/sync.jq"
+printf '[]\n' >"$TMP/sync-prs.json"
+cat >"$TMP/sync-issues.json" <<'JSON'
+[
+ {"repository":{"nameWithOwner":"acme/widgets"},"number":7,"title":"Captured idea","url":"u7","createdAt":"2026-10-01T00:00:00Z","labels":[{"name":"enhancement"}],"body":"An idea.\n\n_Captured via /issue-maker._"},
+ {"repository":{"nameWithOwner":"acme/widgets"},"number":8,"title":"Human tasks","url":"u8","createdAt":"2026-10-01T00:00:01Z","labels":[{"name":"Human-Tasks"}],"body":"- [ ] renew the domain\n\n_Captured via /issue-maker._"},
+ {"repository":{"nameWithOwner":"acme/widgets"},"number":9,"title":"Human tasks","url":"u9","createdAt":"2026-10-01T00:00:02Z","labels":[{"name":"human-tasks"}],"body":"- [ ] file taxes"}
+]
+JSON
+SYNC_ROWS=$(jq -n -r --slurpfile prs "$TMP/sync-prs.json" --slurpfile issues "$TMP/sync-issues.json" \
+  --arg footer '_Captured via /issue-maker._' -f "$TMP/sync.jq" | cut -d"$(printf '\037')" -f3 | tr '\n' ' ')
+check "sync-reviews: only the captured, unlabelled issue becomes a row (human-tasks never does)" "$SYNC_ROWS" "7 "
+
 : >"$TMP/stdin"
 STUB_DIR="$TMP/stub"
 mkdir -p "$STUB_DIR"

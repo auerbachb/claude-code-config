@@ -63,7 +63,7 @@ Unattended mode declares the opposite — keep working, do not wait. They can be
   byte-checked by `verbatim-block-lint.sh` in `.claude/reference/subagent-phase-guardrails.md` and
   `/pr-monitor-and-manage`.
 
-## Past decisions and memory
+## Past decisions
 
 Before asking the operator about a past decision, read the full memory note (not its index line), the
 assigned issue's body and first comment, and the task brief. A question whose answer is in any of them

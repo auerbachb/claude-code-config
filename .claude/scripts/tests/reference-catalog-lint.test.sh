@@ -19,7 +19,7 @@
 #
 # The lint resolves repo-root-relative paths, so each drift case builds a
 # throwaway repo-shaped fixture and runs the script with that tree as cwd.
-# covers: .claude/reference .claude/reference/README.md .claude/rules/safety.md
+# covers: .claude/reference .claude/reference/README.md .claude/reference/catalog .claude/rules/safety.md
 
 set -euo pipefail
 
@@ -39,11 +39,12 @@ case_num=0
 pass() { echo "ok   — $1"; }
 fail() { echo "FAIL — $1"; failures=$((failures + 1)); }
 
-# Well-formed fixture: 2 indexed files, 2 matching rows, plus a nested
-# diagrams/ file the lint is documented to ignore (maxdepth 1).
+# Well-formed fixture: a hub README linking two catalog pages, 2 indexed root
+# files (one .md, one .json) split across the pages, plus a nested diagrams/
+# file the lint is documented to ignore (maxdepth 1) with a path-qualified row.
 make_fixture() {
   local dir="$1"
-  mkdir -p "$dir/.claude/reference/diagrams"
+  mkdir -p "$dir/.claude/reference/diagrams" "$dir/.claude/reference/catalog"
   echo "alpha" > "$dir/.claude/reference/alpha.md"
   echo "{}"    > "$dir/.claude/reference/beta.json"
   echo "nested" > "$dir/.claude/reference/diagrams/nested.md"
@@ -54,8 +55,32 @@ Prose above the index. A bullet up here is not a registration.
 
 ## Contents
 
+### One
+
+- [One](catalog/one.md)
+
+### Two
+
+- [Two](catalog/two.md)
+EOF
+  cat > "$dir/.claude/reference/catalog/one.md" <<'EOF'
+# One
+
+Back to the [index](../README.md).
+
+## Contents
+
 - `alpha.md` — first fixture doc
+EOF
+  cat > "$dir/.claude/reference/catalog/two.md" <<'EOF'
+# Two
+
+Back to the [index](../README.md).
+
+## Contents
+
 - `beta.json` — second fixture doc
+- `diagrams/nested.md` — nested row, not a registration
 EOF
 }
 
@@ -95,9 +120,9 @@ expect() {
 
 noop() { :; }
 
-# Puts a catalog-shaped bullet ABOVE the '## Contents' header, simulating a
-# filename mentioned in the README preamble. Counting it would make the run
-# report a phantom entry, so exit 0 is what proves the section scoping works.
+# Puts a catalog-shaped bullet ABOVE the '## Contents' header of a page,
+# simulating a filename mentioned in the page preamble. Counting it would make
+# the run report a phantom entry, so exit 0 proves the section scoping works.
 insert_bullet_above_contents() {
   local tmp
   tmp=$(mktemp)
@@ -108,8 +133,8 @@ insert_bullet_above_contents() {
       seen = 1
     }
     { print }
-  ' .claude/reference/README.md > "$tmp"
-  mv "$tmp" .claude/reference/README.md
+  ' .claude/reference/catalog/one.md > "$tmp"
+  mv "$tmp" .claude/reference/catalog/one.md
 }
 
 # Same idea below the index: the awk in the lint stops at the next '## '.
@@ -117,34 +142,68 @@ append_section_below_contents() {
   {
     printf '\n%s\n\n' "## Appendix"
     printf '%s\n' "- \`decoy-below.md\` — listed outside the index"
-  } >> .claude/reference/README.md
+  } >> .claude/reference/catalog/one.md
 }
 
 # --- passing case ---------------------------------------------------------
-# The file count in the marker is load-bearing: it proves the run actually
-# scanned the fixture rather than passing vacuously over an empty set.
-expect "well-formed catalog passes" 0 \
-  'reference-catalog-lint: OK \(2 files indexed\)' \
-  noop
+# The file and page counts in the marker are load-bearing: they prove the run
+# actually scanned the fixture rather than passing vacuously over an empty set.
+OK_RE='reference-catalog-lint: OK \(2 files indexed across 2 pages\)'
+
+expect "well-formed catalog passes" 0 "$OK_RE" noop
 
 # --- drift failures -------------------------------------------------------
 # This is the acceptance criterion: a deliberately-introduced catalog drift
-# (a .claude/reference/*.md file with no README row) must fail the check.
+# (a .claude/reference/*.md file with no catalog row) must fail the check.
 expect "undocumented reference file fails" 1 \
-  "File 'gamma.md' exists in .* but has no entry in the ## Contents index" \
+  "File 'gamma.md' exists in .* but has no entry in any catalog page" \
   bash -c 'echo gamma > .claude/reference/gamma.md'
 
 expect "undocumented .json file fails" 1 \
-  "File 'gamma.json' exists in .* but has no entry in the ## Contents index" \
+  "File 'gamma.json' exists in .* but has no entry in any catalog page" \
   bash -c 'echo "{}" > .claude/reference/gamma.json'
 
-expect "Contents row with no file on disk fails" 1 \
-  "README indexes 'delta.md' but no such file exists" \
-  bash -c 'printf "%s\n" "- \`delta.md\` — phantom entry" >> .claude/reference/README.md'
+expect "page row with no file on disk fails, naming the page" 1 \
+  "file=\.claude/reference/catalog/two\.md::Catalog indexes 'delta.md' but no such file exists" \
+  bash -c 'printf "%s\n" "- \`delta.md\` — phantom entry" >> .claude/reference/catalog/two.md'
 
-expect "duplicate Contents row fails" 1 \
-  "'alpha.md' appears more than once in the ## Contents index" \
-  bash -c 'printf "%s\n" "- \`alpha.md\` — duplicate row" >> .claude/reference/README.md'
+expect "duplicate row within one page fails" 1 \
+  "'alpha.md' appears more than once in the catalog" \
+  bash -c 'printf "%s\n" "- \`alpha.md\` — duplicate row" >> .claude/reference/catalog/one.md'
+
+expect "duplicate row across two pages fails" 1 \
+  "'alpha.md' appears more than once in the catalog .*catalog/one.md,.*catalog/two.md" \
+  bash -c 'printf "%s\n" "- \`alpha.md\` — duplicate row" >> .claude/reference/catalog/two.md'
+
+# --- page / link parity ---------------------------------------------------
+expect "hub links a page that does not exist" 1 \
+  "Hub links '\.claude/reference/catalog/three\.md' but no such page exists" \
+  bash -c 'printf "\n%s\n" "- [Three](catalog/three.md)" >> .claude/reference/README.md'
+
+expect "page on disk that the hub does not link" 1 \
+  "Page '\.claude/reference/catalog/three\.md' exists but the hub ## Contents section does not link it" \
+  bash -c 'printf "## Contents\n\n" > .claude/reference/catalog/three.md'
+
+expect "hub linking a page twice fails" 1 \
+  "Hub links '\.claude/reference/catalog/one\.md' more than once" \
+  bash -c 'printf "\n%s\n" "- [One again](catalog/one.md)" >> .claude/reference/README.md'
+
+expect "swapped hub links under the wrong headings fail" 1 \
+  "sits under heading 'One' but the page is titled 'Two'" \
+  bash -c 'sed -i.bak -e "s#(catalog/one.md)#(catalog/TMP.md)#" -e "s#(catalog/two.md)#(catalog/one.md)#" -e "s#(catalog/TMP.md)#(catalog/two.md)#" .claude/reference/README.md; rm -f .claude/reference/README.md.bak'
+
+# --- index purity ---------------------------------------------------------
+expect "entry row left in the hub fails" 1 \
+  "Hub index holds an entry row for 'alpha.md'" \
+  bash -c 'printf "\n%s\n" "- \`alpha.md\` — stray hub row" >> .claude/reference/README.md'
+
+# --- references vs. pages -------------------------------------------------
+expect "catalog/ pages are not counted as reference files" 0 "$OK_RE" \
+  bash -c 'echo extra > .claude/reference/catalog/notes.txt'
+
+expect "root file with a page-like name is still required" 1 \
+  "File 'one.md' exists in .* but has no entry in any catalog page" \
+  bash -c 'echo one > .claude/reference/one.md'
 
 # --- fast-path failure ----------------------------------------------------
 # Missing README is the reachable half of the two fast-path guards: the
@@ -155,20 +214,16 @@ expect "missing README fails" 1 \
   rm .claude/reference/README.md
 
 # --- scoping / false-positive guards --------------------------------------
-expect "bullet above the Contents section is ignored" 0 \
-  'reference-catalog-lint: OK \(2 files indexed\)' \
+expect "bullet above the Contents section is ignored" 0 "$OK_RE" \
   insert_bullet_above_contents
 
-expect "bullet in a later section is ignored" 0 \
-  'reference-catalog-lint: OK \(2 files indexed\)' \
+expect "bullet in a later section is ignored" 0 "$OK_RE" \
   append_section_below_contents
 
-expect "path-qualified cross-reference is not a registration" 0 \
-  'reference-catalog-lint: OK \(2 files indexed\)' \
-  bash -c 'printf "%s\n" "- \`.claude/rules/safety.md\` — cross reference" >> .claude/reference/README.md'
+expect "path-qualified cross-reference is not a registration" 0 "$OK_RE" \
+  bash -c 'printf "%s\n" "- \`.claude/rules/safety.md\` — cross reference" >> .claude/reference/catalog/one.md'
 
-expect "nested diagrams/ file needs no index row" 0 \
-  'reference-catalog-lint: OK \(2 files indexed\)' \
+expect "nested diagrams/ file needs no index row" 0 "$OK_RE" \
   bash -c 'echo more > .claude/reference/diagrams/extra.md'
 
 # --- CLI contract ---------------------------------------------------------
@@ -286,6 +341,26 @@ else
 fi
 
 # --- real repo ------------------------------------------------------------
+# The hub keeps all nine legacy heading lines so every old anchor still
+# resolves (Issue #2188). Pinned by text, not by count, so a rename fails.
+hub="${REPO_ROOT}/.claude/reference/README.md"
+for heading in \
+  '# Reference Files' \
+  '## Contents' \
+  '### Schemas' \
+  '### Runbooks and long command forms' \
+  '### Workflow decomposition and PM helpers' \
+  '### Living trackers (updated each cycle — not point-in-time)' \
+  '### Audits and research (point-in-time)' \
+  '### Diagrams (mermaid stubs and indexes)' \
+  '### Verification logs'; do
+  if grep -qxF -- "$heading" "$hub"; then
+    pass "hub keeps legacy heading: ${heading}"
+  else
+    fail "hub lost legacy heading: ${heading}"
+  fi
+done
+
 if (cd "$REPO_ROOT" && bash "$LINT" >/dev/null 2>&1); then
   pass "real repo catalog is in sync"
 else

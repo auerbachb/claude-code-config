@@ -186,7 +186,11 @@ SQL
 # body line, trimmed, is exactly the footer (search matching is by token, so
 # it also finds prose that merely mentions the phrase). Titles lose control
 # characters and are capped at 500 characters (jq counts code points, as
-# Postgres does, so a multi-byte character is never split).
+# Postgres does, so a multi-byte character is never split). The owner's
+# `human-tasks` list issue (#2539) is never a Review, footer or not: it is a
+# standing to-do list, not landed work. (The tracker is not filed through
+# /issue-maker, so it lacks the footer anyway; the label check makes that hold
+# even if it ever gains one.)
 hq__sync_jq() {
   cat <<'JQ'
 def clean: (. // "") | gsub("[[:cntrl:]]"; " ") | gsub("^ +| +$"; "")
@@ -196,6 +200,7 @@ def row($kind; $at): [$kind, (.repository.nameWithOwner // ""), ((.number // 0) 
 ( [ $prs[0][] | {r: row("pr"; .closedAt), k: [(.repository.nameWithOwner // "" | ascii_downcase), .number]} ]
   + [ $issues[0][]
       | select(any((.body // "") | split("\n")[]; gsub("^[[:space:]]+|[[:space:]]+$"; "") == $footer))
+      | select([(.labels // [])[] | (.name // "") | ascii_downcase] | index("human-tasks") | not)
       | {r: row("issue"; .createdAt), k: [(.repository.nameWithOwner // "" | ascii_downcase), .number]} ] )
 | unique_by([.r[0]] + .k)
 | sort_by(.r[5], .r[1], (.r[2] | tonumber? // 0))
@@ -333,7 +338,7 @@ cmd_run() {
   hq__sync_search "merged PRs" "$prs_json" search prs --author @me --merged \
     --merged-at ">=$since" --json repository,number,title,url,closedAt --limit "$limit"
   hq__sync_search "captured issues" "$issues_json" search issues "$HQ_SYNC_PHRASE" --match body \
-    --author @me --created ">=$since" --json repository,number,title,url,createdAt,body --limit "$limit"
+    --author @me --created ">=$since" --json repository,number,title,url,createdAt,body,labels --limit "$limit"
 
   hq_mktemp rows_file
   rc=0

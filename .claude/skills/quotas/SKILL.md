@@ -90,7 +90,7 @@ reading a credential by hand is exactly what this design forbids.
 
 In the Claude desktop app, when `mcp__ccd_session_mgmt__get_usage` is available, call it
 and pipe its JSON to `"$(resolve_script claude-usage-observe.sh)" -` before Step 2; a
-refusal or a missing tool is skipped silently (detail: `.claude/reference/ai-quotas.md`
+refusal or a missing tool is skipped silently (detail: `.claude/reference/ai-quotas-claude.md`
 §The app usage tool reading).
 
 ## Step 2 — Route the request
@@ -222,7 +222,7 @@ say plainly when `$?` is ✅ and what `$` has already been spent, because that m
 reimbursable; the columns are display only and never block or gate work. Claude's reset count
 is in no saved reading, and an account whose saved reading has no extra-usage block (a
 status-line reading) has blank paid columns unless the status line carries a `rate_limits.spend_limit` or a per-model `rate_limits.seven_day_<model>` window (its shape is unverified), until an agent reads the claude.ai usage page
-and supplies them (`.claude/reference/ai-quotas.md` §"Paid usage, resets and top tier" has
+and supplies them (`.claude/reference/ai-quotas-reader.md` §"Paid usage, resets and top tier" has
 the observation fields and the `limit_resets` block for `claude-usage-observe.sh`). `--json` carries `paid_enabled`, `paid_cap_usd`,
 `paid_cap_unlimited`, `paid_spent_usd`, `paid_currency`, `paid_period`, `paid_read_at_epoch`,
 `limit_resets_available`, `limit_resets`, `top_label`, `top_used_pct`, `top_resets_at_epoch`
@@ -271,7 +271,7 @@ when every account still has room, and that silence is the normal case.
 
 Prices, their sources and `last verified` dates, the threshold knob, the Codex reset
 watermark, and how the ranking orders included quota before a free reset before metered
-overage before a flat fee: `.claude/reference/ai-quotas.md` §"Overage — what continuing
+overage before a flat fee: `.claude/reference/ai-quotas-reader.md` §"Overage — what continuing
 costs". `.claude/reference/pricing-matrix.md` is a **different wallet** — the review
 stack — and its numbers never apply here.
 
@@ -336,16 +336,19 @@ most room this week and when the drained one resets — then the rows. If every 
 
 ## Reference
 
-Registry schema, where each provider keeps its credential, which endpoint each reader
-calls, why the Codex weekly window is chosen by duration rather than position, the
-Cursor dashboard endpoints captured from the live Spending tab (and why the Cursor rows
-carry percentages rather than per-pool dollars, and why they are now read with the IDE's
-token rather than a browser), the overage table with its sources and
-`last verified` dates, and the display-only boundary: `.claude/reference/ai-quotas.md`.
+Registry schema, where each provider keeps its credential, and the display-only
+boundary: `.claude/reference/ai-quotas.md`. The shared reader contract, the overage
+table with its sources and `last verified` dates, and which endpoint each reader calls:
+`.claude/reference/ai-quotas-reader.md`. The Claude reader: `.claude/reference/ai-quotas-claude.md`.
+Why the Codex weekly window is chosen by duration rather than position:
+`.claude/reference/ai-quotas-codex.md`. The Cursor dashboard endpoints captured from the
+live Spending tab (and why the Cursor rows carry percentages rather than per-pool
+dollars, and why they are now read with the IDE's token rather than a browser):
+`.claude/reference/ai-quotas-cursor.md`.
 
 The snapshot history schema (`~/.claude/ai-quotas-history.jsonl`), the LaunchAgent the
 daily job runs from, and the display-only rule that keeps both out of every dispatch
-gate: the same reference, §"Snapshot history, the daily job, nicknames".
+gate: `.claude/reference/ai-quotas-history.md`, §"Snapshot history, the daily job, nicknames".
 
 `--json` emits a **document** — `{schema_version, threshold_pct, basis, rows,
 cheapest_next, last_scheduled_snapshot_at, account_reliability}` — not the bare row array it emitted
@@ -375,7 +378,7 @@ the sibling outcomes ledger never gates dispatch or spending.
 
 ## Interactive browser fallback
 
-For browser failures, read the outcome ledger's fixed `error_class` using [the diagnostic boundaries](../../reference/ai-quotas.md#browser-failure-diagnostics-issue-1906). Unknown stage is a valid result; never infer a login cause or rerun a failed probe without new evidence.
+For browser failures, read the outcome ledger's fixed `error_class` using [the diagnostic boundaries](../../reference/ai-quotas-reader.md#browser-failure-diagnostics-issue-1906). Unknown stage is a valid result; never infer a login cause or rerun a failed probe without new evidence.
 
 `--browser` explicitly permits the Cursor browser source after earlier sources fail. The collector invokes the installed Claude CLI with `--chrome` and constrained navigation/read tools, then validates its structured observation; it never types a credential or changes settings. Tool hooks deny other calls and restrict navigation to `https://cursor.com/dashboard?tab=usage`. The helper initializes a native group, creates its own tab, and verifies that tab URL through fresh native tab-context metadata before every page read; a navigation acknowledgment alone never grants access. It requires an already signed-in Chrome extension and Claude CLI v2.1.248 or later; a missing connection remains an unreadable source outcome. Never add `--browser` to a snapshot or reserve refresh. Scheduled context overrides it and records `skipped:browser-unattended`.
 

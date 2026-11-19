@@ -1215,7 +1215,7 @@ require_text "$LEAVE_SKILL" '**Source gate, before any mode but `--checkin` proc
   'the live-user source gate must run before arming, not only before a countermand'
 require_text .claude/skills/wave/SKILL.md 'never a literal time' \
   '/wave must render the deadline clock from deadline_epoch, not hard-code one'
-require_text .claude/reference/README.md '`leave-time.md`' \
+require_text .claude/reference/catalog/workflow-pm-helpers.md '`leave-time.md`' \
   'the new reference doc must be registered in the reference catalog'
 require_text "$LEAVE_SKILL" 'it never proceeds on the stale deadline' \
   'a countermand during the runway must re-plan'
