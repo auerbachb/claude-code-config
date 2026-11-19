@@ -154,6 +154,7 @@ opt-in of issue #1544.
 | [pause-multisession.test.sh](../tests/pause-multisession.test.sh) | Tests per-session pause records and resume receipts (#1576) — interleaved concurrent pause writes staying independent, the extracted `/pause-resume` Step 1 selection program returning every un-resumed record newest-first, no masking when one is marked resumed, the legacy `.pause` / `.suspend` singletons as union members rather than an empty-map else-branch, and per-session resume receipts |
 | [phone-push-wait.test.sh](../tests/phone-push-wait.test.sh) | Tests for `phone-push-wait.sh` |
 | [pipeline-ceiling-consumers.test.sh](../tests/pipeline-ceiling-consumers.test.sh) | Static check that `/subagent`, `/pm`, and `/wave` read the pipeline ceiling from `active-work-cap.sh --ceiling` instead of a literal |
+| [pm-away-declare.test.sh](../tests/pm-away-declare.test.sh) | Proves /pm --away maps its value onto presence.sh set away through the existing parsers, and refuses unreadable values in one line |
 | [pm-backlog-new-issue.test.sh](../tests/pm-backlog-new-issue.test.sh) | Runs the real `/pm` Step 1B.2 `pm-1b2-new-issues` block against a stubbed gh and the real session-state.sh, proving a freshly filed issue lands in NEW_ISSUES on the next scan |
 | [pm-board-page.test.sh](../tests/pm-board-page.test.sh) | Verifies the PM project page, private publication and real session-state wiring. |
 | [pm-day-horizon.test.sh](../tests/pm-day-horizon.test.sh) | Tests `/pm` day mode's usage-horizon reflex against the real fenced bash in the skill |
@@ -206,6 +207,7 @@ opt-in of issue #1544.
 | [repo-root.test.sh](../tests/repo-root.test.sh) | Tests `repo-root.sh`'s resolution contract and its wall-clock bound |
 | [report-path.test.sh](../tests/report-path.test.sh) | Tests the collision-free monthly report destination for `/review-stack-audit`, over two series, with a month-only negative control |
 | [rerun-cancelled-required-ci.test.sh](../tests/rerun-cancelled-required-ci.test.sh) | Exercises the exact cancelled-required-job retry, GitHub identity checks and repo-scoped CAS. |
+| [resolve-review-threads.test.sh](../tests/resolve-review-threads.test.sh) | Tests for `resolve-review-threads.sh` already-resolved and non-thread-ID handling |
 | [review-availability-choose.test.sh](../tests/review-availability-choose.test.sh) | Tests the free-reviewer choice and request log in `review-availability.sh` (choose, record-request) — earliest answer, limited and capped reviewers, fewer-recent tie-break, alternation across PRs, recorded choice |
 | [review-availability.test.sh](../tests/review-availability.test.sh) | Tests the account-wide reviewer availability record and the request-skip decision in `review-availability.sh` — recording, decide, mark-skip, check-skip, fail-toward-asking cases |
 | [review-ci-report.test.sh](../tests/review-ci-report.test.sh) | Tests that the review timing report keeps CodeAnt pre-review approvals and refusals out of the review count, measures response time from the request when one exists and from push otherwise, and reports a failed query as unread with a non-zero exit |

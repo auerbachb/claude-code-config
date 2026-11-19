@@ -8,7 +8,7 @@
 #   batch fitting and by the overrun monitor.
 #
 # USAGE
-#   window-plan.sh --window "until 5:00 PM" [--stall-margin N] [--now ISO8601]
+#   window-plan.sh --window "until 5:00 PM" [--stall-margin N] [--now ISO8601] [--next-occurrence]
 #   window-plan.sh --window "3 hours" [--stall-margin N] [--now ISO8601]
 #   window-plan.sh --window "overnight" [--stall-margin N] [--now ISO8601]
 #   window-plan.sh --help
@@ -26,7 +26,8 @@
 #                       (ET), so the value is divisible by 60.
 #
 # WINDOW FORMATS ACCEPTED
-#   "until H:MM AM/PM [ET]"     End clock time today in ET
+#   "until H:MM AM/PM [ET]"     End clock time today in ET (tomorrow under
+#                               --next-occurrence once today's has passed)
 #   "until H:MM"                End clock time today in ET (timezone implied)
 #   "N hours" / "N hour"        Duration in whole hours
 #   "N.5 hours"                 Duration with half-hour
@@ -43,7 +44,8 @@
 #
 # EXIT CODES
 #   0  success
-#   1  window would be 0 or negative (deadline already passed)
+#   1  window would be 0 or negative (deadline already passed; a clock time
+#      under --next-occurrence rolls to tomorrow instead)
 #   2  usage error (missing --window or conflicting flags)
 #   3  unrecognized window format
 #   4  system date error
@@ -59,6 +61,7 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" \
 WINDOW_STR=""
 STALL_MARGIN_OVERRIDE=""
 NOW_OVERRIDE=""
+NEXT_OCCURRENCE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -68,6 +71,7 @@ while [[ $# -gt 0 ]]; do
     --stall-margin=*) STALL_MARGIN_OVERRIDE="${1#--stall-margin=}"; shift ;;
     --now)        shift; NOW_OVERRIDE="${1:-}"; [[ $# -gt 0 ]] && shift ;;
     --now=*)      NOW_OVERRIDE="${1#--now=}"; shift ;;
+    --next-occurrence) NEXT_OCCURRENCE=true; shift ;;
     --help|-h)
       awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
         { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
@@ -143,6 +147,18 @@ elif [[ "$w" =~ ^until[[:space:]]+([0-9]+):([0-9]{2})([[:space:]]*([ap]m)?)?([[:
     || { printf 'window-plan.sh: could not compute target epoch for %s\n' "$TARGET_SPEC" >&2; exit 4; }
 
   DIFF=$(( TARGET_EPOCH - NOW_EPOCH ))
+  if (( DIFF <= 0 )) && [[ "$NEXT_OCCURRENCE" == true ]]; then
+    # The stated clock time has passed today: use the same clock time on the
+    # next ET calendar day (calendar arithmetic, so a DST change is honoured).
+    TOMORROW_ET=$(TZ='America/New_York' date -j -v+1d -f '%Y-%m-%d' "$TODAY_ET" +'%Y-%m-%d' 2>/dev/null \
+      || TZ='America/New_York' date -d "$TODAY_ET +1 day" +'%Y-%m-%d' 2>/dev/null) \
+      || { printf 'window-plan.sh: date error computing tomorrow in ET\n' >&2; exit 4; }
+    TARGET_SPEC="${TOMORROW_ET}T$(printf '%02d:%02d:00' "$HR_24" "$MIN_DEC")"
+    TARGET_EPOCH=$(TZ='America/New_York' date -j -f '%Y-%m-%dT%H:%M:%S' "$TARGET_SPEC" '+%s' 2>/dev/null \
+      || TZ='America/New_York' date -d "$TARGET_SPEC" '+%s' 2>/dev/null) \
+      || { printf 'window-plan.sh: could not compute target epoch for %s\n' "$TARGET_SPEC" >&2; exit 4; }
+    DIFF=$(( TARGET_EPOCH - NOW_EPOCH ))
+  fi
   if (( DIFF <= 0 )); then
     # Try next-day: maybe user said "until midnight" meaning tomorrow
     printf 'window-plan.sh: window deadline already passed (%s ET) — %d s ago\n' \
