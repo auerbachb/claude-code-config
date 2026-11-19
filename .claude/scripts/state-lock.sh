@@ -894,11 +894,13 @@ _state_lock_install_trap() {
 # Files are removed one by one, then `rmdir` — never `rm -rf`, never a
 # followed symlink. Anything else is retained and reported with its reason.
 # Glob matches beyond max-candidates (default 500), malformed names
-# included, are counted unexamined.
+# included, are counted unexamined and reported in ONE summary line.
 # Never touches acquire or release; costs nothing on the lock hot path.
 #
-# stdout: one `<outcome>\t<reason>\t<path>` line per candidate (outcome:
-# removed | removable | retained | failed | unexamined), then
+# stdout: one `<outcome>\t<reason>\t<path>` line per examined candidate
+# (outcome: removed | removable | retained | failed), one
+# `unexamined\t<reason with count>\t<scope glob>` line when the cap was hit,
+# then
 # `totals\tremoved=N removable=N retained=N failed=N unexamined=N\t<state-file>`.
 # Returns 0, 1 when any removal failed, 2 on a usage error.
 state_lock_sweep_asides() (
@@ -934,7 +936,7 @@ state_lock_sweep_asides() (
     # The cap counts every glob match, malformed names included, so no class
     # of entry can make one sweep examine or print an unbounded number.
     if (( examined >= cap )); then
-      unexamined=$((unexamined + 1)); report unexamined "over the candidate cap ($cap)" "$c"; continue
+      unexamined=$((unexamined + 1)); continue
     fi
     examined=$((examined + 1))
     name="$(basename -- "$c")"
@@ -1001,6 +1003,10 @@ state_lock_sweep_asides() (
       removed=$((removed + 1)); report removed "stale aside" "$c"
     fi
   done
+  # One summary line for everything past the cap, so output stays bounded.
+  if (( unexamined > 0 )); then
+    report unexamined "over the candidate cap ($cap): $unexamined entries" "$dir/$base.lock.*"
+  fi
   printf 'totals\tremoved=%s removable=%s retained=%s failed=%s unexamined=%s\t%s\n' \
     "$removed" "$removable" "$retained" "$failed" "$unexamined" "$state_file"
   (( failed == 0 )) || return 1

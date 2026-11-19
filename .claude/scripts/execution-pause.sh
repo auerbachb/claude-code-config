@@ -120,6 +120,28 @@ SCOPE_HASH="$(scope_hash "$SESSION_ID")" || {
   exit 5
 }
 MARKER="$MARKER_DIR/claude-execution-pause-v2-$SCOPE_HASH"
+# In-flight activation record (issue #2402, CodeRabbit 4636153100): written by
+# an activating process before it does anything else, removed by that process
+# after its marker and state are final. Clear never touches it, so a clear
+# racing an activation cannot hide the activation from the lock-free status.
+ACTIVATING_PREFIX="$MARKER_DIR/claude-execution-pause-activating-"
+INTENT=""
+
+# 0 when a live activation for scope hash $1 is in flight. A record counts
+# only while it is a regular, non-symlink file of ours, younger than 15
+# minutes, named for a process that is still running: a crashed activation
+# never completed, so its leftover record holds nothing.
+activation_in_flight() {
+  local f pid
+  for f in "$ACTIVATING_PREFIX$1".*; do
+    [[ -f "$f" && ! -L "$f" && -O "$f" ]] || continue
+    pid="${f##*.}"
+    [[ "$pid" =~ ^[1-9][0-9]{0,9}$ ]] || continue
+    [[ -n "$(find "$f" -prune -mmin -15 2>/dev/null)" ]] || continue
+    kill -0 "$pid" 2>/dev/null && return 0
+  done
+  return 1
+}
 PATH_EXPR="$(pause_path "$SESSION_ID")" || exit 5
 
 read_end_proof() {
@@ -238,6 +260,9 @@ legacy_launch_held() {
 #   - activation publishes the marker before it even takes the lock, and so
 #     before the state: a snapshot taken before the state write still sees
 #     the marker afterwards -> active;
+#   - an activation also leaves a per-process in-flight record for its whole
+#     run that only it removes, checked before the marker: a clear racing
+#     the activation can remove the marker but not that record -> active;
 #   - clear writes inactive state before removing the marker: `inactive` needs
 #     an inactive snapshot AND a missing marker afterwards, i.e. a clear that
 #     had already finished removing it.
@@ -285,7 +310,8 @@ snapshot_legacy_held() {
   recorded="$(jq -er '.native_token | select(type == "string" and test("^[a-f0-9]{64}$"))' \
     <<< "$binding" 2>/dev/null)" || return 0
   native_hash="$(scope_hash "$SESSION_ID")" || return 0
-  if [[ -e "$MARKER_DIR/claude-execution-pause-v2-$native_hash" ||
+  if activation_in_flight "$native_hash" ||
+     [[ -e "$MARKER_DIR/claude-execution-pause-v2-$native_hash" ||
         -L "$MARKER_DIR/claude-execution-pause-v2-$native_hash" ]]; then
     return 0
   fi
@@ -297,7 +323,8 @@ snapshot_legacy_held() {
   active="$(jq -r '.rearming.ok' <<< "$SNAP")" || return 0
   [[ "$active" == true ]] || return 1
   legacy_hash="$(scope_hash "$legacy")" || return 0
-  if [[ -e "$MARKER_DIR/claude-execution-pause-v2-$legacy_hash" ||
+  if activation_in_flight "$legacy_hash" ||
+     [[ -e "$MARKER_DIR/claude-execution-pause-v2-$legacy_hash" ||
         -L "$MARKER_DIR/claude-execution-pause-v2-$legacy_hash" ]]; then
     return 0
   fi
@@ -322,8 +349,10 @@ status_unlocked() {
   elif ! value="$(jq -er '.primary.ok' <<< "$SNAP" 2>/dev/null)"; then
     class=unreadable
   fi
-  # Markers only after the snapshot. A surviving marker is authoritative.
-  if [[ -f "$MARKER" ]]; then printf 'active\n'; return 0; fi
+  # Markers only after the snapshot, in-flight activations before the marker:
+  # an activation that finishes between the two checks has already published
+  # its marker. A live activation or a surviving marker is authoritative.
+  if activation_in_flight "$SCOPE_HASH" || [[ -f "$MARKER" ]]; then printf 'active\n'; return 0; fi
   case "$class" in
     missing) printf 'inactive\n'; return 0 ;;
     unreadable)
@@ -386,6 +415,20 @@ publish_marker() {
 }
 
 if [[ "$MODE" == activate ]]; then
+  # In-flight record first, before the marker and the lock: from here until
+  # this process exits, the lock-free status reads this scope as active, even
+  # if a concurrent clear removes the pre-lock marker before this process
+  # takes the lock and re-publishes it (CodeRabbit 4636153100).
+  mkdir -p "$MARKER_DIR" 2>/dev/null || {
+    echo "execution-pause.sh: could not create marker directory $MARKER_DIR" >&2
+    exit 5
+  }
+  INTENT="$ACTIVATING_PREFIX$SCOPE_HASH.$$"
+  trap '[[ -z "$INTENT" ]] || rm -f -- "$INTENT"' EXIT
+  printf '%s\n' "$$" > "$INTENT" || {
+    echo "execution-pause.sh: could not write activation record $INTENT" >&2
+    exit 5
+  }
   NOW="$(date -u +%FT%TZ)"
   DEADLINE_EPOCH=$(( $(date -u +%s) + WINDOW * 60 ))
   GENERATION="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')" || exit 5
@@ -405,7 +448,7 @@ fi
 # shellcheck source=state-lock.sh
 source "$LOCK_LIB"
 state_lock_acquire "$STATE_FILE" || exit $?
-trap 'state_lock_release' EXIT
+trap 'state_lock_release; [[ -z "$INTENT" ]] || rm -f -- "$INTENT"' EXIT
 
 case "$MODE" in
   snapshot-legacy)
@@ -423,6 +466,8 @@ case "$MODE" in
     # blocked until an explicit clear/recovery.
     session_state --raw-path --set "$PATH_EXPR=$VALUE" || exit $?
     state_lock_release
+    # Marker and state are final: the in-flight record has done its job.
+    rm -f -- "$INTENT"; INTENT=""
     ;;
   clear)
     EXTRA_CLEAR_ARGS=()

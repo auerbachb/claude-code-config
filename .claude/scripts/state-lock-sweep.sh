@@ -21,12 +21,13 @@
 #                      handoff file). Default ~/.claude/session-state.json.
 #   --grace-seconds N  Minimum aside age before removal (default 3600).
 #   --max N            Candidates examined per scope (default 500); the rest
-#                      are reported unexamined, never as zero.
+#                      are counted unexamined (one summary line), never zero.
 #   --quiet            Print nothing when a scope has no candidates.
 #   --help | -h
 #
 # OUTPUT
-#   One `<outcome>\t<reason>\t<path>` line per candidate, then one
+#   One `<outcome>\t<reason>\t<path>` line per examined candidate, one
+#   `unexamined` summary line when --max was hit, then one
 #   `totals\tremoved=N removable=N retained=N failed=N unexamined=N\t<state-file>`
 #   line per scope.
 #

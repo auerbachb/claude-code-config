@@ -257,5 +257,59 @@ if wait "$ACTIVATOR"; then pass; else fail "stubbed activation failed"; fi
 got="$(run_status 0 0 "$SID")"
 if [[ "$got" == "0|active" ]]; then pass; else fail "status after stubbed activation: got [$got]"; fi
 
+# (3) CodeRabbit 4636153100: a concurrent clear removes the pre-lock marker
+# while activation is still in flight (here: waiting on the lock this test
+# holds in the clear's place). The marker is gone and state says inactive,
+# but the activation is live, so status must still say active.
+reset; write_state "$(repo_state "$(jq -nc --arg s "$SID" '{execution_pauses:{($s):{active:false}}}')")"
+READY="$TMP/race3.ready"; RELEASE="$TMP/race3.release"; rm -f "$READY" "$RELEASE"
+(
+  # shellcheck source=../state-lock.sh
+  source "$ROOT/.claude/scripts/state-lock.sh"
+  state_lock_acquire "$STATE" 5 || exit 1
+  : > "$READY"
+  while [[ ! -e "$RELEASE" ]]; do sleep 0.05; done
+  state_lock_release
+) &
+HOLDER=$!
+for _ in $(seq 1 100); do [[ -e "$READY" ]] && break; sleep 0.05; done
+if [[ -e "$READY" ]]; then
+  CLAUDE_STATE_LOCK_TIMEOUT=20 "$GATE" --repo "$REPO" --activate --session "$SID" \
+    --command pause --window-minutes 5 >/dev/null 2>&1 &
+  ACTIVATOR=$!
+  for _ in $(seq 1 100); do [[ -f "$(marker_of "$SID")" ]] && break; sleep 0.05; done
+  rm -f "$(marker_of "$SID")"   # the clear's marker removal, under its lock
+  for mode in 0 1; do
+    got="$(run_status 0 "$mode" "$SID")"
+    if [[ "$got" == "0|active" ]]; then pass; else fail "status after a clear removed an in-flight activation's marker (launch=$mode): got [$got]"; fi
+  done
+  : > "$RELEASE"; wait "$HOLDER" 2>/dev/null || true
+  if wait "$ACTIVATOR"; then pass; else fail "activation failed after the clear released"; fi
+  got="$(run_status 0 1 "$SID")"
+  if [[ "$got" == "0|active" ]]; then pass; else fail "status after the activation finished: got [$got]"; fi
+  if compgen -G "$CLAUDE_EXECUTION_PAUSE_MARKER_DIR/claude-execution-pause-activating-*" >/dev/null; then
+    fail "finished activation left its in-flight record"
+  else
+    pass
+  fi
+else
+  fail "race3 lock holder never became ready"; : > "$RELEASE"; wait "$HOLDER" 2>/dev/null || true
+fi
+
+# (4) An in-flight record whose process is gone (a crashed activation) does
+# not hold launches: the activation never completed, so there is no pause.
+reset; write_state "$(repo_state "$(jq -nc --arg s "$SID" '{execution_pauses:{($s):{active:false}}}')")"
+sleep 0 & DEAD=$!; wait "$DEAD"
+printf '%s\n' "$DEAD" > "$CLAUDE_EXECUTION_PAUSE_MARKER_DIR/claude-execution-pause-activating-$(scope_hash "$SID").$DEAD"
+got="$(run_status 0 1 "$SID")"
+if [[ "$got" == "0|inactive" ]]; then pass; else fail "dead activation record should not hold: got [$got]"; fi
+# ...while a live one does, even with no marker and inactive state.
+sleep 30 & LIVE=$!
+printf '%s\n' "$LIVE" > "$CLAUDE_EXECUTION_PAUSE_MARKER_DIR/claude-execution-pause-activating-$(scope_hash "$SID").$LIVE"
+got="$(run_status 0 1 "$SID")"
+if [[ "$got" == "0|active" ]]; then pass; else fail "live activation record should hold: got [$got]"; fi
+kill "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null
+rm -f "$CLAUDE_EXECUTION_PAUSE_MARKER_DIR"/claude-execution-pause-activating-*
+
 echo "execution-pause-status: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
