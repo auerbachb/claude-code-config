@@ -1106,6 +1106,36 @@ CONTENT_RC=0
 bash "$SCRIPT" --owner-repo fixture/repo --expect-content-sha "$CONTENT_SHA" --delete 99 >/dev/null 2>&1 || CONTENT_RC=$?
 check_eq "content precondition alone cannot bypass identity guards" 2 "$CONTENT_RC"
 
+
+# --- Identity-guard refusals name their cause (issue #2461) ---
+GUARD_SHA=$(printf 'b%.0s' {1..40})
+GUARD_FILE="$HOME/.claude/handoffs/fixture/repo/pr-77-handoff.json"
+mkdir -p "$(dirname "$GUARD_FILE")"
+guard_case() { # desc, body, expected cause substring
+  local desc="$1" body="$2" cause="$3" rc=0 err
+  printf '%s' "$body" > "$GUARD_FILE"; cp "$GUARD_FILE" "$GUARD_FILE.before"
+  err=$(bash "$SCRIPT" --owner-repo fixture/repo --require-existing --expect-pr 77 --expect-owner fixture/repo \
+    --expect-head "$GUARD_SHA" --set 77 '.phase_completed="C"' 2>&1 >/dev/null) || rc=$?
+  check_eq "guard cause: $desc exits 4" 4 "$rc"
+  check_eq "guard cause: $desc leaves bytes unchanged" 0 "$(cmp -s "$GUARD_FILE" "$GUARD_FILE.before"; echo $?)"
+  check_eq "guard cause: $desc names '$cause'" 1 "$([[ "$err" == *"cause: "*"$cause"* ]] && echo 1 || echo 0)"
+}
+guard_case "missing owner_repo" "{\"pr_number\":77,\"head_sha\":\"$GUARD_SHA\"}" "missing owner_repo"
+guard_case "missing pr_number" "{\"owner_repo\":\"fixture/repo\",\"head_sha\":\"$GUARD_SHA\"}" "missing pr_number"
+guard_case "missing head_sha" '{"pr_number":77,"owner_repo":"fixture/repo"}' "missing head_sha"
+guard_case "null owner_repo" "{\"pr_number\":77,\"owner_repo\":null,\"head_sha\":\"$GUARD_SHA\"}" "owner_repo is null or wrong type"
+guard_case "string pr_number" "{\"pr_number\":\"77\",\"owner_repo\":\"fixture/repo\",\"head_sha\":\"$GUARD_SHA\"}" "pr_number is null or wrong type"
+guard_case "foreign owner_repo" "{\"pr_number\":77,\"owner_repo\":\"other/repo\",\"head_sha\":\"$GUARD_SHA\"}" "owner_repo mismatch"
+guard_case "different pr_number" "{\"pr_number\":78,\"owner_repo\":\"fixture/repo\",\"head_sha\":\"$GUARD_SHA\"}" "pr_number mismatch"
+guard_case "changed HEAD" '{"pr_number":77,"owner_repo":"fixture/repo","head_sha":"deadbeef"}' "head_sha mismatch"
+guard_case "malformed JSON" '{not json' "unreadable or not a single JSON object"
+guard_case "two JSON values" '{}{}' "unreadable or not a single JSON object"
+guard_case "two defects" '{"pr_number":77,"owner_repo":"other/repo","head_sha":"deadbeef"}' "owner_repo mismatch, head_sha mismatch"
+printf '%s' "{\"pr_number\":77,\"owner_repo\":\"Fixture/Repo\",\"head_sha\":\"$GUARD_SHA\"}" > "$GUARD_FILE"
+GUARD_OK_RC=0
+bash "$SCRIPT" --owner-repo fixture/repo --require-existing --expect-pr 77 --expect-owner fixture/repo \
+  --expect-head "$GUARD_SHA" --set 77 '.phase_completed="C"' >/dev/null 2>&1 || GUARD_OK_RC=$?
+check_eq "guard accepts mixed-case stored owner (predicate unchanged)" 0 "$GUARD_OK_RC"
 echo
 echo "==================================="
 echo "Results: $PASS passed, $FAIL failed"

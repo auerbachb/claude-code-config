@@ -5,11 +5,11 @@ unset BASH_ENV ENV
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 TEST_FILE="$ROOT/.claude/scripts/tests/ai-quotas.test.sh"
 CASE_DIR="$ROOT/.claude/scripts/tests/lib/ai-quotas-cases"
-GROUPS_LIST="core acceptance failure-isolation renewal renewal-files cursor cursor-identity codex codex-duration row-shape codex-cleanup overage credential-output history snapshot-footer nicknames table forecast forecast-failures forecast-types history-errors reset-credits outcomes outcomes-protocol outcomes-preflight layout fallback browser-resume claude-browser recommendations notifications last-known"
+GROUPS_LIST="core acceptance failure-isolation renewal renewal-files cursor cursor-identity codex codex-duration row-shape codex-cleanup overage credential-output history snapshot-footer nicknames table forecast forecast-failures forecast-types history-errors reset-credits outcomes outcomes-protocol outcomes-preflight layout fallback browser-resume claude-browser recommendations notifications last-known last-known-placement"
 case "${1:-}" in
   --fixture-worker)
     FIXTURE_GROUP="${2:-}"
-    case "$FIXTURE_GROUP" in core|acceptance|failure-isolation|renewal|renewal-files|cursor|cursor-identity|codex|codex-duration|row-shape|codex-cleanup|overage|credential-output|history|snapshot-footer|nicknames|table|forecast|forecast-failures|forecast-types|history-errors|reset-credits|outcomes|outcomes-protocol|outcomes-preflight|layout|fallback|browser-resume|claude-browser|recommendations|notifications|last-known) ;; *) echo 'FAIL — unknown quota fixture group' >&2; exit 2 ;; esac
+    case "$FIXTURE_GROUP" in core|acceptance|failure-isolation|renewal|renewal-files|cursor|cursor-identity|codex|codex-duration|row-shape|codex-cleanup|overage|credential-output|history|snapshot-footer|nicknames|table|forecast|forecast-failures|forecast-types|history-errors|reset-credits|outcomes|outcomes-protocol|outcomes-preflight|layout|fallback|browser-resume|claude-browser|recommendations|notifications|last-known|last-known-placement) ;; *) echo 'FAIL — unknown quota fixture group' >&2; exit 2 ;; esac
     echo "== quota fixture group: $FIXTURE_GROUP =="
     # Every group sources the same fixture module before its original cases.
     load_fixture_group() {
@@ -110,6 +110,9 @@ case "${1:-}" in
         last-known)
           # shellcheck source=lib/ai-quotas-cases/last-known.bash
           source "$CASE_DIR/last-known.bash" ;;
+        last-known-placement)
+          # shellcheck source=lib/ai-quotas-cases/last-known-placement.bash
+          source "$CASE_DIR/last-known-placement.bash" ;;
         *) return 2 ;;
       esac
     }

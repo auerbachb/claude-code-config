@@ -14,7 +14,8 @@
 #   dir beside the real ci-status.sh, check-runs-dedup.sh, session-state.sh).
 #   Stubbed: review-tier.sh, bugbot-refused-head.sh, review-daily-cap.sh,
 #   cr-review-hourly.sh, and `gh`, which records each posted comment and adds
-#   it to the PR's comment list the way GitHub would.
+#   it to the PR's comment list the way GitHub would. review-availability.sh is
+#   a logging stub (issue #2276) except in one case that runs the real helper.
 
 set -uo pipefail
 
@@ -66,7 +67,26 @@ cat > "$TMP/cr-hourly.sh" <<'EOF'
 [[ -n "${FIXTURE_CR_CAPPED:-}" && ( "$1" == "--check" || "$1" == "--peek-explicit" ) ]] && exit 1
 exit 0
 EOF
-chmod +x "$S"/*.sh "$TMP/cr-hourly.sh"
+# The free-reviewer request log (issue #2276): a stub recorder writes one line per
+# record-request call into the same ordered EVENTS log the gh stub writes each post to.
+cat > "$TMP/record-stub.sh" <<'EOF'
+#!/usr/bin/env bash
+sub="$1"; shift
+repo=""; pr=""; head=""; reviewer=""; reason=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo) repo="$2" ;; --pr) pr="$2" ;; --head) head="$2" ;;
+    --reviewer) reviewer="$2" ;; --reason) reason="$2" ;;
+  esac
+  shift 2
+done
+echo "record $sub $reviewer repo=$repo pr=$pr head=$head reason=$reason" >> "$EVENTS"
+[[ -n "${FIXTURE_RECORD_FAIL:-}" ]] && { echo "state write refused" >&2; exit 5; }
+echo '{"recorded":true}'
+EOF
+chmod +x "$S"/*.sh "$TMP/cr-hourly.sh" "$TMP/record-stub.sh"
+export EVENTS="$TMP/events"
+export PREFLIGHT_REVIEW_AVAILABILITY_SH="$TMP/record-stub.sh"
 export PREFLIGHT_TRIGGERS_ALLOWED_SH="$S/review-triggers-allowed.sh"
 export PREFLIGHT_CR_HOURLY_SH="$TMP/cr-hourly.sh"
 export PREFLIGHT_SESSION_STATE_SH="$TMP/no-such-session-state.sh"
@@ -95,6 +115,7 @@ case "$args" in
   "pr comment"*)
     [[ -n "${FIXTURE_POST_FAIL:-}" && "$body" == "$FIXTURE_POST_FAIL" ]] && exit 1
     echo "$body" >> "$POSTED_LOG"
+    echo "post $body" >> "$EVENTS"
     # Stamped an hour back, so a later scenario can place a newer HEAD after it.
     jq --arg b "$body" --arg at "$(jq -rn 'now - 3600 | floor | todate')" \
       '. + [{user: {login: "me"}, body: $b, created_at: $at, updated_at: $at}]' "$FX/comments.json" > "$FX/c.tmp" \
@@ -135,9 +156,9 @@ checks() { # <conclusion|null> <secs ago> [status]
   jq -cn --arg d "$(ago "$2")" '{commit: {committer: {date: $d}}}' > "$FX/commit.json"
 }
 reset() { # <tier json>
-  export FIXTURE_TIER_OUT="$1" FIXTURE_HEAD="$HEAD" FIXTURE_POST_FAIL="" FIXTURE_CR_CAPPED=""
+  export FIXTURE_TIER_OUT="$1" FIXTURE_HEAD="$HEAD" FIXTURE_POST_FAIL="" FIXTURE_CR_CAPPED="" FIXTURE_RECORD_FAIL=""
   rm -f "$HOME/.claude/session-state.json"
-  : > "$POSTED_LOG"
+  : > "$POSTED_LOG"; : > "$EVENTS"
   echo '[]' > "$FX/comments.json"
   checks success 7200
 }
@@ -240,6 +261,82 @@ PREFLIGHT_TRIGGERS_ALLOWED_SH="$TMP/bad-helper.sh" run
 check_eq "every reviewer skipped-tier-deferred" "skipped-tier-deferred,skipped-tier-deferred,skipped-tier-deferred" "$(statuses)"
 check_eq "nothing posted" "" "$(posted)"
 
+echo "== the free-reviewer request log: each successful post is recorded once, right after it (#2276) =="
+events() { tr '\n' ';' < "$EVENTS"; }
+records() { grep -c '^record ' "$EVENTS" | tr -d ' '; }
+rec_line() { printf 'record record-request %s repo=acme/one pr=%s head=%s reason=pr_preflight' "$1" "$PR" "${2:-$HEAD}"; }
+reset "$(tier_json absent legacy)"
+CLAUDE_SESSION_REPO=other/elsewhere run
+check_eq "legacy: post, record, post, record — CodeAnt then CodeRabbit, the gh repo (not CLAUDE_SESSION_REPO)" \
+  "post @codeant-ai review;$(rec_line codeant);post @coderabbitai full review;$(rec_line coderabbit);" "$(events)"
+run
+check_eq "  same HEAD again: already-present records nothing more" "2" "$(records)"
+
+reset "$(tier_json absent legacy)"
+export FIXTURE_POST_FAIL="@codeant-ai review"
+run
+check_eq "legacy: a failed CodeAnt post records nothing for CodeAnt" "post @coderabbitai full review;$(rec_line coderabbit);" "$(events)"
+reset "$(tier_json absent legacy)"
+export FIXTURE_POST_FAIL="@coderabbitai full review"
+run
+check_eq "legacy: a failed CodeRabbit post records nothing for CodeRabbit" "post @codeant-ai review;$(rec_line codeant);" "$(events)"
+check_eq "  and stays trigger-failed" "trigger-failed" "$(st coderabbit)"
+
+reset "$(tier_json absent legacy)"
+export FIXTURE_CR_CAPPED=1
+run
+check_eq "legacy: the CodeRabbit rate-cap skip records nothing" "post @codeant-ai review;$(rec_line codeant);" "$(events)"
+
+reset "$(tier_json absent legacy)"
+run --dry-run
+check_eq "--dry-run records nothing" "" "$(events)"
+
+reset "$(tier_json present ci-only)"
+run
+check_eq "tier-excluded reviewers record nothing" "" "$(events)"
+reset "$(tier_json present full)"
+checks null 30 in_progress
+run
+check_eq "tier-deferred reviewers record nothing" "" "$(events)"
+
+reset "$(tier_json present ci+codeant-one-round)"
+run
+check_eq "tiered: the allowed CodeAnt post is recorded once" "post @codeant-ai review;$(rec_line codeant);" "$(events)"
+reset "$(tier_json present ci+codeant-one-round)"
+export FIXTURE_POST_FAIL="@codeant-ai review"
+run
+check_eq "tiered: a failed post records nothing" "" "$(events)"
+check_eq "  and its claim is released as before" "0" "$(ledger codeant)"
+
+echo "== a failing recorder changes nothing but the log (#2276) =="
+reset "$(tier_json absent legacy)"
+export FIXTURE_RECORD_FAIL=1
+run
+check_eq "exit 0" "0" "$RC"
+check_eq "both free reviewers still triggered" "triggered,triggered" "$(st codeant),$(st coderabbit)"
+check_eq "one attempt per post, no retry" "2" "$(records)"
+check_eq "--json stdout is still exactly one JSON object" "1" "$(jq -s 'length' <<<"$OUT" 2>/dev/null)"
+check_eq "  and each failure is named on stderr" "2" "$(grep -c 'could not log it in the free-reviewer request log' "$TMP/err" | tr -d ' ')"
+reset "$(tier_json present ci+codeant-one-round)"
+export FIXTURE_RECORD_FAIL=1
+run
+check_eq "tiered: triggered, and the claim is kept" "triggered:1" "$(st codeant):$(ledger codeant)"
+reset "$(tier_json absent legacy)"
+export FIXTURE_RECORD_FAIL=1
+TXT_RC=0; TXT_OUT="$(cd "$WORK" && bash "$SCRIPT" "$PR" 2>/dev/null)" || TXT_RC=$?
+check_eq "text mode: exit 0 and the warning is surfaced" "0:yes" \
+  "$TXT_RC:$(grep -q 'could not log it in the free-reviewer request log' <<<"$TXT_OUT" && echo yes || echo no)"
+check_eq "  the summary line is still last" "yes" "$(grep -q '^PREFLIGHT_SUMMARY:' <<<"$(tail -1 <<<"$TXT_OUT")" && echo yes || echo no)"
+
+echo "== the real review-availability.sh writes .review_requests (#2276) =="
+cp "$REPO_ROOT/.claude/scripts/review-availability.sh" "$S/"
+chmod +x "$S/review-availability.sh"
+reset "$(tier_json absent legacy)"
+PREFLIGHT_REVIEW_AVAILABILITY_SH="$S/review-availability.sh" run
+check_eq "two entries: codeant then coderabbit, this PR and HEAD, reason pr_preflight" \
+  "codeant:$PR:$HEAD:pr_preflight;coderabbit:$PR:$HEAD:pr_preflight;" \
+  "$(jq -r '.review_requests[] | "\(.reviewer):\(.pr):\(.head_sha):\(.reason)"' "$HOME/.claude/session-state.json" 2>/dev/null | tr '\n' ';')"
+
 echo "== a same-HEAD BugBot grant still passes preflight gates (#1737) =="
 # Use the production preflight and grant helpers in the fixture, so the grant
 # resolves the stub authorship and rate checks alongside the real state helper.
@@ -272,6 +369,7 @@ checks success 7200
 run
 check_eq "settled green preflight uses the approval on the same HEAD" "triggered" "$(st cursor)"
 check_eq "preflight posts one BugBot invitation and consumes the grant" "1:consumed" "$(grep -cFx '@cursor review' "$POSTED_LOG"):$(grant_status)"
+check_eq "  the paid BugBot post is never in the free-reviewer request log (#2276)" "0" "$(grep -c '^record .*cursor' "$EVENTS" | tr -d ' ')"
 run
 check_eq "rerunning preflight does not spend a second grant or repost" "already-present:1" "$(st cursor):$(grep -cFx '@cursor review' "$POSTED_LOG")"
 

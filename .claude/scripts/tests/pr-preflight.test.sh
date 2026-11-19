@@ -234,6 +234,10 @@ export PREFLIGHT_BUGBOT_TIER_SH="$TMP/no-such-bugbot-tier-excluded.sh"
 # helper, every scenario here takes the unchanged legacy loop. Its tier-aware
 # path is covered by pr-preflight-tier-triggers.test.sh.
 export PREFLIGHT_TRIGGERS_ALLOWED_SH="$TMP/no-such-review-triggers-allowed.sh"
+# The free-reviewer request log (issue #2276) is off the same way: a
+# non-executable override records nothing and stays silent. Its recording is
+# covered by pr-preflight-tier-triggers.test.sh.
+export PREFLIGHT_REVIEW_AVAILABILITY_SH="$TMP/no-such-review-availability.sh"
 enable_state_dedupe()  { export PREFLIGHT_SESSION_STATE_SH="$STATE_STUB"; reset_state; }
 disable_state_dedupe() { export PREFLIGHT_SESSION_STATE_SH="$TMP/no-such-session-state.sh"; }
 
