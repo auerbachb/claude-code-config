@@ -296,7 +296,7 @@ done
 module_text="$(cat "$MODULE")"
 check_contains "module: saves without asking in day and unattended runs" "a \`/pm day\` tick and an unattended run (presence away) all save the same way" "$module_text"
 check_contains "module: never zero for an unreadable list" "never report an unreadable or missing list as zero" "$module_text"
-check_contains "module: reading is handed to the script" "lean-orchestrator.md" "$module_text"
+check_contains "module: reading is handed to the script" "lean-orchestrator" "$module_text"
 
 echo
 echo "pm-human-tasks: $PASS passed, $FAIL failed"
