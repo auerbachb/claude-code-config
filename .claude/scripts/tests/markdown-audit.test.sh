@@ -133,6 +133,8 @@ EDGE="$WORK/edge"
 mkdir -p "$EDGE"
 printf '# T\r\n\r\nline\r\n\r\n````md\r\n```\r\n# inner\r\n```\r\n````\r\n\r\n## After\r\n\r\ntext\r\n' > "$EDGE/crlf.md"
 printf '# U\n\n```\n# never closed\nstill fence\n' > "$EDGE/unclosed.md"
+printf '# I\n\n```foo``` opens a paragraph.\n\n## Later\n\ntext\n' > "$EDGE/inline.md"
+printf '# W\n\n~~~ a`b\n# tilde inner\n~~~\n\n  ````py\n```\n# long inner\n  ````\n\n## End\n' > "$EDGE/tilde.md"
 { echo "# Long"; for i in $(seq 1 120); do echo; echo "para $i"; done; } > "$EDGE/long.md"
 git -C "$EDGE" init -q && git -C "$EDGE" add -A && git -C "$EDGE" commit -qm init
 ESNAP="$WORK/snap-edge.json"
@@ -142,6 +144,10 @@ check "segment: CRLF + nested fence keeps inner heading out" "$(jq -r '.files["c
 check "segment: nested fence spans outer fence" "$(jq -r '.files["crlf.md"].blocks[] | select(.kind=="fence") | "\(.start)-\(.end)"' <<<"$ESEG")" "5-9"
 check "segment: unclosed fence flagged and runs to EOF" \
   "$(jq -r '.files["unclosed.md"] | "\(.unclosed_fence) \(.blocks[-1].kind) \(.blocks[-1].end)"' <<<"$ESEG")" "true fence 5"
+check "segment: inline code with backticks is not a fence" \
+  "$(jq -r '.files["inline.md"] | "\(.unclosed_fence) \(.sections | map(.title) | join(",")) \([.blocks[] | select(.kind=="fence")] | length)"' <<<"$ESEG")" "false I,Later 0"
+check "segment: tilde fence with backtick info and indented long fence still fence" \
+  "$(jq -r '.files["tilde.md"] | "\(.unclosed_fence) \(.sections | map(.title) | join(",")) \([.blocks[] | select(.kind=="fence") | "\(.start)-\(.end)"] | join(","))"' <<<"$ESEG")" "false W,End 3-5,7-10"
 check "segment: no page longer than 50 lines" "$(jq -r '[.files["long.md"].pages[] | .end - .start + 1] | max <= 50' <<<"$ESEG")" "true"
 check "segment: pages cover the long file" "$(jq -r '.files["long.md"].pages | "\(.[0].start) \(.[-1].end) \(length)"' <<<"$ESEG")" "1 241 5"
 

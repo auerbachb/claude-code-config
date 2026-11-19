@@ -280,6 +280,10 @@ def scan(lines):
     while i < n:
         line = lines[i]
         m = FENCE_RE.match(line)
+        # CommonMark: a backtick fence's info string may not contain a backtick,
+        # so ```foo``` opening a paragraph is inline code, not a fence.
+        if m and m.group(1)[0] == "`" and "`" in m.group(2):
+            m = None
         if m:
             mark = m.group(1)
             ch, size = mark[0], len(mark)
