@@ -16,7 +16,7 @@ On a user turn matching `human-queue: D-<n> answered`, run `human-queue.sh get D
 
 ## Late answers
 
-One differing from your default applies while the PR is open; after merge, file an issue citing `D-<n>`, the PR, the answer.
+One unlike your default applies while the PR is open; after merge, file an issue citing `D-<n>`, PR, answer.
 
 ## Unattended
 
@@ -29,8 +29,8 @@ Park only a step whose recommended option is not reversible or needs confirmatio
 Full rules: .claude/rules/human-queue.md.
 ```
 
-**Past decisions:** read the memory note, brief and issue before asking; the task beats memory (`.claude/reference/unattended-mode.md` §Past decisions).
+**Past decisions:** read memory note, brief and issue before asking; task beats memory (`.claude/reference/unattended-mode.md` §Past decisions).
 
 ## Operator-only tasks
 
-When the capability ladder (`safety.md`) leaves an operator-only step, save it that turn, unasked: `owner-task.sh add` with a why-human reason; print the receipt. Name variables or accounts, never values. Exit 3: state it in chat, unsaved. Sub-agents report `OWNER_ACTION:`; the parent saves it. Mark done only with `--proof`. Detail: `.claude/reference/owner-tasks.md`.
+When the ladder (`safety.md`) leaves an operator-only step, save it that turn, unasked: `owner-task.sh add` with a why-human reason; print the receipt. Name variables or accounts, never values. Exit 3: state it in chat, unsaved. Sub-agents report `OWNER_ACTION:`; parents save it. Done needs `--proof`. Detail: `.claude/reference/owner-tasks.md`.
