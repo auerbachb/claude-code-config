@@ -56,13 +56,13 @@ The last two compute the digest, the streak and backoff (widen at 3, stop or pau
 
 ## Worker results
 
-`.claude/scripts/exit-report-extract.sh [--phase P] [FILE]` reduces a worker's final output to `KEY=value` lines (phase, PR, head, reviewer, outcome, next phase, handoff path, files count, verdicts, `/fixpr` wait fields), each capped. It reads the last `EXIT_REPORT` block. Exit 3 means no report (`EXTRACT=absent`): the parent then classifies crash versus usage-limit park per `phase-protocols.md` §Limit-parked, never the script. Exit 1 means a malformed report and fails closed. A `RESULT:` line (required for a `pm-worker` `completed` report, optional elsewhere) carries a short task result (for example a `pm-worker`'s created issue number), so the parent need not read prose above the report. The parent reads a worker's transcript or full log only when a blocker needs it. Blocked-before-push and exhaustion reports may carry `PR_NUMBER: none`; every outcome that claims a PR must carry an integer PR and non-blank head, reviewer and handoff (see `exit-report-format.md`).
+`.claude/scripts/exit-report-extract.sh [--phase P] [FILE]` reduces a worker's final output to `KEY=value` lines (phase, PR, head, reviewer, outcome, next phase, handoff path, files count, verdicts, `/fixpr` wait fields), each capped. It reads the last `EXIT_REPORT` block. Exit 3 means no report (`EXTRACT=absent`): the parent then classifies crash versus usage-limit park per `phase-protocols.md` §Limit-parked, never the script. Exit 1 means a malformed report and fails closed. A `RESULT:` line (required for a `pm-worker` `completed` report, optional elsewhere) carries a short task result (for example a `pm-worker`'s created issue number), so the parent need not read prose above the report. For a blocked report, `RESULT` carries the one-line blocker summary. The parent reads a worker's transcript or full log only when a blocker needs more detail. Blocked-before-push and exhaustion reports may carry `PR_NUMBER: none`; every outcome that claims a PR must carry an integer PR and non-blank head, reviewer and handoff (see `exit-report-format.md`).
 
 ## Worker conduct
 
 A worker that ends its turn with interim status, or waits through a `Monitor` or background command, wakes the parent on every event. So:
 
-- A worker waits in a single foreground command and reports only a final result or a real blocker.
+- A worker waits in a single foreground command and ends every outcome with the structured `EXIT_REPORT`. For a terminal blocker the reason goes in prose directly above the report and a one-line summary goes in `RESULT`.
 - The parent passes a brief by file path and the verbatim blocks the verbatim-block rules require, rather than re-printing long guardrail text into each prompt. Where a rule demands a verbatim block in the prompt, the block stays in the prompt.
 
 ## Can a worker launch workers? (answered)

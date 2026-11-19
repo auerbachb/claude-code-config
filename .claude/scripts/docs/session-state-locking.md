@@ -16,6 +16,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [handoff-migrate.sh](../handoff-migrate.sh) | One-time migration of flat handoff files to per-repo scoped paths |
 | [handoff-state.sh](../handoff-state.sh) | Locked read/write helper for per-repo handoff files (`~/.claude/handoffs/`) |
 | [issue-completion.sh](../issue-completion.sh) | Independently verify merged-issue completion and reconcile one explicitly scope-verified issue |
+| [ownerless-state-retire.sh](../ownerless-state-retire.sh) | Repo-scoped, dry-run-first retirement of old ownerless subagent and pipeline records that can be shown finished (named PR merged or closed, or older than a stated age with no live runtime id); locked compare-and-set writes, nothing deleted |
 | [recovery-evidence.sh](../recovery-evidence.sh) | Capture and classify raw recovery verdict evidence without turning parse/execution failure into success |
 | [safe-close-clean.sh](../safe-close-clean.sh) | Plans and applies /safe-close's cleanup from the read-only inventory's JSON: every removal except plain scratch files goes through an existing helper, work-holding things are kept and named, and it never states a verdict |
 | [safe-close-inventory.sh](../safe-close-inventory.sh) | Read-only inventory of everything a thread started or still owns, with a safe-to-close verdict; each item tagged lost / keeps_running / orphaned / harmless, unreadable categories reported unknown |

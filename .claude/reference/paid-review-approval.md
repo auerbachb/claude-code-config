@@ -15,7 +15,7 @@ Ask only in an **attended** session, when a paid review would actually help. Exa
 **Never ask** from a subagent, a `/pm day` tick, a `/pm --window` (overnight) run, or any session the harness marks unattended (`CLAUDE_CODE_SESSION_ATTENDED=0`; `--grant` refuses there too, and in any subagent session — `CLAUDE_CODE_CHILD_SESSION` set). Those contexts follow `no_reviewer` and record the skip:
 
 - Scripts already record it: `bugbot_skipped: {"reason":"approval_required"}`, `skipped-approval-required`, `BugBot not invited — paid review requires owner approval`.
-- A subagent adds `PAID_REVIEW: skipped (<vendor>, <reason>)` to its exit report notes. The parent relays it with any blocker report.
+- A subagent adds `PAID_REVIEW: skipped (<vendor>, <reason>)` in the `RESULT` field of its exit report (the compact extractor output drops `NOTES`). The parent relays it with any blocker report.
 
 A subagent **may spend** a grant the attended parent already wrote. The grant is bound to the session id, and subagents share their parent's id. A subagent only ever spends a grant through `--trigger`, never through `--grant`.
 

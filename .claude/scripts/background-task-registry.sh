@@ -92,12 +92,17 @@ write_document() {
   mkdir -p "$dir" || die_write "could not create $dir"
   tmp="$(mktemp "$dir/.background-tasks.XXXXXX")" || die_write "mktemp failed in $dir"
   printf '%s\n' "$doc" > "$tmp" || { rm -f "$tmp"; die_write "temp write failed"; }
-  if ! state_lock_assert_held; then
-    rm -f "$tmp"
+  # Ownership check + mv under the commit gate (#2460).
+  local commit_rc=0 commit_err=""
+  commit_err="$(state_lock_commit "$tmp" "$STATE_FILE" 2>&1)" || commit_rc=$?
+  # exit 6 = unchanged, retry (lock lost or gate busy); anything else is a
+  # real write failure whose diagnostic must reach the operator.
+  (( commit_rc == 0 || commit_rc == STATE_LOCK_EXIT_TIMEOUT )) || [[ -z "$commit_err" ]] || printf '%s\n' "$commit_err" >&2
+  if (( commit_rc == STATE_LOCK_EXIT_TIMEOUT )); then
     state_lock_release
     retry_or_fail
   fi
-  mv "$tmp" "$STATE_FILE" || { rm -f "$tmp"; die_write "could not publish $STATE_FILE"; }
+  (( commit_rc == 0 )) || die_write "could not publish $STATE_FILE"
 }
 
 MODE=""

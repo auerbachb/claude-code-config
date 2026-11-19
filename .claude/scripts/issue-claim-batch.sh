@@ -287,8 +287,13 @@ read_states() {
     q="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {"
     for n in "${chunk[@]}"; do q+=" i$n: issue(number: $n) { number state }"; done
     q+=" } }"
+    # An explicit --repo goes in with -f (raw string): -F converts all-digit and
+    # true/false/null values to JSON types, so a repo named `1234` would fail the
+    # String! variable (issue #2332). The implicit path must stay on -F — only -F
+    # expands {owner}/{repo}, and gh checks the raw text for conversion before it
+    # fills the placeholder, so the filled value is always sent as a string.
     if [[ -n "$REPO" ]]; then
-      raw="$(gh api graphql -f query="$q" -F owner="${REPO%%/*}" -F name="${REPO#*/}" 2>/dev/null)" || true
+      raw="$(gh api graphql -f query="$q" -f owner="${REPO%%/*}" -f name="${REPO#*/}" 2>/dev/null)" || true
     else
       raw="$(gh api graphql -f query="$q" -F owner='{owner}' -F name='{repo}' 2>/dev/null)" || true
     fi

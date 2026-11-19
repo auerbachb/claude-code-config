@@ -98,11 +98,14 @@ if ! chmod 600 "$TMP_DOC"; then
   exit 5
 fi
 state_lock_acquire "$OUT" || exit $?
-if ! state_lock_assert_held; then
+# Ownership check + mv together under the commit gate (#2460).
+PUBLISH_RC=0
+state_lock_commit "$TMP_DOC" "$OUT" || PUBLISH_RC=$?
+if (( PUBLISH_RC == STATE_LOCK_EXIT_TIMEOUT )); then
   echo "portable-handoff-publish.sh: canonical lock changed before publish; original remains at $INPUT" >&2
   exit 6
 fi
-if ! mv "$TMP_DOC" "$OUT"; then
+if (( PUBLISH_RC != 0 )); then
   echo "portable-handoff-publish.sh: atomic publish failed; original remains at $INPUT" >&2
   exit 5
 fi
