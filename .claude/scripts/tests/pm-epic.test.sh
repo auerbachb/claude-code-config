@@ -445,7 +445,7 @@ check_contains "close-if-done: a recorded child missing from the child list keep
 check_eq "close-if-done: no close call past an unlisted recorded child" "0" "$(grep -c '^issue close' "$TMP/calls.log")"
 
 mal 866 $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 0\n\n- S1 · remaining · x\n- S2· remaining · typo\n' "an off-shape item row"
-mal 867 $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 1\n\n- S1 · covered by #881 · wave 1 · a\n- S2 · covered by #882 · wave 1 · b\n- S3 · remaining · c\n' "a wave with more children than planned"
+mal 867 $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 1 · last #882\n\n- S1 · covered by #881 · wave 1 · a\n- S2 · covered by #882 · wave 1 · b\n- S3 · remaining · c\n' "a wave with more children than planned"
 # scope-init can write a record already stopped, in one write.
 issue 868 open "Stopped at birth" $'- [ ] #831\n'
 echo '[]' > "$TMP/fx/sub-868.json"
@@ -533,7 +533,7 @@ check_eq "scope-init: a body changed after validation is exit 1" "1" "$rc"
 check_eq "scope-init: no body write over an intervening edit" "0" "$(grep -c '^issue edit' "$TMP/calls.log")"
 check_eq "scope-init: the intervening edit survives" "operator edit" "$(jq -r .body "$TMP/fx/issue-899.json" | tr -d '\n')"
 
-mal 886 $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 2\n\n- S1 · covered by #881 · wave 1 · a\n- S2 · covered by #881 · wave 1 · b\n' "one wave child covering two items"
+mal 886 $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 2 · last #881\n\n- S1 · covered by #881 · wave 1 · a\n- S2 · covered by #881 · wave 1 · b\n' "one wave child covering two items"
 # An indented heading (1-3 spaces) is still the record.
 issue 887 open "Indented heading" $' ## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 0\n\n- S1 · remaining · x\n'
 check_eq "scope: a heading indented 1-3 spaces is still the record" "S1" "$("$SCRIPT" scope acme/w 887 | jq -r '.remaining | join(",")')"
@@ -700,6 +700,45 @@ check_eq "close-if-done: ... and names the row to re-cut" "discrepancy #960 S1 i
 check_eq "close-if-done: no close call on uncompleted coverage" "0" "$(grep -c '^issue close' "$TMP/calls.log")"
 jq '.state_reason = "completed"' "$TMP/fx/issue-961.json" > "$TMP/fx/issue-961.tmp" && mv "$TMP/fx/issue-961.tmp" "$TMP/fx/issue-961.json"
 check_eq "close-if-done: a covered child closed as completed closes the parent" "closed #960 (1 children)" "$("$SCRIPT" close-if-done acme/w 960 2>/dev/null)"
+
+# ---- third CodeRabbit review on PR #2569 ---------------------------------------
+# The opened wave keeps the previous tail as `after #A`; record keeps it.
+check_eq "wave-open: the new wave keeps the previous tail as after" "Wave: 2 · planned 1 · after #950" "$(body_of 993 | grep '^Wave:')"
+check_eq "scope: after is the previous wave's tail" "950" "$("$SCRIPT" scope acme/w 993 | jq -r .after)"
+issue 952 open "c952" "- Parent: #993"
+"$SCRIPT" record acme/w 993 S3 952 >/dev/null
+check_eq "record: keeps after and sets last" "Wave: 2 · planned 1 · after #950 · last #952" "$(body_of 993 | grep '^Wave:')"
+mal 1002 $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 2 · planned 1 · after #999\n\n- S1 · covered by #951 · wave 1 · a\n- S2 · remaining · b\n' "an after that is no earlier wave's child"
+# A stale last on a FULL wave is malformed (correct it); only an underfilled wave resumes.
+mal 1001 $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 1 · last #915\n\n- S1 · covered by #951 · wave 1 · a\n- S2 · remaining · b\n' "a full wave whose last names none of its children"
+# The pre-write check refuses a parent closed since the read, even with the body unchanged.
+issue 1003 open "Closes under us" $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 1\n\n- S1 · remaining · a\n'
+issue 1004 open "c1004" "- Parent: #1003"
+jq '.state = "closed"' "$TMP/fx/issue-1003.json" > "$TMP/fx/later-issue-1003.json"
+rm -f "$TMP/fx/count-1003"; echo 2 > "$TMP/fx/swap-at-1003"
+"$SCRIPT" record acme/w 1003 S1 1004 >/dev/null 2>&1; rc=$?
+check_eq "pre-write: a parent closed since the read is exit 4" "4" "$rc"
+check_contains "pre-write: the closed parent was not edited" "- S1 · remaining · a" "$(body_of 1003)"
+rm -f "$TMP/fx/swap-at-1003" "$TMP/fx/count-1003"
+# scope-init never initialises over an orphan marker (marker and rows, heading renamed).
+issue 1005 open "Orphan marker" $'## Scope (renamed)\n\n<!-- pm-epic-scope v1 -->\nWave: 0\n\n- S1 · remaining · old\n'
+echo '[]' > "$TMP/fx/sub-1005.json"
+rows "- S1 · remaining · new"
+before=$(body_of 1005)
+"$SCRIPT" scope-init acme/w 1005 "$TMP/rows" >/dev/null 2>&1; rc=$?
+check_eq "scope-init: an orphan marker is malformed (exit 7)" "7" "$rc"
+check_eq "scope-init: nothing written over an orphan marker" "$before" "$(body_of 1005)"
+# close-if-done re-reads the parent after the child requests: a change there re-checks.
+issue 1006 open "Edited at the end" $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 1 · last #1007\n\n- S1 · covered by #1007 · wave 1 · a\n\n## Increment chain\n\n- [x] #1007\n'
+echo '[]' > "$TMP/fx/sub-1006.json"
+issue 1007 closed "c1007" "- Parent: #1006"
+jq '.body += "- S2 · remaining · added late\n"' "$TMP/fx/issue-1006.json" > "$TMP/fx/later-issue-1006.json"
+rm -f "$TMP/fx/count-1006"; echo 4 > "$TMP/fx/swap-at-1006"
+: > "$TMP/calls.log"
+check_eq "close-if-done: a parent edited after the child requests is re-checked" "open #1006 (the parent changed during the check; re-check)" "$("$SCRIPT" close-if-done acme/w 1006 2>/dev/null)"
+check_eq "close-if-done: no close after a late parent edit" "0" "$(grep -c '^issue close' "$TMP/calls.log")"
+rm -f "$TMP/fx/swap-at-1006" "$TMP/fx/count-1006"
+check_contains "/subagent Phase C stops on an unreadable parent body" "If the parent body cannot be read (a failed read or an empty answer), stop this step." "$(cat "$REPO_ROOT/.claude/skills/subagent/SKILL.md")"
 
 # Day arming order: 0c (away window) before 2D.1; 0b and 0d (epic Bind) after it.
 arming=$(grep '^\*\*On an arming invocation, ownership is settled before any work.\*\*' "$SKILL/SKILL.md")

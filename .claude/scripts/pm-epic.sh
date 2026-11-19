@@ -87,7 +87,9 @@
 #     <!-- pm-epic-scope v1 -->
 #     (one sentence of prose)
 #
-#     Wave: 1 · planned 5 · last #17        (last: the child filed last)
+#     Wave: 2 · planned 5 · after #12 · last #17
+#                             (after: wave 1's tail, kept when wave 2 opened;
+#                              last: the child filed last in wave 2)
 #     Stopped: <reason>                     (only when filing stopped)
 #
 #     - S1 · covered by #13 · wave 1 · Hero and layout shell
@@ -103,22 +105,25 @@
 #   two `Wave:` lines, a list item in the section (bullet `-`/`*`/`+` or
 #   ordered `1.`/`1)`) that is not a full row (bad item id, unknown status,
 #   missing delimiter), a duplicate `S` id, a covered wave past the current
-#   wave, a wave with filed children but no `last`, two sections — is
-#   malformed (exit 7). A `last` whose row is no longer covered (a re-cut row
-#   set back to `remaining`) is stale and reads as unset: the wave resumes,
-#   and the next `record` names a new tail. Every caller fails closed on a
-#   malformed record. Edits are line-level: prose and
-#   other sections are never rewritten. Every writing verb (scope-init,
-#   wave-open, record, stop) re-reads the parent right before its write and
-#   writes nothing (exit 1) when the body differs from the snapshot it
-#   validated — re-run it — and re-reads after to verify; GitHub has no conditional edit, so two
+#   wave, a wave with filed children but no `last`, an `after` that is no
+#   earlier wave's child, two sections — is malformed (exit 7). A `last`
+#   whose row is no longer covered (a re-cut row set back to `remaining`) is
+#   stale: on a wave with fewer covered children than planned it reads as
+#   unset (the wave resumes and the next `record` names a new tail); on a
+#   full wave it is malformed — correct `last` — so the next wave never opens
+#   unchecked. Every caller fails closed on a malformed record. Edits are
+#   line-level: prose and other sections are never rewritten. Every writing
+#   verb (scope-init, wave-open, record, stop) re-reads the parent right
+#   before its write and writes nothing when the body differs from the
+#   snapshot it validated (exit 1 — re-run it) or the parent is no longer
+#   open (exit 4), and re-reads after to verify; GitHub has no conditional edit, so two
 #   writers at once can still race: the verify step catches an overwrite only
 #   when it is already visible at that re-read, so a writer whose stale body
 #   lands after another's verify can still drop that write. Run one writer per
 #   parent (one /pm thread per epic); the dedup ladder and `record`'s refusal
 #   of a second child per item bound what a race can cost.
 #
-#   scope          prints the record as JSON: {present, wave, planned, last,
+#   scope          prints the record as JSON: {present, wave, planned, after, last,
 #                  stopped, items:[{id,status,child,wave,text,line}],
 #                  remaining:[ids], covered:[ids], children:[N...]}.
 #                  Exit 5 (with {"present":false}) when there is none.
@@ -128,7 +133,9 @@
 #                  before `## Increment chain` when there is one. With a
 #                  stop-reason the record is written already stopped, in the
 #                  same write. Exit 8 when a record already exists: re-cut by
-#                  editing the parent, never by re-initialising it.
+#                  editing the parent, never by re-initialising it. A damaged
+#                  record (an orphan marker, say) is exit 7: it writes only
+#                  where `scope` would say "no record".
 #   wave-due       decides the next step from GitHub alone. One line:
 #                    due <K> <S-ids>          file wave K from these items now
 #                    resume <K> <S-ids> <j/P> wave K stopped part-way; file these
@@ -453,6 +460,16 @@ close_if_done() {
     if [[ "$rc" -eq 3 ]] && fetch_issue "$repo" "$num" 2>/dev/null | jq -e '.is_pr' >/dev/null 2>&1; then continue; fi
     recheck "#$num appeared on the parent during the check; re-check"
   done
+  # children_json read the parent before its sub-issue and child requests:
+  # read the parent's state and body once more, after them. The scope verdict
+  # holds only for the body it was taken from, so any change re-checks.
+  local pstate want=OPEN
+  [[ "$closed" == true ]] && want=CLOSED
+  f=$(mktemp) || die 1 'mktemp failed'
+  rc=0; pstate=$(load_body "$repo" "$n" "$f") || rc=$?
+  fresh=$(cat "$f" 2>/dev/null); rm -f "$f"
+  [[ "$rc" -eq 0 ]] || die 1 "could not re-read issue #$n in $repo; not closing"
+  [[ "$pstate" == "$want" && "$fresh" == "$fbody" ]] || recheck 'the parent changed during the check; re-check'
   # Coverage honesty: a covered row counts only when its child was closed as
   # completed. A child closed as not planned or a duplicate delivered nothing,
   # so its row is not covered: name the row so it is set back to `remaining`
@@ -483,7 +500,7 @@ WAVE_CAP=5
 RE_ROW="^-[[:space:]]+(S[0-9]+)[[:space:]]+${DOT}[[:space:]]+(.*[^[:space:]])[[:space:]]*\$"
 RE_REMAINING="^remaining[[:space:]]+${DOT}[[:space:]]+(.+)\$"
 RE_COVERED="^covered by #([1-9][0-9]*)[[:space:]]+${DOT}[[:space:]]+wave[[:space:]]+([0-9]+)[[:space:]]+${DOT}[[:space:]]+(.+)\$"
-RE_WAVE="^Wave:[[:space:]]*([0-9]+)([[:space:]]+${DOT}[[:space:]]+planned[[:space:]]+([0-9]+)([[:space:]]+${DOT}[[:space:]]+last[[:space:]]+#([1-9][0-9]*))?)?[[:space:]]*\$"
+RE_WAVE="^Wave:[[:space:]]*([0-9]+)([[:space:]]+${DOT}[[:space:]]+planned[[:space:]]+([0-9]+)([[:space:]]+${DOT}[[:space:]]+after[[:space:]]+#([1-9][0-9]*))?([[:space:]]+${DOT}[[:space:]]+last[[:space:]]+#([1-9][0-9]*))?)?[[:space:]]*\$"
 RE_STOPPED="^Stopped:[[:space:]]*(.*[^[:space:]])[[:space:]]*\$"
 RE_MARK='^[[:space:]]*<!--[[:space:]]*pm-epic-scope[[:space:]]+v1[[:space:]]*-->[[:space:]]*$'
 
@@ -550,7 +567,7 @@ scope_from_file() {
     jq -cn '{present: false}'; return 5
   fi
   [[ "$sc" -eq 1 ]] || { malformed "$n" "more than one section"; return 7; }
-  local ln line marker=0 wave="" planned="" last="" waveln=0 stopped="" stopln=0 rows="" seen=" "
+  local ln line marker=0 wave="" planned="" after="" last="" waveln=0 stopped="" stopln=0 rows="" seen=" "
   local id rest status child cwave text
   if [[ "$se" -gt "$ss" ]]; then
     local section
@@ -560,7 +577,8 @@ scope_from_file() {
       if [[ "$line" =~ $RE_MARK ]]; then marker=1; continue; fi
       if [[ "$line" =~ $RE_WAVE ]]; then
         [[ -z "$wave" ]] || { malformed "$n" "two Wave: lines"; return 7; }
-        wave=$((10#${BASH_REMATCH[1]})); planned="${BASH_REMATCH[3]}"; last="${BASH_REMATCH[5]}"; waveln="$ln"; continue
+        wave=$((10#${BASH_REMATCH[1]})); planned="${BASH_REMATCH[3]}"; after="${BASH_REMATCH[5]}"; last="${BASH_REMATCH[7]}"
+        waveln="$ln"; continue
       fi
       if [[ "$line" =~ ^Wave: ]]; then malformed "$n" "unreadable line: $line"; return 7; fi
       if [[ "$line" =~ $RE_STOPPED ]]; then
@@ -601,7 +619,7 @@ scope_from_file() {
   if [[ -n "$planned" ]] && { [[ "$((10#$planned))" -lt 1 || "$((10#$planned))" -gt "$WAVE_CAP" ]]; }; then
     malformed "$n" "planned must be 1-$WAVE_CAP"; return 7
   fi
-  printf '%s' "$rows" | jq -Rnc --argjson wave "$wave" --arg planned "$planned" --arg last "$last" --arg stopped "$stopped" \
+  printf '%s' "$rows" | jq -Rnc --argjson wave "$wave" --arg planned "$planned" --arg after "$after" --arg last "$last" --arg stopped "$stopped" \
     --argjson ss "$ss" --argjson se "$se" --argjson waveln "$waveln" --argjson stopln "$stopln" \
     --argjson cs "$cs" --argjson ce "$ce" --argjson ft "$ft" --argjson total "$total" '
     [inputs | select(length > 0) | split("\t") |
@@ -609,6 +627,7 @@ scope_from_file() {
        wave: (if .[3] == "" then null else (.[3] | tonumber) end), text: .[4], line: (.[5] | tonumber)}] as $items |
     {present: true, wave: $wave,
      planned: (if $planned == "" then null else ($planned | tonumber) end),
+     after: (if $after == "" then null else ($after | tonumber) end),
      last: (if $last == "" then null else ($last | tonumber) end),
      stopped: (if $stopped == "" then null else $stopped end),
      items: $items,
@@ -623,17 +642,25 @@ scope_from_file() {
       elif ([.items[] | select(.status == "covered" and .wave > 0) | .child] | length) !=
            ([.items[] | select(.status == "covered" and .wave > 0) | .child] | unique | length)
         then error("shared")
+      # `after #A` is the tail of the previous wave, kept when a wave opens so
+      # a fresh thread can still chain the head of this wave on it: it must be
+      # a covered child of an earlier wave.
+      elif .after != null and (. as $r | [.items[] | select(.status == "covered" and .wave < $wave and .child == $r.after)] | length) == 0
+        then error("after")
       # The tail (`last #T`) is the child filed last in the current wave, the
       # one the next wave waits on. A `last` whose row is no longer covered
-      # (the documented re-cut: a row set back to `remaining`) is stale and
-      # reads as unset; the item is then re-filed in this wave (`resume`). A
-      # wave with filed children and no `last` at all is malformed.
+      # (the documented re-cut: a row set back to `remaining`) is stale: on a
+      # wave that can resume (fewer covered than planned) it reads as unset and
+      # the item is re-filed in this wave; on a full wave it is malformed
+      # (correct `last`), so the next wave never opens unchecked. A wave with
+      # filed children and no `last` at all is malformed.
       elif .last != null and (. as $r | [.items[] | select(.status == "covered" and .wave == $wave and .child == $r.last)] | length) == 0
-        then .last = null
+        then (if .planned != null and ([.items[] | select(.status == "covered" and .wave == $wave)] | length) < .planned
+              then .last = null else error("last") end)
       elif $wave > 0 and .last == null and any(.items[]; .status == "covered" and .wave == $wave)
         then error("nolast")
       else . end' 2>/dev/null || {
-    malformed "$n" "a covered item names a wave past Wave: $wave, wave $wave holds more children than planned, one wave child covers two items, or wave $wave has covered items but the Wave: line names no last child"; return 7; }
+    malformed "$n" "a covered item names a wave past Wave: $wave, wave $wave holds more children than planned, one wave child covers two items, the Wave: line's after child is not an earlier wave's child, or wave $wave has covered items but its Wave: line names no valid last child (a full wave's last must name one of its children)"; return 7; }
 }
 
 # read_scope REPO N FILE -> the record JSON plus {epic, state}; the body is left
@@ -684,10 +711,14 @@ write_body() {  # write_body REPO N FILE
     die 1 "could not write the body of #$2 in $1"
 }
 
-wave_line() {  # wave_line K [P [T]] — T: the wave's last-filed child (its tail)
-  if [[ -n "${3:-}" ]]; then printf 'Wave: %s %s planned %s %s last #%s' "$1" "$DOT" "$2" "$DOT" "$3"
-  elif [[ -n "${2:-}" ]]; then printf 'Wave: %s %s planned %s' "$1" "$DOT" "$2"
-  else printf 'Wave: %s' "$1"; fi
+wave_line() {  # wave_line K [P [A [T]]] — A: the previous wave's tail; T: this wave's last-filed child
+  local out="Wave: $1"
+  if [[ -n "${2:-}" ]]; then
+    out+=" $DOT planned $2"
+    [[ -z "${3:-}" ]] || out+=" $DOT after #$3"
+    [[ -z "${4:-}" ]] || out+=" $DOT last #$4"
+  fi
+  printf '%s' "$out"
 }
 
 # prewrite_check REPO N FILE SNAPSHOT -> re-reads the parent right before a
@@ -695,9 +726,11 @@ wave_line() {  # wave_line K [P [T]] — T: the wave's last-filed child (its tai
 # snapshot the command validated; the caller re-runs from the new body. The
 # window after this read is GitHub's: there is no conditional edit.
 prewrite_check() {
-  local rc=0
-  load_body "$1" "$2" "$3.now" >/dev/null || rc=$?
+  local rc=0 state
+  state=$(load_body "$1" "$2" "$3.now") || rc=$?
   if [[ "$rc" -ne 0 ]]; then rm -f "$3.now"; die 1 "could not re-read issue #$2 in $1; nothing written"; fi
+  # A parent closed since the read is never edited, even with an unchanged body.
+  if [[ "$state" != OPEN ]]; then rm -f "$3.now"; die 4 "issue #$2 was closed since it was read; nothing written"; fi
   if [[ "$(cat "$3.now")" != "$4" ]]; then rm -f "$3.now"; die 1 "#$2 changed since it was read; nothing written (re-run it)"; fi
   rm -f "$3.now"
 }
@@ -777,6 +810,16 @@ scope_init() {
   loc=$(locate "$f") || die 1 "could not scan the body of #$n"
   read -r ss se sc cs ce total ft fo <<< "$loc"
   [[ "$sc" -eq 0 ]] || refuse "$n" 'already has an ## Epic scope record; re-cut it by editing the parent'
+  # Only a body with neither the heading nor an unfenced marker is "no record"
+  # (exit 5): an orphan marker or damaged record is malformed, never re-initialised.
+  local src=0
+  scope_from_file "$f" "$n" >/dev/null || src=$?
+  case "$src" in
+    5) : ;;
+    0) refuse "$n" 'already has an ## Epic scope record; re-cut it by editing the parent' ;;
+    7) exit 7 ;;
+    *) die 1 "could not scan the body of #$n" ;;
+  esac
   [[ "$fo" -eq 0 ]] || refuse "$n" 'its body ends inside an unclosed code fence; close the fence first'
   block="## Epic scope"$'\n\n'"$SCOPE_MARK"$'\n'"Coverage record for \`/pm epic #$n\`: each item is one single-PR deliverable, covered by a child or still remaining. Later waves are cut from the remaining items only. To re-cut, edit an item's text or delete a remaining row, keeping each row's \`S<n> $DOT status $DOT\` prefix."$'\n\n'"$(wave_line 0)"${stop_reason:+$'\n'"Stopped: $stop_reason"}$'\n\n'"${rows%$'\n'}"
   # Above the increment chain (so Step 5.1's strip-to-end can never take it),
@@ -883,7 +926,11 @@ wave_open() {
     2) refuse "$n" "wave $w's last child #$tail is not in review or closed yet" ;;
     *) exit "$rc" ;;
   esac
-  set_line "$f" "$(jq -r .lines.wave <<< "$json")" "$(wave_line "$k" "$cnt")" || die 1 'could not edit the body'
+  # Keep the previous wave's tail on the new Wave: line (`after #A`): this
+  # wave's head chains on it, and a fresh thread resuming before the head is
+  # filed must still find it in the record.
+  set_line "$f" "$(jq -r .lines.wave <<< "$json")" "$(wave_line "$k" "$cnt" "$(jq -r '.last // ""' <<< "$json")")" ||
+    die 1 'could not edit the body'
   prewrite_check "$repo" "$n" "$f" "$snap"
   write_body "$repo" "$n" "$f"
   json=$(scope_or_die "$repo" "$n" "$f") || die 1 "wrote #$n but could not verify wave $k"
@@ -950,7 +997,8 @@ record_cmd() {
       "- $id $DOT covered by #$c $DOT wave $w $DOT $(jq -r .text <<< "$item")" || die 1 'could not edit the body'
     # The child filed last is the wave's tail, persisted in the same write so
     # the next wave waits on filing order, never the highest number.
-    set_line "$f" "$(jq -r .lines.wave <<< "$json")" "$(wave_line "$w" "$p" "$c")" || die 1 'could not edit the body'
+    set_line "$f" "$(jq -r .lines.wave <<< "$json")" "$(wave_line "$w" "$p" "$(jq -r '.after // ""' <<< "$json")" "$c")" ||
+      die 1 'could not edit the body'
   fi
   local before; before=$(cksum < "$f")
   chain_add "$f" "$n" "$c" || die 1 'could not edit the body'
