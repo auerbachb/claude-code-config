@@ -759,13 +759,18 @@ _atomic_write() {
   # the exact lost-append failure in issue #930. Exit 6 ("unchanged, retry")
   # instead: a loud, retryable error beats a silent overwrite. This sits as
   # late as possible, immediately before the commit.
-  if ! state_lock_assert_held; then
-    rm -f "$tmp" 2>/dev/null || true
+  # The check and the mv run together under the commit gate inside
+  # state_lock_commit, so a stale break cannot land between them (#2460).
+  local _commit_rc=0 _commit_err=""
+  _commit_err="$(state_lock_commit "$tmp" "$HANDOFF_FILE" 2>&1)" || _commit_rc=$?
+  # exit 6 = unchanged, retry (lock lost or gate busy); anything else is a
+  # real write failure whose diagnostic must reach the operator.
+  (( _commit_rc == 0 || _commit_rc == STATE_LOCK_EXIT_TIMEOUT )) || [[ -z "$_commit_err" ]] || printf '%s\n' "$_commit_err" >&2
+  if (( _commit_rc == STATE_LOCK_EXIT_TIMEOUT )); then
     state_lock_release
     _rmw_retry_or_fail
   fi
-  if ! mv "$tmp" "$HANDOFF_FILE"; then
-    rm -f "$tmp" 2>/dev/null || true
+  if (( _commit_rc != 0 )); then
     echo "handoff-state.sh: mv to $HANDOFF_FILE failed" >&2
     state_lock_release
     exit 5
