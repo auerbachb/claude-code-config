@@ -336,6 +336,7 @@ class PMReadTrace(unittest.TestCase):
         self.assertIn('If what is left is exactly `refresh config` (the whole remainder)', skill)
         self.assertIn('bare run-mode tokens (`speed`, `cheap`, `default`', skill)
         self.assertIn('`/pm speed refresh config` is an explicit refresh run in `speed` mode', skill)
+        self.assertIn('treat internal whitespace runs as one space, and ignore letter case', skill)
         self.assertNotIn('contains the phrase `refresh config`', skill)
         self.assertIn('`/pm refresh config`: explicit refresh, then cold-start ranking.', skill)
         self.assertIn('`/pm refresh config loading in the dashboard`: cold-start ranking against the full goal, with no explicit refresh.', skill)
