@@ -180,6 +180,34 @@ fi
 
 A capture session **offers to run every open issue it filed, right here in this thread, via `/subagent`** — not by emitting a separate-thread chip. Make the offer **once per session**, after the last issue is filed and before the final table (Step 9). No auto-start: execution begins only on an explicit "yes" in chat.
 
+**Epic branch — run this gate first.** One case changes the offer: this session's own filing created a tracking parent (`create:doc-gate`) whose recorded scope plans more than five children or leaves some not yet cut, and at least one of its children is filed. The gate reads only the `epic_parent` selector (`session:state`) over this session's rows — never a title, label or keyword. It prints nothing for every other capture, and the rest of this step runs exactly as written.
+
+<!-- test-anchor: issue-maker-epic-gate -->
+```bash
+EPIC_GATE=$(jq -ec --arg repo "$REPO" "$MINE_DEF"'. as $root |
+  [.issues[] | epic_parent | . as $p
+   | select(any($root.issues[]; (mine | (.chain.role // "") != "parent") and .chain.chain_id == $p.chain.chain_id))
+   | .number] as $parents |
+  {parents:$parents, offer:(if .epic_offer != null and .epic_offer.repository == $repo then .epic_offer else null end)}' "$LOG") \
+  || { echo "ERROR: could not read $LOG for the epic gate; stop before the offer" >&2; exit 1; }
+EPIC_RECORDED=$(printf '%s' "$EPIC_GATE" | jq -r '.offer.parent // empty')
+if [ -n "$EPIC_RECORDED" ] && printf '%s' "$EPIC_GATE" | jq -e '.offer.state == "offered" and (.offer.parent as $p | .parents | index($p) | not)' >/dev/null; then
+  # The parent was retracted or no longer qualifies: drop the unanswered offer.
+  set_log 'if .epic_offer.state != "offered" or .epic_offer.parent != ($p|tonumber) then error("epic offer changed") else .epic_offer = null end' --arg p "$EPIC_RECORDED" || exit 1
+  EPIC_RECORDED=""
+  EPIC_GATE=$(printf '%s' "$EPIC_GATE" | jq -c '.offer = null')
+fi
+if [ -n "$EPIC_RECORDED" ]; then
+  printf 'EPIC_OFFER_STATE=%s PARENT=%s\n' "$(printf '%s' "$EPIC_GATE" | jq -r '.offer.state')" "$EPIC_RECORDED"
+elif printf '%s' "$EPIC_GATE" | jq -e '.parents | length > 0' >/dev/null; then
+  printf 'EPIC_OFFER=%s\n' "$(printf '%s' "$EPIC_GATE" | jq -r '.parents[0]')"
+  LATER=$(printf '%s' "$EPIC_GATE" | jq -r '.parents[1:] | map(tostring) | join(" ")')
+  [ -z "$LATER" ] || printf 'EPIC_LATER=%s\n' "$LATER"
+fi
+```
+
+`EPIC_OFFER=` or `EPIC_OFFER_STATE=` loads `create:epic-offer`, which uses this step's cap read, offer stamp, acceptance and decline blocks and replaces only the offer text and its answer. With no output, continue below unchanged.
+
 **Repo-wide cap (before the offer, for a single issue or batch).** Resolve `active-work-cap.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/active-work-cap.sh`, `$HOME/.claude/scripts/active-work-cap.sh`, or `.claude/scripts/active-work-cap.sh` — this repo may carry no `.claude/` directory. Read the census once per session; the default output line gives `CAP`, `ACTIVE`, and `FREE` together. Offer inline while `FREE > 0`; at `FREE == 0` **defer**, naming `{ACTIVE}/{CAP}` and the scope: `hand-off deferred — repo-wide active-work cap ({ACTIVE}/{CAP} in motion across all threads)`. If the script does not resolve, print `DEGRADED: active-work-cap.sh not found (checked all three paths) — offering inline without a repo-wide bound` and offer it anyway (the run applies its own ceiling; withholding it strands the issues). A **non-zero exit** from a script that did resolve means the count could not be read — treat it as `FREE = 0` and defer, naming the read failure rather than a fabricated count.
 
 **Offer stamp.** When the offer is emitted, generate a local offer token (e.g. `offer-$(date +%s%N)`) and write it into `chip_task_id` on every open issue the offer covers — this is what stops `/wave` or `/pm` from launching a second offer for work already covered. The stamp is **not** a `spawn_task` return; it is a locally-generated string. It is written through `runnable` — `mine` minus a tracking parent (`create:doc-gate`) — so it reaches only `$REPO`'s session-filed open rows that `/subagent` can run, and can never overwrite a token that belongs to another session's batch. A tracking parent is never offered, never stamped, and never sent in `INLINE_REQUEST` (`/subagent` refuses it as tracking-only); its children are offered like any chain.
@@ -260,12 +288,13 @@ set_log "$MINE_DEF"'if (.reg_tid // "") != "" or .handoff_checkpoint != null or 
 
 **Increment chains.** The offer names the chain and its order; `/subagent` Step 6.0b serializes the increments behind their predecessor. Never split a chain across two offers.
 
-A capture session ends with exactly one of **four** outcomes for its filed issues; never none, and never two:
+A capture session ends with exactly one of **five** outcomes for its filed issues; never none, and never two:
 
 1. **inline-run offer** — the user is asked in-thread; yes ends capture mode and starts `/subagent`, no leaves issues filed;
 2. **deferred offer** — the repo-wide cap left no headroom (`FREE == 0`, or the count could not be read);
 3. **inline-run offer (DEGRADED)** — active-work-cap.sh did not resolve; offer is still made without a repo-wide bound (a single inline run applies its own ceiling);
-4. **on-request hand-off only** — the user explicitly asked for a chip instead of the inline path.
+4. **on-request hand-off only** — the user explicitly asked for a chip instead of the inline path;
+5. **epic offer** — the epic gate above printed a parent: `create:epic-offer` recommends a new `/pm epic #N` thread and keeps outcome 1 as the second choice (or, with an epic already bound in this repo, recommends outcome 1).
 
 Outcome 2 defers the offer, never the issues: every issue is still filed, logged, and its URL still printed. Say so in one line and give the retry:
 
