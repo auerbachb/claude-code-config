@@ -51,4 +51,22 @@ d="$(fixture update 'session-state.sh --set ".active_agents[\"$ID\"].status=\"do
 bash "$LINT" --root "$d" >/dev/null || fail "a sub-field update was treated as a creation"
 ok "pipeline starts are checked; sub-field updates are not"
 
+# 6. a neighbouring record's session_id is not borrowed
+d="$(fixture borrow 'A=$(jq -n --arg sid "$S" "{id:\"a\", session_id:\$sid}")
+B=$(jq -n "{id:\"b\", status:\"spawned\"}")
+session-state.sh --set ".active_agents[\"a\"]=$A"
+session-state.sh --set ".active_agents[\"b\"]=$B"')"
+out="$(bash "$LINT" --root "$d" 2>/dev/null)"; rc=$?
+[[ $rc == 1 ]] || fail "an unstamped agent borrowed the session_id of a neighbouring record"
+if ! grep -q 'active_agents\[\\"b\\"\]' <<<"$out" || grep -q 'active_agents\[\\"a\\"\]' <<<"$out"; then
+  echo "$out" >&2; fail "the wrong write was reported"
+fi
+d="$(fixture borrow-pipe 'session-state.sh --set ".repos[\"$R\"].pipelines[\"12\"].started_at=$NOW" \
+  --set ".repos[\"$R\"].pipelines[\"13\"].session_id=$SID"')"
+bash "$LINT" --root "$d" >/dev/null 2>&1; [[ $? == 1 ]] || fail "a pipeline start borrowed another key's session_id"
+d="$(fixture pipe-ok 'session-state.sh --set ".repos[\"$R\"].pipelines[\"12\"].started_at=$NOW" \
+  --set ".repos[\"$R\"].pipelines[\"12\"].session_id=$SID"')"
+bash "$LINT" --root "$d" >/dev/null || fail "a pipeline start with its own session_id was reported"
+ok "a neighbouring record's session_id never vouches for another write"
+
 echo "all state-owner-stamp-lint tests passed"

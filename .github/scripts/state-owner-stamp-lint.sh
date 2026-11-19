@@ -22,10 +22,16 @@
 #   - a `.pipelines[<key>].started_at=…` assignment (the pipeline lifecycle's
 #     creating write, at top level or under `.repos[...]`)
 #
-# Each must have the token `session_id` on the same line or within the
-# WINDOW lines around it (where the entry JSON or the sibling `--set` is
-# built). Lines starting with `#` (shell comments, Markdown headings) are
-# skipped; other Markdown prose is scanned too, so keep record writes in code.
+# The stamp must belong to THAT record — a neighbouring record's session_id
+# never counts (an earlier ±WINDOW proximity check let one borrow it):
+#   - `.active_agents[<key>]=$VAR`: the nearest earlier assignment of VAR
+#     (within WINDOW lines, up to the next assignment) must carry `session_id`;
+#     an inline value must carry it on the write line itself.
+#   - `.pipelines[<key>].started_at=…`: a sibling write to the SAME key's
+#     `.pipelines[<key>].session_id=` must appear within WINDOW lines.
+# Lines starting with `#` (shell comments, Markdown headings) are neither
+# writes nor evidence; other Markdown prose is scanned too, so keep record
+# writes in code.
 #
 # === Scan scope ===
 #
@@ -61,17 +67,36 @@ while IFS= read -r f; do
     { lines[NR] = $0; code[NR] = 1 }
     # A comment is neither a write nor ownership evidence: "# session_id ..." must not pass.
     /^[[:space:]]*#/ { code[NR] = 0; next }
-    {
-      creates = 0
-      if ($0 ~ /active_agents\[[^]]*\]=/) creates = 1
-      if ($0 ~ /pipelines\[[^]]*\]\.started_at=/) creates = 1
-      if (creates) hits[++n] = NR
-    }
+    /active_agents\[[^]]*\]=/ { agent[++na] = NR }
+    /pipelines\[[^]]*\]\.started_at=/ { pipe[++np] = NR }
+    function report(at) { printf "%s:%d: creates a state record without stamping session_id: %s\n", file, at, lines[at] }
     END {
-      for (h = 1; h <= n; h++) {
-        at = hits[h]; ok = 0
-        for (i = at - win; i <= at + win; i++) if (i >= 1 && i <= NR && code[i] && lines[i] ~ /session_id/) { ok = 1; break }
-        if (!ok) printf "%s:%d: creates a state record without stamping session_id: %s\n", file, at, lines[at]
+      # .active_agents: the stamp must sit in the value itself, or in the
+      # definition of the variable the value expands (up to the next assignment).
+      for (h = 1; h <= na; h++) {
+        at = agent[h]; ok = 0; line = lines[at]
+        match(line, /active_agents\[[^]]*\]=/)
+        val = substr(line, RSTART + RLENGTH)
+        if (match(val, /^\$\{?[A-Za-z_][A-Za-z0-9_]*/)) {
+          var = substr(val, RSTART, RLENGTH); gsub(/[${]/, "", var)
+          def = 0
+          for (i = at - 1; i >= 1 && i >= at - win; i--)
+            if (code[i] && lines[i] ~ ("(^|[^A-Za-z0-9_])" var "=")) { def = i; break }
+          if (def) for (i = def; i < at; i++) {
+            if (i > def && code[i] && lines[i] ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*\+?=/) break
+            if (code[i] && lines[i] ~ /session_id/) { ok = 1; break }
+          }
+        } else if (line ~ /session_id/) ok = 1
+        if (!ok) report(at)
+      }
+      # .pipelines: a sibling session_id write to the SAME record key.
+      for (h = 1; h <= np; h++) {
+        at = pipe[h]; ok = 0; line = lines[at]
+        match(line, /pipelines\[[^]]*\]\.started_at=/)
+        want = substr(line, RSTART, RLENGTH - length(".started_at=")) ".session_id="
+        for (i = at - win; i <= at + win; i++)
+          if (i >= 1 && i <= NR && code[i] && index(lines[i], want)) { ok = 1; break }
+        if (!ok) report(at)
       }
     }' "$f")"
   if [[ -n "$out" ]]; then
