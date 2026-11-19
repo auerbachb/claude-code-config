@@ -90,7 +90,7 @@ Render the config below to a **stage file**, never directly to `.claude/pm-confi
 CONFIG_FILE=".claude/pm-config.md"
 mkdir -p "$(dirname "$CONFIG_FILE")" || exit 1
 BOOTSTRAP_STAGE=$(mktemp "$CONFIG_FILE.bootstrap.XXXXXX") || exit 1
-chmod 0644 "$BOOTSTRAP_STAGE" || exit 1
+chmod 0644 "$BOOTSTRAP_STAGE" || { rm -f "$BOOTSTRAP_STAGE"; exit 1; }
 echo "BOOTSTRAP_STAGE=$BOOTSTRAP_STAGE"
 ```
 
