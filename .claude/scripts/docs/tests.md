@@ -139,6 +139,7 @@ opt-in of issue #1544.
 | [merge-target-root.test.sh](../tests/merge-target-root.test.sh) | Exercises explicit clone binding and the real wrap/merge fences with two same-remote clones and cwd drift |
 | [model-fleet.test.sh](../tests/model-fleet.test.sh) | Tests for `model-fleet.sh` |
 | [model-route.test.sh](../tests/model-route.test.sh) | Multi-attempt cheap retries, diagnosed escalation, caller wiring and eligibility boundaries for model-route.sh |
+| [monitor-quiet-tick.test.sh](../tests/monitor-quiet-tick.test.sh) | Unchanged Monitor tick is silent with counters advanced shell-side; change, cadence widen, streak-9 pause and N-blocker terminal emit on the same tick as before |
 | [no-review-override-ack-replies.test.sh](../tests/no-review-override-ack-replies.test.sh) | Tests the verdict inventory of the no-review override: empty-body COMMENTED reviews and inline thread replies are acknowledgements, not verdicts |
 | [no-review-override-availability.test.sh](../tests/no-review-override-availability.test.sh) | Tests the request-skip override in `no-review-override.sh` — immediate apply while the recorded reviewer unavailability holds, notice recording, fail-toward-asking cases |
 | [no-review-override-request-anchor.test.sh](../tests/no-review-override-request-anchor.test.sh) | Tests the review-request anchor of the no-review override in `no-review-override.sh` — anchor selection, fallbacks, window timing |
