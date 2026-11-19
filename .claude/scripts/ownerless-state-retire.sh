@@ -45,15 +45,17 @@
 #   A record in scope is retired when either reason holds:
 #     pr_finished  its `pr` (or `pr_number`) is MERGED or CLOSED on GitHub in --repo
 #     aged_out     its launch/start time (launched, launched_at, started_at,
-#                  spawned_at, created_at) is older than --max-age-days AND no
-#                  live task in the background-task registry carries its id
+#                  spawned_at, created_at) is older than --max-age-days
+#   Either reason also needs proof that no live task in the background-task
+#   registry of ANY repo in session-state carries its id (id, agent or key): a
+#   live runtime in another session is ownership evidence the record lacks.
 #   No reason, no retirement: it is listed under skipped[] with why.
 #
 # FAIL-CLOSED RULES
 #   - Any failed GitHub lookup ends the run with exit 4 and NOTHING written,
 #     dry run or not: a record is never retired or excused on a read that did
 #     not work.
-#   - An unreadable background-task registry disables the age rule (noted).
+#   - An unreadable background-task registry (any repo's) retires nothing (noted).
 #   - A record without a parsable timestamp cannot age out.
 #   - Each write is one `session-state.sh --cas` guarded by `--expect-at` on the
 #     whole record, under the state lock: a record that changed since the plan
@@ -141,8 +143,9 @@ note() { NOTES="$(jq -c --arg n "$1" '. + [$n]' <<<"$NOTES")"; }
 
 ss_get() { # <jq-path> -> JSON; exit 5 on failure
   local out
-  out="$("$SESSION_STATE_SH" --repo "$REPO" --get-json "$1" 2>/dev/null)" && [[ -n "$out" ]] && jq empty >/dev/null 2>&1 <<<"$out" || {
-    echo "ownerless-state-retire.sh: session-state $1 unreadable" >&2; exit 5; }
+  if ! out="$("$SESSION_STATE_SH" --repo "$REPO" --get-json "$1" 2>/dev/null)" || [[ -z "$out" ]] || ! jq empty >/dev/null 2>&1 <<<"$out"; then
+    echo "ownerless-state-retire.sh: session-state $1 unreadable" >&2; exit 5
+  fi
   printf '%s' "$out"
 }
 AGENTS="$(ss_get '.active_agents')"
@@ -158,15 +161,23 @@ OTHER_PRS="$(jq -c --arg r "$REPO" '[(. // {}) | to_entries[]? | select(.key != 
   # Fail closed: an empty guard would let an unscoped record of another repo through.
   echo "ownerless-state-retire.sh: session-state .repos has an unexpected shape" >&2; exit 5; }
 
+# Live runtime ids from EVERY repo's registry, not only --repo: a live task in any
+# session that carries a record's id is ownership evidence, and blocks both rules.
 LIVE_OK=0
 LIVE_IDS='[]'
-if (( MAX_AGE_DAYS > 0 )); then
-  if [[ -n "$REGISTRY_SH" ]] && live="$("$REGISTRY_SH" --repo "$REPO" --list --live 2>/dev/null)" && jq -e 'type == "array"' >/dev/null 2>&1 <<<"$live"; then
-    LIVE_IDS="$(jq -c '[.[].task_id | tostring]' <<<"$live")"; LIVE_OK=1
-  else
-    note "background-task registry unreadable: the age rule is off for this run"
-  fi
+if [[ -n "$REGISTRY_SH" ]] && REG_REPOS="$(jq -r --arg r "$REPO" '[$r] + ((. // {}) | keys) | unique | .[]' <<<"$REPOS" 2>/dev/null)"; then
+  LIVE_OK=1
+  while IFS= read -r rk; do
+    [[ -n "$rk" ]] || continue
+    # A repo whose block has no registry yet lists [] — only a failed read turns the guard off.
+    if live="$("$REGISTRY_SH" --repo "$rk" --list --live 2>/dev/null)" && jq -e 'type == "array"' >/dev/null 2>&1 <<<"$live"; then
+      LIVE_IDS="$(jq -c --argjson add "$(jq -c '[.[].task_id | tostring]' <<<"$live")" '. + $add | unique' <<<"$LIVE_IDS")"
+    else
+      LIVE_OK=0; break
+    fi
+  done <<<"$REG_REPOS"
 fi
+(( LIVE_OK == 1 )) || { LIVE_IDS='[]'; note "background-task registry unreadable: no record is retired this run"; }
 
 # ---- classify every top-level record ------------------------------------------------
 CANDS="$(jq -c -n --argjson a "$AGENTS" --argjson p "$PIPES" --arg r "$REPO" --argjson other "$OTHER_PRS" \
@@ -212,11 +223,13 @@ PLAN="$(jq -c --argjson st "$PR_STATES" --argjson now "$NOW_EPOCH" --argjson day
   --argjson live "$LIVE_IDS" --argjson live_ok "$LIVE_OK" '
   map(if .skip != null then . else
         (if .pr != null then $st[.pr] else null end) as $ps
-        | if $ps == "MERGED" or $ps == "CLOSED" then
-            . + {pr_state: $ps, reason: "pr_finished", detail: "PR #\(.pr) is \($ps | ascii_downcase)"}
-          elif $days > 0 and .ts_epoch != null and (.ts_epoch < ($now - $days * 86400)) then
-            if $live_ok != 1 then . + {pr_state: $ps, skip: "older than \($days) days, but the registry could not be read to rule out a live runtime"}
-            elif ([.ids[] | . as $i | ($live | index($i)) != null] | any) then . + {pr_state: $ps, skip: "older than \($days) days, but a live runtime carries its id"}
+        | ([.ids[] | . as $i | ($live | index($i)) != null] | any) as $is_live
+        | if ($ps == "MERGED" or $ps == "CLOSED") or ($days > 0 and .ts_epoch != null and (.ts_epoch < ($now - $days * 86400))) then
+            # Either reason still needs proof no live runtime in any session carries the id.
+            if $live_ok != 1 then . + {pr_state: $ps, skip: "the registry could not be read to rule out a live runtime"}
+            elif $is_live then . + {pr_state: $ps, skip: "a live runtime carries its id"}
+            elif ($ps == "MERGED" or $ps == "CLOSED") then
+              . + {pr_state: $ps, reason: "pr_finished", detail: "PR #\(.pr) is \($ps | ascii_downcase)"}
             else . + {pr_state: $ps, reason: "aged_out", detail: "recorded at \(.recorded_at), older than \($days) days, no live runtime id"} end
           else . + {pr_state: $ps, skip: (if .ts_epoch == null and .pr == null then "no timestamp and no PR: cannot be shown finished"
                                           elif .pr != null then "PR #\(.pr) is \(($ps // "unknown") | ascii_downcase) and the record is not old enough"
@@ -235,7 +248,7 @@ if (( APPLY == 1 )); then
     path="$(jq -r '.path' <<<"$row")"; key="$(jq -r '.key' <<<"$row")"
     reason="$(jq -r '.reason' <<<"$row")"; detail="$(jq -r '.detail' <<<"$row")"
     rec="$(jq -c '.rec' <<<"$row")"
-    P="$path[$(jq -cn --arg k "$key" '$k')]"
+    P="${path}[$(jq -cn --arg k "$key" '$k')]"
     cur_status="$(jq -c '.status // null' <<<"$rec")"
     rc=0
     "$SESSION_STATE_SH" --repo "$REPO" \

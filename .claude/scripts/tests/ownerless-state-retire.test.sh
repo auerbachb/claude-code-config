@@ -110,6 +110,16 @@ jq -e '.skipped[] | select(.key=="a-old") | .reason | test("live runtime")' >/de
 "$ROOT/.claude/scripts/background-task-registry.sh" --repo "$REPO" --transition --session s-live --task-id a-old --status stopped >/dev/null
 ok "a live runtime id keeps an old record"
 
+# A live runtime in ANOTHER repo's registry, carrying a merged-PR record's id, keeps it too.
+"$ROOT/.claude/scripts/background-task-registry.sh" --repo elsewhere/else --register --session s-other \
+  --task-id a-merged --type agent >/dev/null || fail "could not register cross-repo fixture task"
+OUT="$(run)"
+jq -e '.skipped[] | select(.key=="a-merged") | .reason | test("live runtime")' >/dev/null <<<"$OUT" || { echo "$OUT" >&2; fail "a live runtime in another repo's registry did not block pr_finished"; }
+"$ROOT/.claude/scripts/background-task-registry.sh" --repo elsewhere/else --transition --session s-other --task-id a-merged --status stopped >/dev/null
+OUT="$(run)"
+jq -e '[.retire[].key] | index("a-merged") != null' >/dev/null <<<"$OUT" || { echo "$OUT" >&2; fail "a stopped runtime still blocked pr_finished"; }
+ok "a live runtime id in any repo's registry keeps a finished-PR record"
+
 # ---- 6. a lone record in an otherwise minimal state file is retired ------------------------
 jq -n '{active_agents:{"a-merged":{id:"a-merged",pr:873,status:"spawned",launched:"2026-11-15T00:00:00Z",owner_repo:"acme/widgets"}}}' > "$STATE"
 run --apply >/dev/null || fail "apply on a single record failed"
