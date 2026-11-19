@@ -43,7 +43,8 @@
 #       passes the pair, the over-bound commit after it is reviewed (28) or recorded
 #       uncovered (29); the same at the tip of main (30); a failed record write
 #       leaves the marker unchanged with a named stop (31); dry run writes nothing
-#       (32); a revert of a commit before the marker is ordinary, not skipped (33).
+#       and leaves the marker file byte-identical (32); a revert of a commit before
+#       the marker is ordinary, not skipped (33).
 #   The fail-first pass (reverting the logic and confirming the cases fail)
 #   is run by hand and recorded in the PR body; see the reference doc.
 #
@@ -621,8 +622,12 @@ check_eq "31: no reviewer ran" "0" "$(wc -l < "$STUB/cli-calls.log" | tr -d ' ')
 # 32: dry run lists the net-empty stretch as a skip and writes nothing.
 reset_state
 seed_marker "$NE1_SEED"
+# A copy, compared with cmp below: $(cat) would drop trailing newlines and hide them.
+cp "$MARKER" "$TMP/marker32.before"
 OUT="$(nrun "$NE1_DIR" --range-bound 3 --dry-run --ignore-window 2>/dev/null)"; RC=$?
 check_eq "32: dry run exits 0" "0" "$RC"
+if cmp -s "$TMP/marker32.before" "$MARKER"; then M32="identical"; else M32="changed"; fi
+check_eq "32: dry run left the marker file byte-identical" "identical" "$M32"
 check_contains "32: dry run says would skip (net-empty), with the pair" \
   "would skip (net-empty) $(short12 "$NE1_A")..$(short12 "$NE1_B") commits=2 (nothing written)" "$OUT"
 check_contains "32: dry run still plans the over-bound commit after it" \
