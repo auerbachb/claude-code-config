@@ -53,6 +53,10 @@ if [ "\$1" = api ]; then
     mv "\$fx/next-issue-\$n.json" "\$fx/issue-\$n.json"
   fi
   [ -n "\$n" ] && touch "\$fx/served-\$n"
+  if [ -n "\$n" ] && [ -f "\$fx/swap-at-\$n" ]; then
+    c=\$(( \$(cat "\$fx/count-\$n" 2>/dev/null || echo 0) + 1 )); echo "\$c" > "\$fx/count-\$n"
+    [ "\$c" -eq "\$(cat "\$fx/swap-at-\$n")" ] && mv "\$fx/later-issue-\$n.json" "\$fx/issue-\$n.json"
+  fi
   if [ -n "\$n" ] && [ -f "\$fx/issue-\$n.json" ]; then cat "\$fx/issue-\$n.json"; exit 0; fi
   if [ -f "\$fx/fail-all" ]; then echo "HTTP 502" >&2; exit 1; fi
   echo "gh: Not Found (HTTP 404)" >&2; exit 1
@@ -157,6 +161,9 @@ check_eq "no sub-issue API: checklist + task list children only" "104,101,102" "
 
 # ---- an issue titled "epic new button" with no children -------------------------
 issue 300 open "epic new button" $'Epic: make a new button.\n\n- [ ] design it\n- [ ] ship it\n'
+"$SCRIPT" children acme/w 300 >/dev/null 2>&1; rc=$?
+check_eq "no body children + unreadable sub-issues: exit 1, never childless" "1" "$rc"
+echo '[]' > "$TMP/fx/sub-300.json"
 out=$("$SCRIPT" children acme/w 300); rc=$?
 check_eq "childless 'epic ...' title: exit 5" "5" "$rc"
 check_eq "childless: JSON still printed with no children" "0" "$(jq -r '.children | length' <<< "$out")"
@@ -236,6 +243,7 @@ prs() {  # prs N JSON-NODES
 
 # A childless epic describing eight deliverables, captured by /issue-maker.
 issue 800 open "Big theme" $'Build the big theme.\n\n## Not yet cut\n\n- six\n- seven\n\n_Captured via /issue-maker._'
+echo '[]' > "$TMP/fx/sub-800.json"   # sub-issues readable and empty: truly childless
 "$SCRIPT" children acme/w 800 >/dev/null 2>&1; rc=$?
 check_eq "waves: a childless epic is still exit 5 from children" "5" "$rc"
 out=$("$SCRIPT" scope acme/w 800); rc=$?
@@ -459,6 +467,18 @@ check_eq "close-if-done: the late-child check exits 0" "0" "$rc"
 check_contains "close-if-done: the late-child check reports the parent open" "open #885" "$out"
 check_eq "close-if-done: a child added before the scope read keeps the parent open" "0" "$(grep -c '^issue close' "$TMP/calls.log")"
 
+# A scope record written between the scope read and the final child read keeps
+# the parent open: the third parent read (the final one) sees a new remaining row.
+issue 889 open "Racing scope epic" $'## Increment chain\n\n- [x] #881\n'
+echo '[]' > "$TMP/fx/sub-889.json"
+jq '.body += "\n## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 0\n\n- S1 · covered by #881 · wave 0 · a\n- S2 · remaining · b\n"' \
+  "$TMP/fx/issue-889.json" > "$TMP/fx/later-issue-889.json"
+echo 3 > "$TMP/fx/swap-at-889"
+: > "$TMP/calls.log"
+out=$("$SCRIPT" close-if-done acme/w 889 2>/dev/null); rc=$?
+check_eq "close-if-done: a record written during the check keeps the parent open" "open #889 (the parent changed during the check; re-check)" "$out"
+check_eq "close-if-done: no close call past a record written during the check" "0" "$(grep -c '^issue close' "$TMP/calls.log")"
+
 mal 886 $'## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 1 · planned 2\n\n- S1 · covered by #881 · wave 1 · a\n- S2 · covered by #881 · wave 1 · b\n' "one wave child covering two items"
 # An indented heading (1-3 spaces) is still the record.
 issue 887 open "Indented heading" $' ## Epic scope\n\n<!-- pm-epic-scope v1 -->\nWave: 0\n\n- S1 · remaining · x\n'
@@ -519,19 +539,20 @@ SS_VALUE=/dev/null SS_LOG="$TMP/ss.log" SESSION_STATE_SH="$TMP/bin/ss-stub" PM_E
 check_contains "completion: marks the stored epic complete" '.epic.completed_at=' "$(cat "$TMP/ss.log")"
 check_eq "completion: never nulls the epic (no whole-backlog fall-through)" "0" "$(grep -c 'epic=null' "$TMP/ss.log")"
 WAVE=$(block pm-epic-wave)
-wave() {  # wave "LINE" RC -> "FILE NEEDS_SCOPE UNREADABLE VERDICT K ITEMS"
+wave() {  # wave "LINE" RC -> "FILE NEEDS_SCOPE UNREADABLE PARENT_CLOSED VERDICT K ITEMS"
   printf '#!/usr/bin/env bash\necho "%s"\nexit %s\n' "$1" "$2" > "$TMP/bin/wave-stub"
   chmod +x "$TMP/bin/wave-stub"
   PM_EPIC_SH="$TMP/bin/wave-stub" REPO_KEY=acme/w EPIC_NUMBER=12 \
-    bash -c 'EPIC_SCOPE_UNREADABLE=false; '"$WAVE"'; echo "$EPIC_FILE_WAVE $EPIC_NEEDS_SCOPE $EPIC_SCOPE_UNREADABLE $EPIC_WAVE_VERDICT $EPIC_WAVE_K $EPIC_WAVE_ITEMS"'
+    bash -c 'EPIC_SCOPE_UNREADABLE=false; '"$WAVE"'; echo "$EPIC_FILE_WAVE $EPIC_NEEDS_SCOPE $EPIC_SCOPE_UNREADABLE $EPIC_PARENT_CLOSED $EPIC_WAVE_VERDICT $EPIC_WAVE_K $EPIC_WAVE_ITEMS"'
 }
-check_eq "wave block: due files the listed items" "true false false due 2 S6,S7,S8" "$(wave 'due 2 S6,S7,S8' 0)"
-check_eq "wave block: resume files the rest of a part-filed wave" "true false false resume 1 S4,S5" "$(wave 'resume 1 S4,S5 3/5' 0)"
-check_eq "wave block: wait files nothing" "false false false wait 1 -" "$(wave 'wait 1 - #805' 0)"
-check_eq "wave block: stopped files nothing" "false false false stopped 0 -" "$(wave 'stopped 0 - no clean seam' 0)"
-check_eq "wave block: no record runs the scope check" "false true false none 0 -" "$(wave 'none 0 -' 5)"
-check_eq "wave block: a malformed record pauses" "false false true   " "$(wave '' 7)"
-check_eq "wave block: an unreadable read pauses, never files" "false false true   " "$(wave '' 1)"
+check_eq "wave block: due files the listed items" "true false false false due 2 S6,S7,S8" "$(wave 'due 2 S6,S7,S8' 0)"
+check_eq "wave block: resume files the rest of a part-filed wave" "true false false false resume 1 S4,S5" "$(wave 'resume 1 S4,S5 3/5' 0)"
+check_eq "wave block: wait files nothing" "false false false false wait 1 -" "$(wave 'wait 1 - #805' 0)"
+check_eq "wave block: stopped files nothing" "false false false false stopped 0 -" "$(wave 'stopped 0 - no clean seam' 0)"
+check_eq "wave block: no record runs the scope check" "false true false false none 0 -" "$(wave 'none 0 -' 5)"
+check_eq "wave block: a malformed record pauses" "false false true false   " "$(wave '' 7)"
+check_eq "wave block: a parent closed elsewhere runs Completion, never pauses" "false false false true   " "$(wave '' 4)"
+check_eq "wave block: an unreadable read pauses, never files" "false false true false   " "$(wave '' 1)"
 
 # ---- skill wiring ------------------------------------------------------------------
 entry="$SKILL/SKILL.md"

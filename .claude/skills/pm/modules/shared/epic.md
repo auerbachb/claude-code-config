@@ -89,7 +89,7 @@ An epic is split from **its own scope**, recorded on the parent so any thread ca
 
 **The scope record.** `pm-epic.sh` keeps one `## Epic scope` section in the parent body (format and every verb: `pm-epic.sh --help`): a `Wave: K · planned P` line, an optional `Stopped: <reason>` line, and one row per single-PR deliverable, `- S3 · covered by #N · wave K · <text>` or `- S3 · remaining · <text>`. Rows are plain bullets, never task-list items, so they are never read as children. The record — not the children — says what is left: a fresh thread reads it and the last child of the current wave, never every child. Every write re-reads the body first and verifies after; a malformed or unreadable record fails closed (nothing filed, nothing closed).
 
-**Scope check (once per epic).** Read the record with `pm-epic.sh scope`. Exit `0`: it exists, go on. Exit `7` or `1`: the one line `ERROR: epic #N scope record unreadable — nothing filed`, then the pause above. Exit `5` (no record yet): cut it now.
+**Scope check (once per epic).** Read the record with `pm-epic.sh scope`. Exit `0`: it exists, go on. Exit `4` (the parent was closed outside this thread; `scope-init` too): run the Completion block. Exit `7` or `1`: the one line `ERROR: epic #N scope record unreadable — nothing filed`, then the pause above. Exit `5` (no record yet): cut it now.
 
 1. **Read the scope from the parent body**: its text, any `## PRD` / `## Design doc` section in it (`/issue-maker`'s default document location), and its `## Not yet cut` list when present, every bullet of which is a remaining item. A document only *linked* from the parent is not read; the first wave's message says so.
 2. **List the deliverables** in dependency order, each a single-PR piece with real acceptance criteria — Step 5.1 sub-step 1's bar, bounded by `INCREMENT_BOUND_MIN`. A child that already exists covers the item it delivers (`covered by #N · wave 0`); everything else is `remaining`. Cut no finer than the seams the scope really has.
@@ -102,12 +102,13 @@ An epic is split from **its own scope**, recorded on the parent so any thread ca
 <!-- test-anchor: pm-epic-wave -->
 ```bash
 EPIC_WAVE_RC=0; EPIC_WAVE_VERDICT=""; EPIC_WAVE_K=""; EPIC_WAVE_ITEMS=""; EPIC_WAVE_DETAIL=""
-EPIC_FILE_WAVE=false; EPIC_NEEDS_SCOPE=false
+EPIC_FILE_WAVE=false; EPIC_NEEDS_SCOPE=false; EPIC_PARENT_CLOSED=false
 EPIC_WAVE_LINE=$("$PM_EPIC_SH" wave-due "$REPO_KEY" "$EPIC_NUMBER") || EPIC_WAVE_RC=$?
 read -r EPIC_WAVE_VERDICT EPIC_WAVE_K EPIC_WAVE_ITEMS EPIC_WAVE_DETAIL <<< "$EPIC_WAVE_LINE"
 case "$EPIC_WAVE_RC:$EPIC_WAVE_VERDICT" in
   0:due|0:resume) EPIC_FILE_WAVE=true ;;
   0:wait|0:covered|0:stopped) : ;;
+  4:*) EPIC_PARENT_CLOSED=true ;;            # parent closed: run Completion
   5:*) EPIC_NEEDS_SCOPE=true ;;              # no record yet: run the scope check
   *) EPIC_SCOPE_UNREADABLE=true ;;           # unreadable or malformed: pause
 esac
@@ -118,6 +119,7 @@ esac
 - `wait K - #M` — wave `K`'s last child is not in review yet. Nothing to file; work the open children.
 - `covered K -` — no remaining items: no more waves. The epic finishes through Completion.
 - `stopped K - <reason>` — filing stopped. Work the children that exist; when none is eligible the reason is `nothing eligible (epic #N stopped: <reason>)` and the parent stays open until the operator re-cuts the remaining items and deletes the record's `Stopped:` line.
+- `EPIC_PARENT_CLOSED=true` (exit `4`): the parent was closed outside this thread. File nothing and run the Completion block, which verifies the children before accepting the close.
 - `EPIC_NEEDS_SCOPE=true`: run the scope check, then this block again. `EPIC_SCOPE_UNREADABLE=true` is `paused (epic scope unreadable)`.
 
 **File a wave** — reuse `/subagent` Step 5.1, never a second implementation. Read Step 5.1 and its **epic-wave mode** paragraph and run them with `PARENT=$EPIC_NUMBER` and these items:

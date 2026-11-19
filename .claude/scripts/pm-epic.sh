@@ -66,6 +66,9 @@
 #                  `## Epic scope` still lists remaining items stays open:
 #                  `open #N (every child closed; j scope items remain)`; an
 #                  unreadable or malformed scope record never closes (exit 1).
+#                  A parent body that changed between the scope read and the
+#                  final child read prints `open #N (the parent changed during
+#                  the check; re-check)` and is not closed.
 #
 # EPIC SCOPE — the coverage record on the parent (issue #2546)
 #   An epic split in waves keeps one `## Epic scope` section in the parent
@@ -141,7 +144,9 @@
 #   2  usage error
 #   3  the issue does not exist (or is a pull request)
 #   4  the issue is closed (children: the JSON is still printed)
-#   5  the issue has no children (children: the JSON is still printed)
+#   5  the issue has no children (children: the JSON is still printed; a
+#      parent with no body children whose sub-issues could not be read is
+#      exit 1, never 5)
 #   6  children: a listed child cannot be found (`missing` is non-empty; the
 #      JSON is still printed) — the child list is incomplete, so a caller
 #      must not bind or work it
@@ -241,11 +246,16 @@ sub_issue_children() {
   ' <<< "$out" 2>/dev/null || return 1
 }
 
+# children_json REPO N [BODY_FILE] -> the children JSON; with BODY_FILE, the
+# parent body this read used is also written there (as load_body writes it).
 children_json() {
-  local repo="$1" n="$2" parent rc=0 raw sub_state="read" sub_lines="" child num
+  local repo="$1" n="$2" body_out="${3:-}" parent rc=0 raw sub_state="read" sub_lines="" child num
   parent=$(fetch_issue "$repo" "$n") || rc=$?
   if [[ "$rc" -eq 3 ]]; then die 3 "issue #$n does not exist in $repo"; fi
   [[ "$rc" -eq 0 ]] || die 1 "could not read issue #$n in $repo"
+  if [[ -n "$body_out" ]]; then
+    jq -j '.body' <<< "$parent" | tr -d '\r' > "$body_out" || die 1 "could not keep the body of #$n"
+  fi
   if [[ "$(jq -r '.is_pr' <<< "$parent")" == true ]]; then
     die 3 "#$n in $repo is a pull request, not an issue"
   fi
@@ -293,7 +303,16 @@ children_cmd() {
       "$(jq -r '[.missing[] | "#\(.)"] | join(", ")' <<< "$json")" >&2
     exit 6
   fi
-  if [[ "$(jq -r '.children | length' <<< "$json")" -eq 0 ]]; then exit 5; fi
+  if [[ "$(jq -r '.children | length' <<< "$json")" -eq 0 ]]; then
+    # No body children and an unreadable sub-issues API is not "childless":
+    # sub-issue-only children may exist, and exit 5 would cut a scope record
+    # that files them again.
+    if [[ "$(jq -r '.sub_issues' <<< "$json")" == unavailable ]]; then
+      printf 'pm-epic.sh: #%s lists no children in its body and its sub-issues could not be read\n' "$n" >&2
+      exit 1
+    fi
+    exit 5
+  fi
   exit 0
 }
 
@@ -365,13 +384,21 @@ close_if_done() {
   # Re-read once more right before closing: a child reopened or added since
   # the first read keeps the parent open. GitHub offers no conditional close,
   # so a tiny window between this read and the close call remains.
-  json=$(children_json "$repo" "$n") || exit $?
+  f=$(mktemp) || die 1 'mktemp failed'
+  json=$(children_json "$repo" "$n" "$f") || { rc=$?; rm -f "$f"; exit "$rc"; }
+  fresh=$(cat "$f"); rm -f "$f"
   rc=0; done_verdict "$json" "$n" || rc=$?
   case "$rc" in
     0) : ;;
     2|3) exit 0 ;;
     *) exit "$rc" ;;
   esac
+  # The parent body this re-read used must be the one the scope read judged:
+  # a record written in between (scope-init, a new wave) may add remaining items.
+  if [[ "$fresh" != "$fbody" ]]; then
+    printf 'open #%s (the parent changed during the check; re-check)\n' "$n"
+    exit 0
+  fi
   # Every child the scope read saw (recorded or listed in that body) must be in
   # this verified list. A number missing from it is a child added in between,
   # unless GitHub says it is a pull request (never a child).

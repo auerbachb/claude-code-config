@@ -2166,8 +2166,8 @@ fi
    ```
 
    Then:
-   - **A parent whose body carries the `<!-- pm-epic-scope v1 -->` marker is an epic split in waves: do not edit or close it here.** Run only `pm-epic.sh close-if-done {owner}/{repo} {PARENT}`. It keeps the parent open while scope remains and fails closed on an unreadable record. A fetch-then-edit tick here could overwrite a concurrent `pm-epic.sh record` and lose a recorded child; the issue states, not the box, are the fact.
-   - Otherwise, tick that child's box in the parent's `## Increment chain` checklist (`gh issue edit --body`, fetch-then-edit as in Step 5.1).
+   - **A parent whose body carries the `<!-- pm-epic-scope v1 -->` marker is an epic split in waves: do not edit or close it here.** Run only `pm-epic.sh close-if-done {owner}/{repo} {PARENT}`. It keeps the parent open while scope remains and fails closed on an unreadable record. A fetch-then-edit tick here could overwrite a concurrent `pm-epic.sh record` and lose a recorded child; the issue states, not the box, are the fact. **That call is the whole of this step for an epic parent: skip every bullet below**, including the close — `close-if-done` alone decides it, so a parent whose children are all closed but whose scope still has remaining items stays open for its next wave.
+   - Otherwise (no marker), tick that child's box in the parent's `## Increment chain` checklist (`gh issue edit --body`, fetch-then-edit as in Step 5.1).
    - **Then re-read the parent's children from GitHub**, don't trust the checklist you just wrote: close the parent only when every child issue is actually `CLOSED`. A child can be closed by hand, or its box ticked while its PR later reverts — the issue states are the fact, the checklist is the display.
    - When the last one closes, `gh issue close` the parent with a comment naming the merged children, and emit one line: `closed parent #N — all {n} increments merged`. Report the closure; never close silently.
    - A child that ends `blocked` leaves the parent open with its box unticked. That is the correct resting state — the parent is what makes the unfinished slice findable.
