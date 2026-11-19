@@ -16,7 +16,7 @@ END="$ROOT/.claude/skills/end/SKILL.md"
 END_RESUME="$ROOT/.claude/skills/end-resume/SKILL.md"
 LADDER="$ROOT/.claude/reference/universal-resume.md"
 SCHEMA="$ROOT/.claude/reference/session-state-schema.json"
-REF_README="$ROOT/.claude/reference/README.md"
+REF_README="$ROOT/.claude/reference/catalog/runbooks.md"
 HANDOFF_TEMPLATE="$ROOT/.claude/skills/end/references/portable-handoff-template.md"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
