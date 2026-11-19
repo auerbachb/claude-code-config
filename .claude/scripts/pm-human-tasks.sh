@@ -33,7 +33,9 @@
 #                                       on the list, open or done)
 #            RESULT=not_saved EXIT=<n>  exit n (owner-task.sh's code; 4 when
 #                                       the duplicate check could not read the
-#                                       list, 7 when owner-task.sh is missing)
+#                                       list, 7 when owner-task.sh is missing,
+#                                       2 when an --owner-action line names no
+#                                       reason: nothing written, none guessed)
 #          then LINE=<the receipt or not-saved line /pm prints as is>.
 #          An add that exits 1 (ambiguous write) is followed by one more list:
 #          when the task is now there it is reported as saved, never re-added;
@@ -143,7 +145,12 @@ cmd_save() {
     [ -z "$what" ] && [ -z "$why" ] || die_usage "save: --owner-action replaces --what and --why"
     action="$(printf '%s' "$action" | sed -E 's/^[[:space:]]*OWNER_ACTION[:=][[:space:]]*//')"
     reason="$(printf '%s' "$action" | sed -nE 's/^([a-z-]+):[[:space:]]*.*$/\1/p')"
-    [ -n "$reason" ] || die_usage "save: --owner-action is not '<reason>: <what> — <free text>'"
+    if [ -z "$reason" ]; then
+      # No reason to save it under: report it unsaved, never guess one.
+      what="$(one_line "$action")"
+      not_saved 2 "${what:-(empty OWNER_ACTION line)}" "the OWNER_ACTION line names no why-human reason ('<reason>: <what> — <free text>'); nothing written"
+      return $?
+    fi
     rest="$(printf '%s' "$action" | sed -E 's/^[a-z-]+:[[:space:]]*//')"
     case "$rest" in
       *' — '*) what="${rest%% — *}"; why="$reason: ${rest#* — }" ;;

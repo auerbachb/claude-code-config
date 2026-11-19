@@ -166,8 +166,12 @@ check_contains "owner-action: receipt names the reason" "(secret-value)" "$out"
 out="$("$SCRIPT" save --owner-action "OWNER_ACTION=physical-device: Run the live test on the phone" --source "#10")"
 check_contains "owner-action: extract form without detail saved" "RESULT=saved" "$out"
 check_contains "owner-action: missing detail gets a free-text placeholder" "Run the live test on the phone|physical-device: reported by a sub-agent without detail|#10" "$(adds)"
-"$SCRIPT" save --owner-action "no reason here" --source "#1" >/dev/null 2>&1; rc=$?
-check_eq "owner-action: malformed line is a usage error" 2 "$rc"
+reset
+rc=0; out="$("$SCRIPT" save --owner-action "OWNER_ACTION: Sign in to the dashboard" --source "#1" 2>/dev/null)" || rc=$?
+check_eq "owner-action: line with no reason exits 2" 2 "$rc"
+check_contains "owner-action: no reason ends as not saved" "RESULT=not_saved EXIT=2" "$out"
+check_contains "owner-action: not-saved line names the missing reason" "names no why-human reason" "$out"
+check_eq "owner-action: no reason writes nothing" "" "$(adds)"
 "$SCRIPT" save --what "x" --why "sign-in: y" >/dev/null 2>&1; rc=$?
 check_eq "save: --source required" 2 "$rc"
 
