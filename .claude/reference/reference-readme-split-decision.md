@@ -1,18 +1,18 @@
-# `.claude/reference/README.md` — SPLIT decision (Issue #2188)
+# `.claude/reference/README.md` — SPLIT proposal (Issue #2188), pending owner
 
-**Verdict: SPLIT.** The 9,856-word categorized reference index became a thin
+**Status: PROPOSED — pending the owner's decision on Issue #1996.** The
+proposal is to turn the 9,856-word categorized reference index into a thin
 index at the same path plus one catalog page per category under
-`.claude/reference/catalog/`.
+`.claude/reference/catalog/`. This PR implements that proposal; it is not the
+decision of record until the owner records a split-vs-keep verdict on #1996
+(Issue #2188's first acceptance criterion), and it must not merge before then.
 
-**Decided:** 2026-11-19, as the resolution of Issue #2188's open question. No
-owner verdict was recorded on the churn-hotspot report (Issue #1996), so the
-split in #2188's own Proposed solution was taken as the recommended option.
-**Supersedes** the Issue #816 keep decision (append-only catalog with a
-completeness lint) **for this file only**; the completeness lint is kept and now
-spans every catalog page. A recorded owner KEEP on #1996 would reopen this.
-**Owner-reversible:** this is a recommended-option decision taken without an
-owner verdict; the owner may overrule it at any time by recording a KEEP on
-#1996, and the split would then be reverted.
+**Proposed:** 2026-11-19, from Issue #2188's Proposed solution. No owner verdict
+exists on the churn-hotspot report (Issue #1996; the only KEEP on it is a
+CodeRabbit proposal). If the owner chooses SPLIT, this supersedes the Issue #816
+keep decision (append-only catalog with a completeness lint) **for this file
+only**, and the completeness lint, kept, spans every catalog page. If the owner
+chooses KEEP, the PR is closed and the existing structure stays.
 
 ## What was decided, and against what
 
