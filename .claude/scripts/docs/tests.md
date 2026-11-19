@@ -154,6 +154,7 @@ opt-in of issue #1544.
 | [pause-multisession.test.sh](../tests/pause-multisession.test.sh) | Tests per-session pause records and resume receipts (#1576) — interleaved concurrent pause writes staying independent, the extracted `/pause-resume` Step 1 selection program returning every un-resumed record newest-first, no masking when one is marked resumed, the legacy `.pause` / `.suspend` singletons as union members rather than an empty-map else-branch, and per-session resume receipts |
 | [phone-push-wait.test.sh](../tests/phone-push-wait.test.sh) | Tests for `phone-push-wait.sh` |
 | [pipeline-ceiling-consumers.test.sh](../tests/pipeline-ceiling-consumers.test.sh) | Static check that `/subagent`, `/pm`, and `/wave` read the pipeline ceiling from `active-work-cap.sh --ceiling` instead of a literal |
+| [pm-away-declare.test.sh](../tests/pm-away-declare.test.sh) | Proves /pm --away maps its value onto presence.sh set away through the existing parsers, and refuses unreadable values in one line |
 | [pm-backlog-new-issue.test.sh](../tests/pm-backlog-new-issue.test.sh) | Runs the real `/pm` Step 1B.2 `pm-1b2-new-issues` block against a stubbed gh and the real session-state.sh, proving a freshly filed issue lands in NEW_ISSUES on the next scan |
 | [pm-board-page.test.sh](../tests/pm-board-page.test.sh) | Verifies the PM project page, private publication and real session-state wiring. |
 | [pm-config-bootstrap.test.sh](../tests/pm-config-bootstrap.test.sh) | Verifies the /pm bootstrap publish never replaces a config that appears after the absence probe |
