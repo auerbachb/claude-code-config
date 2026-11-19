@@ -98,7 +98,10 @@ STATE_HELPER="${MONITOR_QUIET_STATE_HELPER:-$SCRIPT_DIR/session-state.sh}"
 MODE=tick KIND="" PR="" REPO="" GENERATION="" INPUT_DIGEST="" TICK_START_DIGEST=""
 QUIET_OK="" BLOCKER_COUNTING=false WIDEN_AT=3 FREEZE_AT=9
 
-usage() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; }
+usage() {
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
+}
 usage_fail() { echo "monitor-quiet-tick.sh: $*" >&2; exit 2; }
 emit() { echo "monitor-quiet-tick.sh: emit — $*" >&2; exit 0; }
 

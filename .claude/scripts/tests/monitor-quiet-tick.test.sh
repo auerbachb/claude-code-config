@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests for monitor-quiet-tick.sh and its wiring into the /babysit-pr and /pm day Monitors (issue #2459).
 # catalog: tests — Unchanged Monitor tick is silent with counters advanced shell-side; change, cadence widen, streak-9 pause and N-blocker terminal emit on the same tick as before
-# covers: .claude/scripts/monitor-quiet-tick.sh
+# covers: .claude/scripts/monitor-quiet-tick.sh .claude/skills/babysit-pr/SKILL.md .claude/skills/pm/modules/day-arm.md .claude/skills/pm/modules/day-tick.md
 #
 # Drives the real script against a real session-state.sh in a throwaway $HOME.
 # Ticks pass --input-digest so no GitHub call is made; the digest projection is
