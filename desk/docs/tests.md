@@ -77,6 +77,11 @@ bash desk/tests/run.sh
   "Priorities").
 - `shellcheck.test.sh` runs shellcheck on every shell file here (skips when
   shellcheck is not installed).
+- `tasks-offline.test.sh` is offline: `tasks` and `checkin get --tasks`
+  against a stub `owner-task.sh` under a throwaway `HOME` and a stub psql —
+  the list, the empty case, every read failure, the resolution order, the
+  check-in's counts and card line, and `skill/tasks.md`'s block
+  ([Open human tasks](tasks.md)).
 
 CI runs the suites through `.github/scripts/run-hook-tests.sh`, without a
 database, so the live suites skip there.
