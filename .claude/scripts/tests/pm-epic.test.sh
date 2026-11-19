@@ -112,6 +112,14 @@ out=$("$SCRIPT" children acme/w 500); rc=$?
 check_eq "fences: exits 0" "0" "$rc"
 check_eq "fences: nested/shorter markers keep the fence open" "101,104" "$(jq -r '[.children[] | select(.sources | index("task-list")) | .number] | join(",")' <<< "$out")"
 
+# Indent: 0-3 spaces open/close a fence; 4+ never does. A backtick opener whose
+# info string holds a backtick opens nothing.
+BODY510=$'   ```\n- [ ] #201 inside a 3-space-indented fence\n    ```\n- [ ] #202 still inside: a 4-space closer is not a closer\n   ```\n- [ ] #101 after the 3-space closer\n    ```\n- [ ] #104 a 4-space opener opens nothing\n``` a`b\n- [ ] #102 a backtick in a backtick info string opens nothing\n~~~ a`b\n- [ ] #203 a tilde opener may carry a backtick\n~~~\n'
+issue 510 open "Fence indent parent" "$BODY510"
+out=$("$SCRIPT" children acme/w 510); rc=$?
+check_eq "fence indent: exits 0" "0" "$rc"
+check_eq "fence indent: 0-3 spaces only; backtick info strings open nothing" "101,104,102" "$(jq -r '[.children[] | select(.sources | index("task-list")) | .number] | join(",")' <<< "$out")"
+
 # ---- sub-issue API unavailable: body still stands ------------------------------
 rm "$TMP/fx/sub-100.json"
 out=$("$SCRIPT" children acme/w 100); rc=$?

@@ -97,19 +97,22 @@ fetch_issue() {
 body_children() {
   local body="$1" self="$2"
   printf '%s\n' "$body" | tr -d '\r' | awk -v self="$self" '
-    # CommonMark fences: a fence closes only on a marker of the same character,
-    # at least as long as the opener, with nothing but whitespace after it.
-    match($0, /^[[:space:]]*(`{3,}|~{3,})/) {
+    # CommonMark fences: a marker counts only with 0-3 spaces of indent; a
+    # backtick opener has no backtick in its info string; a fence closes only on a
+    # marker of the same character, at least as long as the opener, with
+    # nothing but whitespace after it.
+    match($0, /^ ? ? ?(```+|~~~+)/) {
       run = substr($0, RSTART, RLENGTH)
-      sub(/^[[:space:]]*/, "", run)
+      sub(/^ */, "", run)
       ch = substr(run, 1, 1)
+      tail = substr($0, RSTART + RLENGTH)
       if (!fence) {
-        fence = 1; fch = ch; flen = length(run)
+        # A backtick in the info string of a backtick opener: no fence opens.
+        if (!(ch == "`" && index(tail, "`"))) { fence = 1; fch = ch; flen = length(run); next }
+      } else {
+        if (ch == fch && length(run) >= flen && tail ~ /^[[:space:]]*$/) fence = 0
         next
       }
-      tail = substr($0, RSTART + RLENGTH)
-      if (ch == fch && length(run) >= flen && tail ~ /^[[:space:]]*$/) fence = 0
-      next
     }
     fence { next }
     /^##[[:space:]]/ { chain = ($0 ~ /^##[[:space:]]+Increment chain[[:space:]]*$/) }
