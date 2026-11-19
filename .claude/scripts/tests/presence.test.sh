@@ -422,6 +422,8 @@ case "$out" in [0-9]*:away:[0-9]*:operator-message:*) ok "declared-epoch after a
 P $owner1 set here --by operator-message --for 1h --if-declared "$captured"; check "the earlier capture no longer matches" "$rc" 10
 
 printf '== ask --afk: a live declaration does not block the operator'"'"'s own afk question\n'
+P $owner1 ask --afk; check "ask --afk while already away: refused, the guard would deny the menu" "$rc" 12
+P $owner1 set here --by operator-message --for 1h; check "back to here for the ask --afk checks" "$rc" 0
 P $owner1 ask; check "plain ask with a live declaration: not asked" "$rc" 12
 P $owner1 ask --afk; check "ask --afk: claim granted" "$rc" 0
 tok="$out"

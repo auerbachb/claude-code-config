@@ -29,7 +29,8 @@
 #       --rest-of-day  here: until local midnight; away: until 08:00 local (overnight)
 #       --generation   the token `ask` printed; released after the write
 #   presence.sh ask [--afk]         claim the one dialog; see exit codes. --afk: the operator just said "afk"
-#                                   with no duration, so a live declaration or recent dismissal does not block
+#                                   with no duration, so a live declaration or recent dismissal does not block;
+#                                   refused (12) while he already reads as away (the unattended guard denies menus)
 #   presence.sh release --generation <token> [--dismissed]
 #                                   give the claim back; --dismissed (no answer) pauses `ask` for an hour
 #   presence.sh expire              a window ran out? Claim it once for all threads and print what to do.
@@ -412,10 +413,18 @@ ask_blocker() {
   local j state expired dis n
   # --afk (issue #2418): the operator just said "afk" in chat with no duration. He asked to change his
   # declaration, so neither a live one (12) nor a recent dismissal (13) blocks this one question;
-  # the one-asker claim still does.
-  [ "$ASK_AFK" -eq 1 ] && return 0
+  # the one-asker claim still does. While he already reads as away, unattended mode is armed and its
+  # guard denies every menu, so the question could never reach him: refuse (12) and let the caller
+  # keep the stored window instead of granting a claim nobody can answer.
   n=$(now)
   j=$(effective_json)
+  if [ "$ASK_AFK" -eq 1 ]; then
+    if [ "$(printf '%s' "$j" | "$JQ" -r '.away == true')" = true ]; then
+      status_line "$j"
+      return 12
+    fi
+    return 0
+  fi
   state=$(printf '%s' "$j" | "$JQ" -r '.state')
   expired=$(printf '%s' "$j" | "$JQ" -r '.expired')
   if [ "$state" != unset ] && [ "$expired" != true ]; then

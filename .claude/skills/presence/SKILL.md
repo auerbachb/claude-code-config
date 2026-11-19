@@ -85,7 +85,7 @@ AFK_FLAGS=$("$PRESENCE_SH" afk-parse --by operator-message -- "$OPERATOR_WORDS")
 | Exit | Do |
 |---|---|
 | 0 | **Ask now**, then `set away --by operator-message $AFK_FLAGS` (`--for 30m`, `--rest-of-day`, `--open-ended`) |
-| 4 | No readable duration: `ask --afk` (he just asked to change it, so a live declaration or recent dismissal does not block). Exit 0: put only its **For how long?** question in the **Ask now** menu (same call, so still one round) and store it with `set away --by operator-dialog … --generation <token>`; dismissed: `release --generation <token> --dismissed`, then `set away --by operator-message --for 2h` (the recommended option) and say so in one line. Exit 10: another thread holds the dialog; run **Ask now** without the duration question, write nothing, and let that dialog store his answer. Exit 20: `set away --by operator-message --for 2h` and say so in one line |
+| 4 | No readable duration: `ask --afk` (he just asked to change it, so a live declaration or recent dismissal does not block). Exit 0: put only its **For how long?** question in the **Ask now** menu (same call, so still one round) and store it with `set away --by operator-dialog … --generation <token>`; dismissed: `release --generation <token> --dismissed`, then `set away --by operator-message --for 2h` (the recommended option) and say so in one line. Exit 12: he already reads as away, so unattended mode is armed and its guard would deny the menu: write nothing, keep the stored window, and say so in one line (`Already away until <time>; say /afk <duration> to change it.`). Exit 10: another thread holds the dialog; run **Ask now** without the duration question, write nothing, and let that dialog store his answer. Exit 20: `set away --by operator-message --for 2h` and say so in one line |
 | 3 | Laptop wording: **Closing the laptop** |
 | 5 | Words from an issue, PR or task prompt: print the line it printed, set nothing |
 | 1 | Not an afk message: nothing here |
@@ -96,7 +96,7 @@ Questions the next hour will raise are often knowable now. Before `set away` (un
 denies menus once it is armed), take one bounded round:
 
 1. **Collect** what in-flight and queued work is known to need from him: open or parked steps,
-   unresolved saved questions (`unattended.sh digest`), pending approvals (a paid review, a merge
+   unresolved saved questions in every repo (`unattended.sh digest --all`: presence is global, the question files are per repo), pending approvals (a paid review, a merge
    only a human can run such as `/admin-merge`'s protection shape, a sign-in). Message each running
    sub-agent and linked session once: "decisions you expect to need while he is away, one line
    each with the recommended option, reply within 2 minutes". Wait at most **2 minutes** in total;
@@ -105,6 +105,8 @@ denies menus once it is armed), take one bounded round:
    **For how long?** question, that question alone is the menu).
 3. **Ask** in one `AskUserQuestion` call: at most four questions in all, recommended option first in
    each, the most consequential first. Any beyond four are recorded as usual after away is set.
+   If unattended mode is already armed (`unattended.sh status`), open no menu (`human-queue.md`
+   §Unattended): record each question with `unattended.sh record` and take its recommended option.
 4. **Record each answer where the work reads it**, then apply it after he leaves without asking
    again: `unattended.sh record --question … --recommended …` then `unattended.sh answer U-<n>
    --answer … --by operator`; a comment on the issue or PR it concerns (PRs he authored only,
