@@ -463,9 +463,16 @@ cmd_run() {
     # Read after the store answered: a task list that cannot be read never
     # hides the Decisions and Reviews (hq_owner_tasks_summary returns 0).
     hq_owner_tasks_summary tasks_obj tasks_text
-    if [ "$json" -eq 1 ]; then
+    if [ "$json" -eq 1 ] && command -v jq >/dev/null 2>&1; then
       out=$(printf '%s' "$out" | jq -c --argjson t "$tasks_obj" '. + {tasks: $t}') \
         || hq_die_error "checkin get: could not add the task count to the store's JSON"
+    elif [ "$json" -eq 1 ]; then
+      # No jq: the store's one JSON object, its closing brace replaced by the
+      # tasks member, so the check-in still prints (tasks_obj says why).
+      case "$out" in
+        *'}') out="${out%\}},\"tasks\":$tasks_obj}" ;;
+        *) hq_die_error "checkin get: the store's JSON did not end in an object" ;;
+      esac
     else
       out="$out · $tasks_text"
     fi

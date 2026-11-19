@@ -87,6 +87,12 @@ cmd_run() {
   if ! hq_owner_tasks_read tasks reason; then
     if [ "$json" -eq 1 ] && command -v jq >/dev/null 2>&1; then
       jq -cn --arg r "$reason" '{readable: false, reason: $r, count: null, repos: null, tasks: []}'
+    elif [ "$json" -eq 1 ]; then
+      # No jq (the only reason the read fails before running the script): the
+      # same object, its reason escaped by hand.
+      local r="${reason//\\/\\\\}"
+      r="${r//\"/\\\"}"
+      printf '{"readable":false,"reason":"%s","count":null,"repos":null,"tasks":[]}\n' "$r"
     fi
     hq_die_error "tasks: the task list could not be read ($reason)"
   fi

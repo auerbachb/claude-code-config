@@ -18,6 +18,8 @@
 #               object; a task read failure still exits 0 with the store's
 #               output and says the list could not be read; `set`/`due
 #               --tasks` exit 4 before connecting
+#   no jq       `tasks --json` still prints readable false, and `checkin get
+#               --tasks --json` still prints the store's JSON with tasks unreadable
 #   desk.jq     checkin_card's "Waiting now" line with the counts, with an
 #               unreadable list, and unchanged without them
 #   skill       tasks.md's anchored block run as written against the stub
@@ -278,6 +280,34 @@ for SH in $SHELLS; do
   cget "$SH" "$H_SW" two --json
   check "[$SH] without --tasks: owner-task.sh is not called" "$RC:$(stub_calls)" "0:"
   check "[$SH] without --tasks: no tasks field" "$(printf '%s' "$OUT" | jq -c 'has("tasks")')" "false"
+done
+
+# ------------------------------------------------- no jq on PATH
+printf '== no jq\n'
+# A PATH holding every command on the current PATH except jq (first one wins,
+# as on the real PATH), so both commands' no-jq paths run as shipped.
+NOJQ="$TMP/nojq-bin"
+mkdir -p "$NOJQ"
+IFS=: read -r -a HQ_T_PATH_DIRS <<<"$PATH"
+for d in "${HQ_T_PATH_DIRS[@]}"; do
+  [ -d "$d" ] || continue
+  for f in "$d"/*; do
+    n=${f##*/}
+    if [ "$n" != jq ] && [ -x "$f" ] && [ ! -e "$NOJQ/$n" ]; then ln -s "$f" "$NOJQ/$n"; fi
+  done
+done
+for SH in $SHELLS; do
+  RC=0
+  (cd "$CWD_EMPTY" && env PATH="$NOJQ" HOME="$H_SW" STUB_MODE=two HUMAN_QUEUE_DATABASE_URL="$BLACKHOLE_URL" \
+     HUMAN_QUEUE_PSQL="$NEVER_PSQL" "$SH" "$HQ_T_CLI" tasks --json >"$TMP/out" 2>"$TMP/err" </dev/null) || RC=$?
+  check "[$SH] no jq: tasks --json still prints readable false, exit 1" \
+    "$RC:$(jq -c '[.readable, .reason, .count, .tasks]' "$TMP/out")" '1:[false,"jq is not installed",null,[]]'
+  RC=0
+  (cd "$CWD_EMPTY" && env PATH="$NOJQ" HOME="$H_SW" STUB_MODE=two HUMAN_QUEUE_DATABASE_URL="$URL" \
+     HUMAN_QUEUE_PSQL="$PSQL" "$SH" "$HQ_T_CLI" checkin get --tasks --json >"$TMP/out" 2>"$TMP/err" </dev/null) || RC=$?
+  check "[$SH] no jq: checkin get --tasks --json still prints, tasks unreadable" \
+    "$RC:$(jq -c '[.tasks, .unreviewed]' "$TMP/out")" \
+    '0:[{"readable":false,"open":null,"reason":"jq is not installed"},18]'
 done
 
 # ------------------------------------------------------------------ desk.jq
