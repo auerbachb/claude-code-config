@@ -76,7 +76,7 @@ The two skills carry the same two lines. `lean-orchestrator-lists.test.sh` keeps
 ### /pm
 
 <!-- lean-orchestrator:pm -->
-Parent-run: 0c, 2, 3.1, 3.4, 3.5
+Parent-run: 0c, 0d, 2, 3.1, 3.4, 3.5
 Handed off: 0, 0a, 0b, 1, 1A, 1B, 1C, 1D, 2D, 3.2, 3.3
 <!-- /lean-orchestrator:pm -->
 

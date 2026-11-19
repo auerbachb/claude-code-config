@@ -25,7 +25,7 @@ Maintain a state table in the conversation. Update it as work progresses:
 - `Chip offered` — a chip was spawned for this thread-prompt issue (criterion 1/2 too-big, or explicitly requested) and is waiting on a click (chip mode).
 - `Prompt generated` — a full prompt block was printed for the user to paste (thread-prompt issue: fallback mode, a failed spawn, or an explicit prompt request).
 - `Active` — a separate thread is running for this issue.
-- `Tracking` — a decomposed criterion-3 **parent** (#1193). It runs nothing itself and is never claimed, launched, or offered; its Status carries the child range and the merged count. It leaves the table once its last child merges and `/subagent`'s Phase C Completion closes it.
+- `Tracking` — a decomposed criterion-3 **parent** (#1193). It runs nothing itself and is never claimed, launched, or offered; its Status carries the child range and the merged count. It leaves the table once its last child merges and `/subagent`'s Phase C Completion closes it. The epic named by `/pm epic #N` is a `Tracking` row too (Status `Epic of #a–#z (m/k closed)`), closed by `shared:epic`'s Completion block once every child reads closed.
 
 **`Tracking` is the one non-terminal row that is not in-flight work.** `chip-launching.md` reads this table's non-terminal rows as `IN_FLIGHT`; a parent holds no pipeline and no slot, so **exclude `Tracking` rows from that count** — its children are already counted individually, and counting the parent too would bill one chain twice against both the `CEILING` pipeline ceiling and the repo-wide cap.
 
