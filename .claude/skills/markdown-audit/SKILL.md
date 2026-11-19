@@ -42,6 +42,10 @@ live in `references/levels.md`; read it only when building agent briefs
 | `… --from <level>` | lowers or raises the start (`--from 1` for a full repo-wide run) |
 | `… --no-file` | report only; skip the filing gate |
 
+Naming a file or folder is the request the issue asked for before levels 1–4
+run; a repo-wide run stays at 5–7 unless `--from` asks for more. That reading
+is an owner-reversible decision recorded in the PR that added this skill.
+
 A level is a number `1`–`7` or a name from the table. `--from` above
 `--stop-at`, an unknown level, or a repo-wide `--stop-at` below 5 without
 `--from` stops with an error before anything runs.
@@ -204,5 +208,7 @@ and the report path. Then:
 ## Exit criteria
 
 STOP after the first of: a blocking error in Steps 1–5, the report under
-`--no-file` or unattended, or the filing outcome. A successful run ends with
-`verify-unchanged` printing `UNCHANGED`.
+`--no-file` or unattended, or the filing outcome. Once Step 1 has written
+`before.json`, every stop — a Step 3 or Step 4 error included — runs Step 5
+first and reports its result. A successful run ends with `verify-unchanged`
+printing `UNCHANGED`.
