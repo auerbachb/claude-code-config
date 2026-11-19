@@ -23,6 +23,12 @@
 #   supplied HEAD. For an override, publish the complete final gate first.
 #   Reviewed merges clear unused override snapshots before merging. Both paths
 #   hold the same repository/PR snapshot lock through the GitHub merge request.
+#   Routing: a met gate with `no_review_override.applied == true` goes to
+#   --gate-json; a met normal (approved) gate on CLEAN goes to --sha
+#   <head_sha>. A complete normal met gate passed to --gate-json exits 9 and
+#   merges nothing. The ledger never checks review, CI, or acceptance
+#   criteria itself. Decision
+#   table: docs/merge-gate-sequencing.md#which-merge-helper-for-which-gate
 # snapshot --discard
 #   Remove unused evidence only after GitHub confirms the PR is not merged.
 #
@@ -57,6 +63,11 @@
 # EXIT CODES (session-state.sh convention)
 #   0 ok · 2 usage · 4 refused / invalid input / no such entry · 5 write failure
 #   6 lock timeout · 7 no snapshot · 8 HOME unset
+#   9 (merge --gate-json only) the gate is a met normal gate, not an override;
+#     nothing merged, no snapshot written — rerun as merge --sha <head_sha>
+#   merge --gate-json: 1 when the GitHub merge request fails (snapshot retained;
+#     check the PR state first, GitHub may have merged it).
+#   merge --sha: returns the `gh pr merge` status unchanged.
 #
 # Mechanism: .claude/reference/no-review-override.md
 
@@ -230,14 +241,31 @@ if [[ "$CMD" == snapshot || "$CMD" == merge || "$FROM_SNAPSHOT" == 1 ]]; then
   else
     cat "$GATE_SRC" >"$SNAPSHOT_TMP" || die 4 "cannot copy $GATE_SRC"
   fi
-  jq -se 'length == 1 and (.[0] |
+  if ! jq -se 'length == 1 and (.[0] |
     type == "object" and .met == true and .no_review_override.applied == true
     and (.head_sha | type == "string" and test("^[0-9a-f]{40}$"))
     and (.missing | type == "array" and length == 0)
     and has("required_contexts")
     and (.merge_state == "CLEAN" or (.merge_state == "UNSTABLE"
         and (.no_review_override.excluded_reviewer_checks | type == "array" and length > 0))))' \
-    "$SNAPSHOT_TMP" >/dev/null 2>&1 || die 4 "snapshot requires the full authorizing override gate JSON"
+    "$SNAPSHOT_TMP" >/dev/null 2>&1; then
+    # A complete, normal (reviewed) met gate is not override evidence: refuse it
+    # with a distinct exit so a caller routes it to `merge --sha` (issue #2432).
+    # Anything less certain keeps the generic fail-closed exit 4.
+    if jq -se 'length == 1 and (.[0] |
+      type == "object" and .met == true
+      and (.missing | type == "array" and length == 0)
+      and (.head_sha | type == "string" and test("^[0-9a-f]{40}$"))
+      and has("no_review_override")
+      and (.no_review_override == null
+           or (.no_review_override | type == "object" and .applied == false))
+      and .path != "no-review-override")' "$SNAPSHOT_TMP" >/dev/null 2>&1; then
+      verify_snapshot_identity "$SNAPSHOT_TMP"
+      NORMAL_HEAD="$(jq -er '.head_sha' "$SNAPSHOT_TMP")" || die 4 "cannot read gate HEAD"
+      die 9 "gate JSON for $REPO PR #$PR is a normal (non-override) met gate; nothing merged. --gate-json accepts only no-review override evidence. Use the reviewed path: unreviewed-merge-ledger.sh merge --pr $PR --repo $REPO --sha $NORMAL_HEAD"
+    fi
+    die 4 "snapshot requires the full authorizing override gate JSON"
+  fi
   verify_snapshot_identity "$SNAPSHOT_TMP"
   SNAPSHOT_HEAD="$(jq -er .head_sha "$SNAPSHOT_TMP")" || die 4 "cannot read snapshot HEAD"
   ALLOW_UNSTABLE="$(jq -r '.merge_state == "UNSTABLE"' "$SNAPSHOT_TMP")" || die 4 "cannot read snapshot merge state"

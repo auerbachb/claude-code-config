@@ -174,7 +174,7 @@ CURRENT_REPO="${CURRENT_REPO%/pull/$PR_NUM}"
 LEDGER_SH=$(resolve_script unreviewed-merge-ledger.sh) || exit 5
 ```
 
-For a reviewed merge, use `"$LEDGER_SH" merge --pr "$PR_NUM" --repo "$CURRENT_REPO" --sha "$AC_VERIFIED_HEAD"`.
+For a reviewed merge, use `"$LEDGER_SH" merge --pr "$PR_NUM" --repo "$CURRENT_REPO" --sha "$AC_VERIFIED_HEAD"`. Exit `9` from the ledger's `merge --gate-json` means the gate is a normal approved gate, not an override, and nothing merged — use this `--sha` route. Gate-shape-to-helper table: `.claude/scripts/docs/merge-gate-sequencing.md` §Which merge helper for which gate (issue #2432).
 
 **No-review override (issue #1899).** When `.no_review_override.applied == true`, replace the plain merge above. First **re-run `merge-gate.sh` into the gate JSON** after AC verification. Require a met override and the refreshed merge state permitted in [wrap Step 2.4](../wrap/SKILL.md#step-24-squash-merge). Execute its `wrap-no-review-override-merge` boundary with the full refreshed JSON. Once GitHub confirms the merge, execute `wrap-record-no-review-merge` and relay its report suffix. If recording fails, retain the snapshot and retry through /wrap's already-merged entry. See [the ledger contract](../../reference/no-review-override.md).
 

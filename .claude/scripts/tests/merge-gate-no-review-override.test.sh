@@ -18,6 +18,8 @@
 # Issue #1939: a CodeRabbit rate-limit refusal (neutral run titled "Review rate
 #   limited" and/or a "Review limit reached" comment) is not a verdict; a
 #   reviewed neutral run and a pre-push notice still leave a verdict on HEAD.
+# Issue #2432: a met normal gate sent to the ledger's merge --gate-json exits 9
+#   with the --sha route named and nothing merged; malformed input keeps exit 4.
 #
 # Built on tests/lib/merge-gate-test-fixtures.sh without editing it: its fake gh
 # is kept as gh.base, and a wrapper answers the PR-metadata, timeline,
@@ -76,6 +78,7 @@ case "$ARGS" in
     jq -r "$(jq_arg "$@")" <<<"${FAKE_PR_FILES_JSON:-[]}"
     exit 0 ;;
   *" pr merge 1 --repo solo/repo --squash --match-head-commit "*)
+    [[ -n "${FAKE_MERGE_LOG:-}" ]] && printf '%s\n' "$*" >>"$FAKE_MERGE_LOG"
     [[ -n "${FAKE_NRO_STATE_PATH:-}" && "${*: -1}" == "${FAKE_MERGED_HEAD:-deadbeefcafedeadbeefcafedeadbeefcafedead}" ]] || exit 1
     [[ "$(cat "$FAKE_NRO_STATE_PATH")" == OPEN && "${FAKE_NRO_REFUSE:-0}" == 0 ]] || exit 1
     snapshot="$HOME/.claude/unreviewed-merge-snapshots/solo/repo/pr-1.json"
@@ -147,7 +150,11 @@ has_missing() { printf '%s' "$OUT" | jq -e --arg s "$1" '[.missing[]? | select(c
 reset() { unset FAKE_REVIEWS FAKE_PR_COMMENTS FAKE_ISSUE_COMMENTS FAKE_PM_CONFIG FAKE_THREADS \
   FAKE_DRAFT FAKE_TIMELINE FAKE_TIMELINE_FAIL FAKE_PULL_FAIL FAKE_PR_OVERRIDE FAKE_PR_FILES_JSON \
   FAKE_MERGED_STATE FAKE_MERGED_HEAD FAKE_LABEL_FAIL FAKE_RUNS FAKE_PUSH_AT \
-  FAKE_CREATED_AT FAKE_BRANCH_JSON FAKE_BRANCH_PROTECTED FAKE_REQUIRED_STATUS_CHECKS FAKE_COMMIT_STATUSES; }
+  FAKE_CREATED_AT FAKE_BRANCH_JSON FAKE_BRANCH_PROTECTED FAKE_REQUIRED_STATUS_CHECKS FAKE_COMMIT_STATUSES
+  : >"$FAKE_MERGE_LOG"; }
+# Every fake `gh pr merge` call lands here, so "nothing merged" is assertable.
+export FAKE_MERGE_LOG="$TMP/merge-calls.log"
+merge_calls() { [[ -s "$FAKE_MERGE_LOG" ]] && wc -l <"$FAKE_MERGE_LOG" | tr -d ' ' || echo 0; }
 LEDGER_FILE="$HOME/.claude/unreviewed-merges.json"
 ledger_rows() { [[ -s "$LEDGER_FILE" ]] && jq '.entries | length' "$LEDGER_FILE" || echo 0; }
 record() { printf '%s' "$OUT" | PATH="$BIN:$PATH" "$LEDGER_SUT" record --pr 1 --repo solo/repo --gate-json - 2>"$TMP/ledger.err"; }
@@ -614,6 +621,68 @@ MERGE_REPO_BLOCK=$(extract_skill_bash "$SKILLS_DIR/merge/SKILL.md" merge-ledger-
 check_eq "0" "$?" "reviewed merge binds its repo and clears unused evidence"
 test ! -e "$SNAPSHOT_PATH"; check_eq "0" "$?" "reviewed merge leaves no override snapshot"
 unset FAKE_NRO_STATE_PATH FAKE_MERGED_HEAD FAKE_NRO_EXPECT_REVIEWED
+
+echo "=== Issue #2432: a met normal gate sent to merge --gate-json exits 9, merges nothing ==="
+reset; rm -f "$LEDGER_FILE" "$SNAPSHOT_PATH"
+export FAKE_NRO_STATE_PATH="$TMP/pr-state"
+printf '%s\n' OPEN >"$FAKE_NRO_STATE_PATH"
+FAKE_REVIEWS="$(jq -cn --arg sha "$HEAD_SHA" --arg t "$(ago 480)" \
+  '[{user:{login:"coderabbitai[bot]",type:"Bot"}, commit_id:$sha, state:"APPROVED",
+     body:"Actionable comments posted: 0. Reviewed 3 files; behaviour preserved.", submitted_at:$t}]')"
+run_gate "$GREEN_11"
+check_eq "true cr false" "$(j '"\(.met) \(.path) \(.no_review_override.applied)"')" "#2432 control: a real approval gives a met normal gate"
+NORMAL_GATE_FILE="$TMP/normal-gate.json"
+printf '%s' "$OUT" >"$NORMAL_GATE_FILE"
+ledger_merge_gate() { # $1 = gate JSON on stdin ("-") or a file path; stdin from $2 when "-"
+  if [[ "$1" == - ]]; then
+    printf '%s' "$2" | PATH="$BIN:$PATH" "$LEDGER_SUT" merge --pr 1 --repo solo/repo --gate-json - 2>"$TMP/ledger.err"
+  else
+    PATH="$BIN:$PATH" "$LEDGER_SUT" merge --pr 1 --repo solo/repo --gate-json "$1" 2>"$TMP/ledger.err"
+  fi
+}
+assert_nothing_merged() { # $1 = case label
+  check_eq "OPEN" "$(cat "$FAKE_NRO_STATE_PATH")" "$1: PR stays open"
+  check_eq "0" "$(merge_calls)" "$1: no gh pr merge call"
+  check_eq "no" "$([[ -e "$SNAPSHOT_PATH" ]] && echo yes || echo no)" "$1: no snapshot written"
+  check_eq "0" "$(ledger_rows)" "$1: no ledger row"
+}
+for src in file stdin; do
+  : >"$FAKE_MERGE_LOG"
+  if [[ "$src" == file ]]; then ledger_merge_gate "$NORMAL_GATE_FILE"; else ledger_merge_gate - "$OUT"; fi
+  check_eq "9" "$?" "#2432 $src: a met normal gate exits 9"
+  check_eq "yes" "$(grep -qF -- "--sha $HEAD_SHA" "$TMP/ledger.err" && echo yes || echo no)" "#2432 $src: message names the --sha route with the gate HEAD"
+  assert_nothing_merged "#2432 $src"
+done
+: >"$FAKE_MERGE_LOG"
+ledger_merge_gate - "$(j '.no_review_override = null')"
+check_eq "9" "$?" "#2432 null override (helper failure) is still a normal gate"
+assert_nothing_merged "#2432 null override"
+for neg in 'del(.no_review_override)' '.met = false' '.missing = ["x"]'; do
+  : >"$FAKE_MERGE_LOG"
+  ledger_merge_gate - "$(j "$neg")"
+  check_eq "4" "$?" "#2432 $neg keeps the generic refusal"
+  check_eq "yes" "$(grep -qF 'snapshot requires the full authorizing override gate JSON' "$TMP/ledger.err" && echo yes || echo no)" "#2432 $neg: generic message"
+  assert_nothing_merged "#2432 $neg"
+done
+: >"$FAKE_MERGE_LOG"
+ledger_merge_gate - "$(printf '%s\n%s\n' "$OUT" "$OUT")"
+check_eq "4" "$?" "#2432 two concatenated gate documents keep exit 4"
+assert_nothing_merged "#2432 two documents"
+for mismatch in '.pr_number = 2' '.owner_repo = "other/repo"'; do
+  : >"$FAKE_MERGE_LOG"
+  ledger_merge_gate - "$(j "$mismatch")"
+  check_eq "4" "$?" "#2432 $mismatch: identity mismatch keeps exit 4"
+  check_eq "yes" "$(grep -qF 'gate JSON does not match solo/repo PR #1' "$TMP/ledger.err" && echo yes || echo no)" "#2432 $mismatch: identity-mismatch message"
+  assert_nothing_merged "#2432 $mismatch"
+done
+: >"$FAKE_MERGE_LOG"
+export FAKE_NRO_EXPECT_REVIEWED=1
+PATH="$BIN:$PATH" "$LEDGER_SUT" merge --pr 1 --repo solo/repo --sha "$(j .head_sha)" 2>"$TMP/ledger.err"
+check_eq "0" "$?" "#2432 follow-through: the named --sha route merges"
+check_eq "MERGED" "$(cat "$FAKE_NRO_STATE_PATH")" "#2432 follow-through: PR merged"
+check_eq "1" "$(merge_calls)" "#2432 follow-through: exactly one merge call"
+check_eq "0" "$(ledger_rows)" "#2432 follow-through: a reviewed merge writes no ledger row"
+unset FAKE_NRO_STATE_PATH FAKE_NRO_EXPECT_REVIEWED
 
 echo "=== #2256: a request skip on HEAD never makes a failing-CI HEAD merge-ready ==="
 reset
