@@ -55,6 +55,12 @@ FALLBACK_ATTACHED = re.compile(r"-[bBcC](.+)$|--(?:create|force-create)=(.+)$")
 
 BASE = os.getcwd()
 recs = []
+CLAIMS = set()
+HOLDER_VAR = "CLAUDE_CLAIM_HOLDER"
+# A literal holder: printable, no expansion characters. shlex drops quote
+# provenance, so anything carrying $ or a backtick is treated as dynamic.
+HOLDER_OK = re.compile(r"^[^\x00-\x1f\x7f$`]{1,512}$")
+REPO_OK = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 
 
 def attached(a, flags):
@@ -75,19 +81,46 @@ def join(base, p):
     return os.path.normpath(os.path.join(base, p))
 
 
-def add_branch(dirv, nm):
+def add_branch(dirv, nm, holder="-", repo="-"):
     # Dynamic names are not evidence; only literal issue-N branch names count.
     if DYN_RE.search(nm):
         return
     m = ISSUE_NAME.search(nm)
     if not m:
         return
-    recs.append(("BRANCH", dirv, m.group(2), nm))
+    recs.append(("BRANCH", dirv, m.group(2), nm, holder, repo))
+
+
+def holder_value(tok):
+    # The value of a CLAUDE_CLAIM_HOLDER=VALUE token: the literal, or "" when it
+    # is dynamic or unusable (present, but never a candidate).
+    v = tok[len(HOLDER_VAR) + 1:]
+    return v if HOLDER_OK.match(v) else ""
+
+
+def seg_holder(seg, i, exported):
+    # The holder the command word at seg[i] runs with: the nearest literal
+    # prefix assignment (also after `env`), else the exported value.
+    found = None
+    for tok in seg[:i]:
+        if tok.startswith(HOLDER_VAR + "="):
+            found = holder_value(tok)
+    if found is None:
+        found = exported or ""
+    return found or "-"
+
+
+def repo_value(v):
+    return v if (v and REPO_OK.match(v)) else "-"
 
 
 def prep(cmd):
     s = cmd.replace("\r\n", "\n").replace("\\\n", "")
     s = HEREDOC.sub(lambda m: "<< " + m.group(2) + m.group(3), s)
+    # A command substitution is one dynamic word, not tokens: otherwise its
+    # parentheses would hide the command word that follows a VAR=$(...) prefix.
+    s = re.sub(r"\$\([^()]*\)", "$DYN", s)
+    s = re.sub(r"`[^`]*`", "$DYN", s)
     return "\n".join(l for l in s.split("\n") if not re.match(r"\s*#", l))
 
 
@@ -111,13 +144,27 @@ def analyse_full(src):
     segs.append(cur)
     dir_t = BASE
     switch_targets = []
+    exported = None
     for seg in segs:
+        if seg and seg[0] == "export":
+            for tok in seg[1:]:
+                if tok.startswith(HOLDER_VAR + "="):
+                    exported = holder_value(tok)
+        elif seg and seg[0] == "unset" and HOLDER_VAR in seg[1:]:
+            exported = None
+        for k, tok in enumerate(seg):
+            if os.path.basename(tok) == "issue-claim.sh" and "--claim" in seg[k + 1:]:
+                for a in seg[k + 1:]:
+                    if re.match(r"^[1-9][0-9]*$", a):
+                        CLAIMS.add(a)
+                        break
         if seg and seg[0] in ("cd", "pushd"):
             dir_t = join(dir_t, seg[1]) if len(seg) > 1 else "DYN"
         elif seg and seg[0] == "popd":
             dir_t = "DYN"
         for i, t in enumerate(seg):
             if os.path.basename(t) == "git" and cmd_pos(seg, i):
+                hold = seg_holder(seg, i, exported)
                 gdir = dir_t
                 j = i + 1
                 while j < len(seg) and seg[j].startswith("-"):
@@ -162,37 +209,56 @@ def analyse_full(src):
                     else:
                         names = []
                     for nm in names:
-                        add_branch(gdir, nm)
+                        add_branch(gdir, nm, hold)
                 elif sub in ("checkout", "switch"):
                     flags = CREATE_FLAGS[sub]
                     creating = False
                     for k, a in enumerate(rest):
                         if a in flags and k + 1 < len(rest):
                             creating = True
-                            add_branch(gdir, rest[k + 1])
+                            add_branch(gdir, rest[k + 1], hold)
                         elif attached(a, flags) is not None:
                             creating = True
-                            add_branch(gdir, attached(a, flags))
+                            add_branch(gdir, attached(a, flags), hold)
                     if not creating:
                         target = next((a for a in rest if not a.startswith("-")), None)
                         if target is not None:
                             switch_targets.append("DYN" if DYN_RE.search(target) else target)
-            if os.path.basename(t) == "gh" and cmd_pos(seg, i) and seg[i + 1:i + 3] == ["pr", "create"]:
-                args = seg[i + 3:]
+            if os.path.basename(t) == "gh" and cmd_pos(seg, i):
+                # gh's global -R/--repo may precede the subcommand.
+                j, target = i + 1, None
+                while j < len(seg) and seg[j].startswith("-"):
+                    if seg[j] in ("-R", "--repo") and j + 1 < len(seg):
+                        target = seg[j + 1]
+                        j += 2
+                    elif seg[j].startswith("--repo="):
+                        target = seg[j].split("=", 1)[1]
+                        j += 1
+                    else:
+                        j += 1
+                if seg[j:j + 2] != ["pr", "create"]:
+                    continue
+                args = seg[j + 2:]
                 head = None
                 for k, a in enumerate(args):
                     if a in ("--head", "-H") and k + 1 < len(args):
                         head = args[k + 1]
                     elif a.startswith("--head="):
                         head = a.split("=", 1)[1]
+                    elif a in ("--repo", "-R") and k + 1 < len(args):
+                        target = args[k + 1]
+                    elif a.startswith("--repo="):
+                        target = a.split("=", 1)[1]
+                hold = seg_holder(seg, i, exported)
+                repo = repo_value(target)
                 if head is not None:
-                    add_branch(dir_t, head.split(":", 1)[1] if ":" in head else head)
+                    add_branch(dir_t, head.split(":", 1)[1] if ":" in head else head, hold, repo)
                 elif switch_targets:
                     if "DYN" not in switch_targets:
                         for s in switch_targets:
-                            add_branch(dir_t, s)
+                            add_branch(dir_t, s, hold, repo)
                 else:
-                    recs.append(("CURRENT", dir_t))
+                    recs.append(("CURRENT", dir_t, "-", "-", hold, repo))
 
 
 def analyse_fallback(src):
@@ -243,7 +309,14 @@ def main():
         analyse_full(src)
     except Exception:
         recs[:] = []
+        CLAIMS.clear()
         analyse_fallback(src)
+    if not recs:
+        return
+    sid = d.get("session_id")
+    sid = sid if isinstance(sid, str) and HOLDER_OK.match(sid) else "-"
+    claims = ("," + ",".join(sorted(CLAIMS)) + ",") if CLAIMS else "-"
+    sys.stdout.write("META\t" + sid + "\t" + claims + "\n")
     seen = set()
     for r in recs:
         if r in seen:
@@ -273,11 +346,20 @@ def field(key):
     v = d.get(key)
     if not isinstance(v, str) or not v:
         return "-"
-    return v.replace("|", "/").replace("\n", " ").replace("\t", " ")
+    return "".join(c for c in v if ord(c) >= 32 and ord(c) != 127)
 
-sys.stdout.write("|".join([
+def flag(key):
+    v = d.get(key)
+    return "true" if v is True else ("false" if v is False else "-")
+
+# Unit separator: a non-whitespace IFS keeps empty fields positional and leaves
+# paths containing | intact.
+sys.stdout.write("\x1f".join([
     d["verdict"], field("repo"), field("claimant"),
     field("provider"), field("device"), field("label"),
+    flag("claimant_is_viewer"), flag("claimant_device_is_local"),
+    field("claimant_checkout"), field("claimant_checkout_holder_form"),
+    field("claimant_checkout_holder"),
 ]) + "\n")
 PYEOF
 
@@ -334,18 +416,24 @@ override_allows() {
   [ $((now - ts)) -ge 0 ] && [ $((now - ts)) -lt 14400 ]
 }
 
+valid_repo() {
+  [[ "$1" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]
+}
+
 # Verdict of one holder check, stored in V_*. Returns 0 on `mine` (allow), 1 on
 # any other verdict. A helper fault exits through fault().
 V_verdict=""; V_repo=""; V_claimant=""; V_prov=""; V_dev=""; V_label=""
+V_viewer=""; V_devlocal=""; V_checkout=""; V_form=""; V_ckholder=""
 
-check_holder() {  # n dir helper holder
-  local n=$1 work=$2 helper=$3 holder=$4
+check_holder() {  # n dir helper holder repo
+  local n=$1 work=$2 helper=$3 holder=$4 repo=$5
   local top key cdir cfile cts now out rc fields
   local -a harg=()
   if [ -n "$holder" ]; then harg=(--holder "$holder"); fi
+  if [ -n "$repo" ]; then harg+=(--repo "$repo"); fi
 
   top=$(git -C "$work" rev-parse --show-toplevel 2>/dev/null) || top=""
-  key="$top|$n|$holder"
+  key="$top|$repo|$n|$holder"
   cdir="${TMPDIR:-/tmp}/claude-issue-claim-guard-$(id -u)"
   cfile="$cdir/$(printf '%s' "$key" | cksum | awk '{print $1 "-" $2}')"
   if [ -n "$top" ] && [ -f "$cfile" ]; then
@@ -365,7 +453,8 @@ check_holder() {  # n dir helper holder
   esac
 
   fields=$(printf '%s' "$out" | python3 -c "$PY_VERDICT" "$n" 2>/dev/null) || fault "helper output for issue #$n was unreadable"
-  IFS='|' read -r V_verdict V_repo V_claimant V_prov V_dev V_label <<< "$fields"
+  IFS=$'\x1f' read -r V_verdict V_repo V_claimant V_prov V_dev V_label \
+    V_viewer V_devlocal V_checkout V_form V_ckholder <<< "$fields"
   [ -n "$V_verdict" ] || fault "helper gave no verdict for issue #$n"
 
   if [ "$V_verdict" = "mine" ]; then
@@ -377,84 +466,161 @@ check_holder() {  # n dir helper holder
   return 1
 }
 
-check_issue() {  # n dir branch
-  local n=$1 work=$2 br=$3
-  local helper ss key sh rc h state_failed=0
-  local -a cands=()
+# try_cand HOLDER: one deduplicated candidate check against the target repo.
+# Learns the repo from the first helper answer when no literal target exists.
+G_seen=""; G_repo=""; G_n=""; G_work=""; G_helper=""
+try_cand() {
+  local h=$1
+  case "$G_seen" in *$'\n'"$h"$'\n'*) return 1 ;; esac
+  G_seen="$G_seen$h"$'\n'
+  if check_holder "$G_n" "$G_work" "$G_helper" "$h" "$G_repo"; then
+    return 0
+  fi
+  if [ -z "$G_repo" ] && valid_repo "$V_repo"; then G_repo=$V_repo; fi
+  return 1
+}
+
+# shell_quote VALUE -> one single-quoted shell word.
+shell_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+check_issue() {  # n dir branch inline-holder target-repo
+  local n=$1 work=$2 br=$3 inline=$4 target=$5
+  local helper ss key sh rc state_failed=0 rcpt top rh k keys="" sid
+  local rshow rflag inclaim="" supplied="" note="" sep="" tok setarg lrepo
 
   helper=$(resolve_script issue-claim.sh "$work") || deny "GUARD FAILED: issue-claim.sh not found (checked all three paths) for branch $br, which names issue #$n. Its claim cannot be checked, so the branch must not be created. Run the plain-gh claim check in .claude/reference/agent-issue-claims-block.md by hand, and stop with a named reason if that cannot verify the claim."
 
-  # Candidate 1: the explicit holder from the environment.
+  G_seen=$'\n'; G_n=$n; G_work=$work; G_helper=$helper; G_repo=""
+  if [ "$target" != "-" ] && valid_repo "$target"; then G_repo=$target; fi
+
+  # Candidate 1: a literal CLAUDE_CLAIM_HOLDER on this command (prefix, env
+  # prefix, or an earlier export in the same command).
+  if [ "$inline" != "-" ]; then
+    supplied=1
+    try_cand "$inline" && return 0
+  fi
+  # Candidate 2: the hook environment's explicit holder.
   if [ -n "${CLAUDE_CLAIM_HOLDER:-}" ]; then
-    cands+=("$CLAUDE_CLAIM_HOLDER")
-  elif [ -n "${CLAUDE_SESSION_ID:-}" ]; then
-    cands+=("$CLAUDE_SESSION_ID")
+    try_cand "$CLAUDE_CLAIM_HOLDER" && return 0
+  fi
+  # Candidate 3: the session id (environment, else the hook payload's).
+  sid="${CLAUDE_SESSION_ID:-}"
+  if [ -z "$sid" ] && [ "$PAYLOAD_SESSION" != "-" ]; then sid=$PAYLOAD_SESSION; fi
+  if [ -n "$sid" ]; then
+    try_cand "$sid" && return 0
   fi
 
-  # Candidate 2: the holder recorded for this repo and issue in session state.
+  # Candidate 4: the holder recorded for this issue in session state, under the
+  # target repo's key and the checkout's implicit key.
   ss=$(resolve_script session-state.sh "$work") || ss=""
   if [ -z "$ss" ]; then
     state_failed=1
-  elif key=$(cd "$work" 2>/dev/null && "$ss" --repo-key 2>/dev/null); then
-    key=$(printf '%s' "$key" | tr 'A-Z' 'a-z')
-    if [ -n "$key" ] && [ "$key" != "_unknown" ]; then
-      sh=$(cd "$work" 2>/dev/null && "$ss" --get ".repos[\"$key\"].pipelines[\"$n\"].claim_holder" 2>/dev/null)
+  else
+    if [ -n "$G_repo" ]; then keys=$(printf '%s' "$G_repo" | tr 'A-Z' 'a-z'); fi
+    if key=$(cd "$work" 2>/dev/null && "$ss" --repo-key 2>/dev/null); then
+      key=$(printf '%s' "$key" | tr 'A-Z' 'a-z')
+      if [ -n "$key" ] && [ "$key" != "_unknown" ] && [ "$key" != "$keys" ]; then
+        keys="$keys${keys:+ }$key"
+      fi
+    else
+      state_failed=1
+    fi
+    for k in $keys; do
+      sh=$(cd "$work" 2>/dev/null && "$ss" --get ".repos[\"$k\"].pipelines[\"$n\"].claim_holder" 2>/dev/null)
       rc=$?
       if [ "$rc" -eq 0 ]; then
         case "$sh" in
           ""|null|_unknown) ;;
-          *) cands+=("$sh") ;;
+          *) try_cand "$sh" && return 0 ;;
         esac
       elif [ "$rc" -ne 3 ]; then
         state_failed=1
       fi
-    fi
-  else
-    state_failed=1
+    done
   fi
 
-  # Candidate 3: no explicit holder (the helper's own default). Checked last, so
-  # its verdict is the one reported when nothing reads mine.
-  cands+=("")
-
-  for h in "${cands[@]}"; do
-    if check_holder "$n" "$work" "$helper" "$h"; then
-      return 0
+  # Candidate 5: this worktree's Form A launch receipt. A missing or invalid
+  # receipt is no candidate, never a guard fault.
+  top=$(git -C "$work" rev-parse --show-toplevel 2>/dev/null) || top=""
+  if [ -n "$G_repo" ] && [ -n "$top" ] && rcpt=$(resolve_script chip-claim-receipt.sh "$work"); then
+    if rh=$("$rcpt" read "$top" "$G_repo" "$n" 2>/dev/null) && [ -n "$rh" ]; then
+      try_cand "$rh" && return 0
     fi
-  done
+  fi
+
+  # Candidate 6: no explicit holder (the helper's own default). Always checked
+  # last, so its verdict and evidence are the ones reported when nothing reads
+  # mine.
+  G_seen=$'\n'
+  try_cand "" && return 0
 
   if [ "$state_failed" = "1" ]; then
     fault "the session-state holder for issue #$n could not be read, and no holder checked as mine (last verdict: $V_verdict)"
   fi
 
+  # Recovery text names the target repo only when it is known: never --repo -.
+  rshow=${G_repo:-repository not resolved}
+  rflag=""
+  if [ -n "$G_repo" ]; then rflag=" --repo $G_repo"; fi
+  case "$CMD_CLAIMS" in *",$n,"*) inclaim=1 ;; esac
+  if [ -n "$supplied" ]; then
+    note=" The CLAUDE_CLAIM_HOLDER value supplied in this command does not match the live claim."
+  fi
+
   case "$V_verdict" in
     claimed)
-      if override_allows "$V_repo" "$n"; then return 0; fi
-      deny "BLOCKED: issue #$n ($V_repo) is claimed by another holder: $(show "$V_claimant"), provider $(show "$V_prov"), device $(show "$V_dev"), label $(show "$V_label"). Do not start branch $br. The claim command is $helper $n --claim, and it will refuse while the claim is live. Only the user can allow starting it, by naming issue #$n in chat."
+      if override_allows "$G_repo" "$n"; then return 0; fi
+      # Own claim, made from a sibling checkout: its default holder is derived
+      # locally by the helper (never copied from the GitHub marker).
+      if [ "$V_checkout" != "-" ] && [ "$V_ckholder" != "-" ]; then
+        tok=$(shell_quote "$V_ckholder")
+        setarg=""
+        if [ -n "$G_repo" ] && [ -n "$ss" ]; then
+          lrepo=$(printf '%s' "$G_repo" | tr 'A-Z' 'a-z')
+          setarg=".repos[\"$lrepo\"].pipelines[\"$n\"].claim_holder=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$V_ckholder" 2>/dev/null)"
+          setarg=" Or record it once for this pipeline: $ss --repo $G_repo --set $(shell_quote "$setarg"), then retry the command unchanged."
+        fi
+        deny "BLOCKED: your own claim may not be visible from this checkout. Issue #$n ($rshow) is claimed by this account ($(show "$V_claimant")) under the checkout-default holder of $V_checkout, not of this checkout.$note If this worker made that claim from $V_checkout, the claim is its own: rerun the same command with this prefix: export CLAUDE_CLAIM_HOLDER=$tok && <the same command>.$setarg If this worker did not claim from $V_checkout, another worker holds issue #$n: stop and do not start branch $br. Only the user can allow starting it then, by naming issue #$n in chat."
+      fi
+      # Own account and device, but a holder no local checkout derives.
+      if [ "$V_viewer" = "true" ] && [ "$V_devlocal" = "true" ]; then
+        deny "BLOCKED: issue #$n ($rshow) is claimed by this account ($(show "$V_claimant")) on this device ($(show "$V_dev")), under a holder this guard cannot match from this checkout.$note If the claim is this worker's own, rerun the same command with this prefix: export CLAUDE_CLAIM_HOLDER='<your captured holder>' && <the same command>. The holder must come from your own --claim (its --holder, CLAUDE_CLAIM_HOLDER, or the handoff that launched you), never from the GitHub marker. Verify it first with: $helper $n --check --holder '<your captured holder>'$rflag (it must answer mine). If it is not yours, another worker holds it: do not start branch $br. Only the user can allow starting it, by naming issue #$n in chat."
+      fi
+      deny "BLOCKED: issue #$n ($rshow) is claimed by another holder: $(show "$V_claimant"), provider $(show "$V_prov"), device $(show "$V_dev"), label $(show "$V_label"). Do not start branch $br. The claim command is $helper $n --claim$rflag, and it will refuse while the claim is live.$note Only the user can allow starting it, by naming issue #$n in chat."
       ;;
     unknown)
-      deny "BLOCKED: the claim state of issue #$n ($V_repo) is unknown, so it is not permission to start. Do not start branch $br. Re-check with $helper $n --check, and claim with $helper $n --claim once it reads unclaimed or mine."
+      deny "BLOCKED: the claim state of issue #$n ($rshow) is unknown, so it is not permission to start. Do not start branch $br. Re-check with $helper $n --check$rflag, and claim with $helper $n --claim$rflag once it reads unclaimed or mine."
       ;;
     unclaimed|stale)
-      deny "BLOCKED: issue #$n ($V_repo) has no live claim for this session (verdict: $V_verdict). Before branch $br is created, claim it with: $helper $n --claim${V_repo:+ --repo $V_repo}. A stale claim is taken over there with a warning. Then retry."
+      if [ -n "$inclaim" ]; then
+        sep=" The claim in this same command does not count: this guard checks before any part of a command runs. Run $helper $n --claim$rflag as a separate command first, then retry the rest."
+      fi
+      deny "BLOCKED: issue #$n ($rshow) has no live claim for this session (verdict: $V_verdict). Before branch $br is created, claim it with: $helper $n --claim$rflag. A stale claim is taken over there with a warning. Then retry.$sep"
       ;;
   esac
   fault "unexpected verdict $V_verdict for issue #$n"
 }
 
+PAYLOAD_SESSION="-"
+CMD_CLAIMS="-"
+
 main() {
-  local input parsed kind dirv n name br key checked="" line
+  local input parsed kind dirv n name holder trepo br key checked=""
 
   input=$(cat) || exit 0
   parsed=$(printf '%s' "$input" | python3 -c "$PY_PARSE" 2>/dev/null) || exit 0
   [ -n "$parsed" ] || exit 0
 
-  while IFS=$'\t' read -r kind dirv n name; do
+  while IFS=$'\t' read -r kind dirv n name holder trepo; do
     case "$kind" in
+      META) PAYLOAD_SESSION=${dirv:--}; CMD_CLAIMS=${n:--}; continue ;;
       BRANCH) br="$name" ;;
       CURRENT) br="" ;;
       *) continue ;;
     esac
+    holder=${holder:--}; trepo=${trepo:--}
     if [ "$dirv" = "DYN" ]; then
       # A branch literally named issue-N is evidence, but the repo it lands in
       # cannot be resolved: fault. A current-branch check with an unknown
@@ -478,7 +644,7 @@ main() {
       *"$key"*) continue ;;
     esac
     checked="$checked$key"
-    check_issue "$n" "$dirv" "$br"
+    check_issue "$n" "$dirv" "$br" "$holder" "$trepo"
   done <<< "$parsed"
   exit 0
 }

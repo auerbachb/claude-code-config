@@ -1164,6 +1164,9 @@ Body:
 ## CR Implementation Plan
 {CR plan if available, or "No CR plan available — explore the codebase to identify affected files."}
 
+## Claim
+Issue #{NUMBER} is already claimed for this pipeline with holder `{CLAIM_HOLDER}`. Do not claim, renew or release it. Your worktree's default holder differs from that one, so the issue-claim guard may block `gh pr create`. If it says your own claim "may not be visible from this checkout" or "cannot match" the holder, rerun the same command with the prefix `export CLAUDE_CLAIM_HOLDER='{CLAIM_HOLDER}' && ` — never a holder read off the GitHub marker. (Parent: when the pipeline has no recorded `claim_holder`, omit this whole section.)
+
 ## Guardrails (MANDATORY)
 **Read `subagent-phase-guardrails.md` (Step 0 candidate order) and insert its full contents verbatim at this point** — RESOLVE, SAFETY, MINDSET/capability-discovery, and SKILLS-first reflex. That file is the single canonical home for these blocks; `verbatim-block-lint.sh` CI-guards them there.
 

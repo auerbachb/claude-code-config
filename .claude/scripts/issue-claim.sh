@@ -173,6 +173,19 @@
 #            replaced marker's created_at when renewed is true. provider,
 #            device and label describe the winning claim (null for a marker
 #            written before issue #2284).
+#            repo is the repository read: --repo, else the issue's
+#            repository_url (no extra API call); null when neither resolves
+#            (issue #2366).
+#            --check on a claimed/stale verdict with a readable marker holder
+#            adds claimant evidence (issue #2366) — never a verdict change:
+#              claimant_is_viewer        marker login and author are the viewer
+#              claimant_device_is_local  marker device equals this device's id
+#              claimant_checkout         a local worktree of this repository
+#                                        whose checkout-default holder is the
+#                                        marker holder (viewer's claims only)
+#              claimant_checkout_holder_form  "digest" (h-…) or "legacy"
+#              claimant_checkout_holder  that default, derived locally from the
+#                                        worktree path (not copied from GitHub)
 #
 # EXIT STATUS
 #   0  startable / authorized — unclaimed, mine, stale, or an --allow-claimed
@@ -439,12 +452,14 @@ resolve_holder() {
   d="$(digest_hex "$(legacy_holder)" 12)" || return 1
   printf 'h-%s' "$d"
 }
-# legacy_holder: the pre-#2284 default token. Computed only to be hashed or to
-# be matched against older markers; it is never written to GitHub.
+# legacy_holder [toplevel]: the pre-#2284 default token. Computed only to be
+# hashed or to be matched against older markers; it is never written to GitHub.
+# The optional argument names another checkout's top level (claimant evidence,
+# issue #2366); without it the current checkout is used.
 legacy_holder() {
   local host top
   host="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown-host)"
-  top="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+  top="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
   printf '%s:%s' "$host" "$top"
 }
 # digest_hex <text> <n>: first n hex chars of a SHA-256 (cksum as a last resort).
@@ -562,6 +577,14 @@ CLAIM_BATCH=""
 CLAIM_BATCH_SIZE=""
 IS_STALE="false"
 OVERRIDDEN="false"
+# The repository actually read: --repo, else the issue's repository_url (#2366).
+RESOLVED_REPO="$REPO"
+# Claimant evidence for --check (issue #2366). Empty = not computed (null).
+EV_IS_VIEWER=""
+EV_DEVICE_LOCAL=""
+EV_CHECKOUT=""
+EV_FORM=""
+EV_CHECKOUT_HOLDER=""
 
 # emit <verdict> <exit_code> <reason>
 emit() {
@@ -572,7 +595,12 @@ emit() {
   if [[ "$JSON" -eq 1 ]]; then
     jq -cn \
       --argjson issue "$ISSUE_NUMBER" \
-      --arg repo "$REPO" \
+      --arg repo "${RESOLVED_REPO:-$REPO}" \
+      --arg civ "$EV_IS_VIEWER" \
+      --arg cdl "$EV_DEVICE_LOCAL" \
+      --arg cco "$EV_CHECKOUT" \
+      --arg cform "$EV_FORM" \
+      --arg cch "$EV_CHECKOUT_HOLDER" \
       --arg viewer "$VIEWER" \
       --arg holder "$HOLDER" \
       --arg verdict "$verdict" \
@@ -609,7 +637,13 @@ emit() {
         stale: $stale,
         overridden: $overridden,
         reason: $reason}
-       | if $batch == "" then . else . + {batch: $batch, batch_size: ($batch_size | tonumber)} end'
+       | if $batch == "" then . else . + {batch: $batch, batch_size: ($batch_size | tonumber)} end
+       | if $civ == "" then . else . + {
+           claimant_is_viewer: ($civ == "true"),
+           claimant_device_is_local: ($cdl == "true"),
+           claimant_checkout: (if $cco == "" then null else $cco end),
+           claimant_checkout_holder_form: (if $cform == "" then null else $cform end),
+           claimant_checkout_holder: (if $cch == "" then null else $cch end)} end'
   else
     printf '%s\n' "$verdict"
   fi
@@ -644,6 +678,14 @@ if ! ISSUE_JSON="$(gh api "$REPO_PREFIX/issues/$ISSUE_NUMBER" 2>"$ERR_FILE")"; t
     emit unknown 3 "issue #$ISSUE_NUMBER not found${REPO:+ in $REPO} — cannot act"
   fi
   fail_closed "gh api failed reading issue #$ISSUE_NUMBER ($(tr '\n' ' ' < "$ERR_FILE"))"
+fi
+
+# Report which repository was read even without --repo (issue #2366), from data
+# already fetched. Never changes a verdict; an unreadable value stays null.
+REPO_RE='^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+if [[ -z "$RESOLVED_REPO" ]]; then
+  RESOLVED_REPO="$(printf '%s' "$ISSUE_JSON" | jq -r '(.repository_url // "") | if type == "string" then (capture("/repos/(?<r>[^/]+/[^/]+)$").r // "") else "" end' 2>/dev/null || true)"
+  [[ "$RESOLVED_REPO" =~ $REPO_RE ]] || RESOLVED_REPO=""
 fi
 
 HAS_LABEL="$(printf '%s' "$ISSUE_JSON" | jq -r --arg l "$CLAIM_LABEL" '[.labels[]?.name] | index($l) != null' 2>/dev/null || echo "ERR")"
@@ -818,8 +860,49 @@ describe_claim() {
     "$ISSUE_NUMBER" "$who" "${CLAIMANT_HOLDER:-unknown}" "$facts" "$when"
 }
 
+# compute_claimant_evidence: for a claimed/stale verdict with a readable marker
+# holder, report whether the claim is this account's, from this device, and
+# from which local worktree's checkout-default holder (issue #2366). Evidence
+# only: it never changes the verdict, the exit code or holder precedence, and a
+# sibling worktree's default never counts as `mine`. The reported checkout
+# holder is derived locally from that worktree's path with the same formula as
+# the default holder; it is never copied from the marker.
+compute_claimant_evidence() {
+  [[ "$VERDICT" == claimed || "$VERDICT" == stale ]] || return 0
+  [[ -n "$CLAIMANT_HOLDER" ]] || return 0
+  if [[ "$CLAIMANT" == "$VIEWER" && "$MARKER_AUTHOR" == "$VIEWER" ]]; then
+    EV_IS_VIEWER=true
+  else
+    EV_IS_VIEWER=false
+  fi
+  local dev
+  dev="$(resolve_device 2>/dev/null)" || dev=""
+  if [[ -n "$CLAIM_DEVICE" && "$CLAIM_DEVICE" == "$dev" ]]; then
+    EV_DEVICE_LOCAL=true
+  else
+    EV_DEVICE_LOCAL=false
+  fi
+  [[ "$EV_IS_VIEWER" == true ]] || return 0
+  local line path top legacy d
+  while IFS= read -r line; do
+    [[ "$line" == "worktree "* ]] || continue
+    path="${line#worktree }"
+    top="$(git -C "$path" rev-parse --show-toplevel 2>/dev/null)" || top="$path"
+    legacy="$(legacy_holder "$top")"
+    if [[ "$CLAIMANT_HOLDER" == "$legacy" ]]; then
+      EV_CHECKOUT="$top"; EV_FORM=legacy; EV_CHECKOUT_HOLDER="$legacy"; return 0
+    fi
+    d="$(digest_hex "$legacy" 12 2>/dev/null)" || continue
+    if [[ "$CLAIMANT_HOLDER" == "h-$d" ]]; then
+      EV_CHECKOUT="$top"; EV_FORM=digest; EV_CHECKOUT_HOLDER="h-$d"; return 0
+    fi
+  done < <(git worktree list --porcelain 2>/dev/null)
+  return 0
+}
+
 # --- action: --check -----------------------------------------------------------
 if [[ "$ACTION" == "check" ]]; then
+  compute_claimant_evidence
   case "$VERDICT" in
     unclaimed) emit unclaimed 0 "issue #$ISSUE_NUMBER is unclaimed — startable" ;;
     mine)      emit mine 0 "issue #$ISSUE_NUMBER is already claimed by this thread (holder $HOLDER) — startable" ;;

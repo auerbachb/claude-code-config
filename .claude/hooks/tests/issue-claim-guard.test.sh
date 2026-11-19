@@ -17,12 +17,18 @@ export TMPDIR="$TMP/cache"
 export STUB_CALLS="$TMP/calls.log"
 export STUB_VERDICTS="$TMP/verdicts.txt"
 export STUB_SESSION="$TMP/session.txt"
+export STUB_DETAIL="$TMP/detail.log"
+export STUB_EVIDENCE="$TMP/evidence.txt"
+export STUB_RECEIPT="$TMP/receipt.txt"
 export CLAUDE_CLAIM_HOLDER="guard-test-holder-$$"
 unset CLAUDE_SESSION_ID
 mkdir -p "$HOME/.claude/scripts" "$TMPDIR"
 : > "$STUB_CALLS"
 : > "$STUB_VERDICTS"
 : > "$STUB_SESSION"
+: > "$STUB_DETAIL"
+: > "$STUB_EVIDENCE"
+: > "$STUB_RECEIPT"
 
 PASS=0
 FAIL=0
@@ -37,13 +43,16 @@ cat > "$HOME/.claude/scripts/issue-claim.sh" <<'STUB'
 n=$1
 shift
 holder=DEFAULT
+repo=NONE
 while [ $# -gt 0 ]; do
   case "$1" in
     --holder) holder=$2; shift 2 ;;
+    --repo) repo=$2; shift 2 ;;
     *) shift ;;
   esac
 done
 printf '%s\n' "$n" >> "$STUB_CALLS"
+printf '%s|%s|%s|%s\n' "$n" "$holder" "$repo" "$PWD" >> "$STUB_DETAIL"
 verdict=unclaimed
 while read -r a b c; do
   [ "$a" = "$n" ] || continue
@@ -56,10 +65,31 @@ case "$verdict" in
   unknown) rc=4 ;;
   *) rc=0 ;;
 esac
-printf '{"issue":%s,"repo":"example-owner/example-repo","verdict":"%s","claimant":"other-login","claimant_holder":"h-other","provider":"codex","device":"studio","label":"nightly run"}\n' "$n" "$verdict"
+# STUB_REPO_NULL=1 reports no repo; an evidence line "N JSON" merges extra fields.
+rjson='"example-owner/example-repo"'
+if [ "$repo" != NONE ]; then rjson="\"$repo\""; fi
+if [ "${STUB_REPO_NULL:-}" = 1 ] && [ "$repo" = NONE ]; then rjson=null; fi
+ev='{}'
+while read -r a b; do
+  if [ "$a" = "$n" ]; then ev=$b; fi
+done < "$STUB_EVIDENCE"
+printf '{"issue":%s,"repo":%s,"verdict":"%s","claimant":"other-login","claimant_holder":"h-other","provider":"codex","device":"studio","label":"nightly run"}\n' "$n" "$rjson" "$verdict" \
+  | jq -c --argjson e "$ev" '. + $e'
 exit "$rc"
 STUB
 chmod +x "$HOME/.claude/scripts/issue-claim.sh"
+
+# Stub Form A receipt reader: prints the holder in $STUB_RECEIPT, else exits 4.
+cat > "$HOME/.claude/scripts/chip-claim-receipt.sh" <<'STUB'
+#!/usr/bin/env bash
+[ "$1" = read ] || exit 4
+h=$(cat "$STUB_RECEIPT")
+[ -n "$h" ] || exit 4
+printf '%s\n' "$h"
+STUB
+chmod +x "$HOME/.claude/scripts/chip-claim-receipt.sh"
+
+set_evidence() { printf '%s %s\n' "$1" "$2" >> "$STUB_EVIDENCE"; }
 
 # Stub session state: "--repo-key" and "--get <path>" for pipelines[N].claim_holder.
 # A line "N VALUE" sets the recorded holder; VALUE __FAIL__ exits 2 (read failed),
@@ -357,6 +387,113 @@ if [ "$calls_113" = "1" ]; then
 else
   fail "mine verdict not cached: helper called $calls_113 times"
 fi
+
+# --- issue #2366: the caller's own holder, wherever it is visible -------------
+make_repo "$TMP/pr-200" "issue-200-a"
+set_verdict 200 claimed
+set_verdict 200 mine "inline-h1"
+out="$(run_hook 'CLAUDE_CLAIM_HOLDER=inline-h1 gh pr create --title t' "$TMP/pr-200")"
+expect_allow "#2366 literal command-local holder that reads mine allows" "$out"
+
+make_repo "$TMP/pr-201" "issue-201-a"
+set_verdict 201 claimed
+set_verdict 201 mine "inline-h2"
+out="$(run_hook 'env CLAUDE_CLAIM_HOLDER=inline-h2 gh pr create --title t' "$TMP/pr-201")"
+expect_allow "#2366 env-prefixed literal holder allows" "$out"
+
+make_repo "$TMP/pr-202" "issue-202-a"
+set_verdict 202 claimed
+set_verdict 202 mine "inline-h3"
+out="$(run_hook 'export CLAUDE_CLAIM_HOLDER=inline-h3 && gh pr create --title t' "$TMP/pr-202")"
+expect_allow "#2366 earlier export in the same command allows" "$out"
+
+make_repo "$TMP/pr-203" "issue-203-a"
+set_verdict 203 claimed
+set_verdict 203 mine '$H'
+out="$(run_hook 'CLAUDE_CLAIM_HOLDER="$H" gh pr create --title t' "$TMP/pr-203")"
+expect_deny "#2366 a \$VAR holder is never a candidate" "$out" "claimed by another holder"
+out="$(run_hook 'CLAUDE_CLAIM_HOLDER=$(cat h) gh pr create --title t' "$TMP/pr-203")"
+expect_deny "#2366 a command-substitution holder is never a candidate" "$out" "claimed by another holder"
+if grep -q '^203|[$]' "$STUB_DETAIL"; then
+  fail "#2366 a dynamic holder reached the helper"
+else
+  pass "#2366 dynamic holders never reach the helper"
+fi
+
+set_verdict 205 claimed
+set_verdict 205 mine "guard-test"
+out="$(unset CLAUDE_CLAIM_HOLDER; run_hook 'git checkout -b issue-205-p' "$WORK")"
+expect_allow "#2366 payload session_id is a candidate when the env id is empty" "$out"
+
+set_verdict 206 claimed
+set_verdict 206 mine "chip:fx:1:2:3:4"
+printf 'chip:fx:1:2:3:4\n' > "$STUB_RECEIPT"
+out="$(run_hook 'git checkout -b issue-206-r' "$WORK")"
+expect_allow "#2366 this worktree's Form A receipt holder allows" "$out"
+: > "$STUB_RECEIPT"
+
+set_verdict 207 claimed
+out="$(run_hook 'gh pr create -R tgt-owner/tgt-repo --head issue-207-x --title t' "$TMP/pr-feature")"
+calls_207="$(grep -c '^207|' "$STUB_DETAIL" || true)"
+targeted_207="$(grep -c '^207|.*|tgt-owner/tgt-repo|' "$STUB_DETAIL" || true)"
+if [ "$calls_207" = 0 ] || [ "$calls_207" != "$targeted_207" ]; then
+  fail "#2366 gh pr create -R: a helper call missed --repo tgt-owner/tgt-repo"
+else
+  pass "#2366 gh pr create -R passes --repo to every helper call"
+fi
+expect_deny "#2366 -R target named in the message" "$out" "--claim --repo tgt-owner/tgt-repo"
+set_verdict 208 unclaimed
+out="$(run_hook 'gh -R glob-owner/glob-repo pr create --head issue-208-x' "$TMP/pr-feature")"
+expect_deny "#2366 gh -R before pr create is the target" "$out" "--claim --repo glob-owner/glob-repo"
+
+set_verdict 209 unclaimed
+out="$(STUB_REPO_NULL=1 run_hook 'git checkout -b issue-209-n' "$WORK")"
+expect_deny "#2366 null helper repo: unclaimed still blocks" "$out" "verdict: unclaimed"
+expect_not_deny_text "#2366 null helper repo never prints --repo -" "$out" "--repo -"
+
+set_verdict 210 mine
+run_hook 'gh pr create -R a-owner/a-repo --head issue-210-c' "$TMP/pr-feature" >/dev/null
+run_hook 'gh pr create -R b-owner/b-repo --head issue-210-c' "$TMP/pr-feature" >/dev/null
+calls_210="$(grep -c '^210$' "$STUB_CALLS" || true)"
+if [ "$calls_210" = "2" ]; then
+  pass "#2366 positive cache is keyed by repo (two repos, two checks)"
+else
+  fail "#2366 positive cache collided across repos: $calls_210 helper calls"
+fi
+
+# Message classes.
+make_repo "$TMP/pr-211" "issue-211-v"
+set_verdict 211 claimed
+set_verdict 211 mine "h-abc123def456"
+set_evidence 211 '{"claimant":"me","claimant_is_viewer":true,"claimant_device_is_local":true,"claimant_checkout":"/wt/a|b","claimant_checkout_holder_form":"digest","claimant_checkout_holder":"h-abc123def456"}'
+out="$(run_hook 'gh pr create --title t' "$TMP/pr-211")"
+expect_deny "#2366 not visible: classified" "$out" "may not be visible from this checkout"
+expect_deny "#2366 not visible: names the claiming checkout" "$out" "/wt/a|b"
+expect_deny "#2366 not visible: gives the prefix" "$out" "export CLAUDE_CLAIM_HOLDER='h-abc123def456' && "
+expect_deny "#2366 not visible: gives the persistent option" "$out" "pipelines[\"211\"].claim_holder"
+expect_deny "#2366 not visible: states the stop condition" "$out" "did not claim from /wt/a|b"
+expect_not_deny_text "#2366 not visible: never prints the marker holder" "$out" "h-other"
+out="$(run_hook "export CLAUDE_CLAIM_HOLDER='h-abc123def456' && gh pr create --title t" "$TMP/pr-211")"
+expect_allow "#2366 not visible: the printed prefix allows" "$out"
+
+set_verdict 212 claimed
+set_evidence 212 '{"claimant":"me","claimant_is_viewer":true,"claimant_device_is_local":true}'
+out="$(run_hook 'git checkout -b issue-212-h' "$WORK")"
+expect_deny "#2366 holder not visible: classified" "$out" "cannot match from this checkout"
+expect_deny "#2366 holder not visible: placeholder retry" "$out" "<your captured holder>"
+expect_deny "#2366 holder not visible: verification command" "$out" "212 --check --holder '<your captured holder>' --repo example-owner/example-repo"
+expect_not_deny_text "#2366 holder not visible: never prints the marker holder" "$out" "h-other"
+
+set_verdict 213 claimed
+out="$(run_hook 'CLAUDE_CLAIM_HOLDER=wrong-h git checkout -b issue-213-s' "$WORK")"
+expect_deny "#2366 supplied holder mismatch: another-worker text kept" "$out" "claimed by another holder"
+expect_deny "#2366 supplied holder mismatch: says so" "$out" "does not match the live claim"
+
+set_verdict 214 unclaimed
+out="$(run_hook 'issue-claim.sh 214 --claim && git checkout -b issue-214-c' "$WORK")"
+expect_deny "#2366 claim in the same command: separate-command line" "$out" "as a separate command first"
+out="$(run_hook 'git checkout -b issue-214-c' "$WORK")"
+expect_not_deny_text "#2366 no in-command claim: no separate-command line" "$out" "separate command"
 
 echo
 echo "issue-claim-guard: $PASS passed, $FAIL failed"
