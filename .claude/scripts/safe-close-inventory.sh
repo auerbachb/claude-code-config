@@ -427,7 +427,12 @@ else
     [[ -n "$st_out" ]] && ndirty="$(printf '%s\n' "$st_out" | grep -c .)"
     dref="$(default_ref "$w")"
     on_default=0
-    case "$br_out" in main|master) on_default=1 ;; esac
+    # Exempt only the default branch resolved from origin/HEAD (fallback origin/main, origin/master),
+    # and only when that ref resolves to a commit: a dangling or absent default fails closed to unknown.
+    if [[ -n "$br_out" && -n "$dref" && "$br_out" == "${dref#origin/}" ]] \
+       && git -C "$w" rev-parse --verify --quiet "$dref^{commit}" >/dev/null 2>&1; then
+      on_default=1
+    fi
     wref="$(jq -n --arg p "$w" --arg b "$br_out" '{kind:"worktree",path:$p,branch:$b}')"
     if (( ndirty > 0 )); then
       add_item worktrees "dirty:$w" "$ndirty uncommitted path(s) in $w${br_out:+ ($br_out)}" lost \

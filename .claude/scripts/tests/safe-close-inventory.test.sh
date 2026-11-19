@@ -28,6 +28,7 @@ STATE="$HOME/.claude/session-state.json"
 # ---- stub gh: api user, pr list, pr view; everything else fails --------------------
 cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
+[[ -n "${STUB_CALL_LOG:-}" ]] && printf '%s\n' "$*" >> "$STUB_CALL_LOG"
 case "$1 $2" in
   "api user") [[ -n "${STUB_VIEWER:-}" ]] || exit 1; echo "$STUB_VIEWER" ;;
   "pr list") [[ -n "${STUB_PR_LIST:-}" ]] || exit 1; sed "s/__HEAD__/$(git rev-parse HEAD)/g" "$STUB_PR_LIST" ;;
@@ -282,6 +283,82 @@ OUT="$(run)"
 [[ "$(jqr .verdict)" == not_yet && "$(jqr '.categories.state_markers.status')" == unknown ]] || fail "a leave marker of the wrong shape must be unknown, not an absent entry"
 echo '{}' > "$STATE"
 ok "repo-scoped markers are seen, another session's are not counted, a cleared legacy entry does not hide an active scoped one, a wrong-shaped map is unknown"
+
+# ---- 13h. the default-branch exemption follows origin/HEAD, not the names main/master (issue #2271) ------
+# Own clone so the earlier cases keep their meaning. The gh stub logs every call outside home/work; the
+# PR list is always [] so a covered default cannot be mistaken for an inspected one.
+export STUB_CALL_LOG="$TMP/gh-calls.log"
+export STUB_PR_LIST="$TMP/pr-none.json"
+echo '{}' > "$STATE"
+git clone -q "$TMP/origin.git" "$TMP/dwork" 2>/dev/null
+D="$TMP/dwork"
+git -C "$D" checkout -q -B main origin/main
+runD() { : > "$STUB_CALL_LOG"; (cd "$D" && "$SCRIPT" --session "$SESSION" --repo "$REPO" --worktree "$D" "$@"); }
+head_called() { grep -qx "pr list .*--head $1\( .*\)\?" "$STUB_CALL_LOG"; }
+nbranch() { jq -r --arg id "branch:$1" '[.items[]|select(.id==$id)]|length' <<<"$OUT"; }
+set_default() { git -C "$D" symbolic-ref refs/remotes/origin/HEAD "refs/remotes/origin/$1"; }
+git -C "$D" checkout -q -b release/stable main
+git -C "$D" push -q origin release/stable 2>/dev/null
+set_default release/stable
+[[ "$(git -C "$D" symbolic-ref refs/remotes/origin/HEAD)" == refs/remotes/origin/release/stable ]] || fail "could not set origin/HEAD"
+
+# custom, slash-bearing default: exempt from branch/PR inspection
+OUT="$(runD)"; rc=$?
+[[ $rc == 0 && "$(jqr '[.items[]|select(.id|startswith("clean:"))|.consequence]|first')" == harmless ]] || { echo "$OUT" >&2; fail "custom default checkout not clean/harmless"; }
+[[ "$(jqr '[.items[]|select(.category=="branches")]|length')" == 0 ]] || fail "custom default produced a branch item"
+head_called release/stable && fail "custom default was looked up as a PR head"
+ok "a custom slash-bearing default is exempt from branch and PR inspection"
+
+# unsaved work on the default is still reported
+echo x > "$D/dirty.txt"
+OUT="$(runD)"; rc=$?
+[[ $rc == 1 && "$(jqr .verdict)" == not_yet && "$(jqr '[.items[]|select(.id|startswith("dirty:"))|.consequence]|first')" == lost ]] || fail "dirty custom default not lost"
+rm -f "$D/dirty.txt"
+echo y > "$D/y.txt"; git -C "$D" add y.txt; git -C "$D" commit -q -m local-only
+OUT="$(runD)"
+[[ "$(jqr '[.items[]|select(.id|startswith("unpushed:"))|.consequence]|first')" == lost ]] || fail "unpushed commit on custom default not lost"
+git -C "$D" reset -q --hard origin/release/stable
+ok "dirty and unpushed work on the default checkout is still lost"
+
+# converse: a non-default branch named main is inspected
+git -C "$D" checkout -q main
+OUT="$(runD)"
+head_called main || fail "non-default main was not looked up"
+[[ "$(nbranch main)" == 1 && "$(jqr '[.items[]|select(.id=="branch:main")|.consequence]|first')" == harmless ]] || { echo "$OUT" >&2; fail "same-SHA non-default main not one harmless branch item"; }
+echo z > "$D/z.txt"; git -C "$D" add z.txt; git -C "$D" commit -q -m ahead; git -C "$D" push -q origin main 2>/dev/null
+OUT="$(runD)"; rc=$?
+[[ $rc == 1 && "$(jqr .verdict)" == not_yet && "$(jqr '[.items[]|select(.id=="branch:main")|.consequence]|first')" == orphaned ]] || { echo "$OUT" >&2; fail "pushed-ahead non-default main not orphaned"; }
+ok "a non-default branch named main is inspected (harmless at the default SHA, orphaned when ahead)"
+
+# dangling origin/HEAD naming the checkout: no exemption, fails closed
+git -C "$D" reset -q --hard origin/main 2>/dev/null; git -C "$D" push -q -f origin main 2>/dev/null
+git -C "$D" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/ghost
+git -C "$D" checkout -q -B ghost origin/main
+OUT="$(runD)"; rc=$?
+head_called ghost || fail "dangling default was exempted"
+[[ $rc == 1 && "$(jqr .categories.branches.status)" == unknown && "$(jqr '[.items[]|select(.category=="branches" and .consequence=="unknown")]|length')" -ge 1 ]] \
+  || { echo "$OUT" >&2; fail "dangling origin/HEAD did not fail closed to unknown"; }
+ok "a dangling origin/HEAD naming the checkout gives no exemption and is unknown"
+
+# no default evidence at all
+git -C "$D" symbolic-ref --delete refs/remotes/origin/HEAD
+git -C "$D" update-ref -d refs/remotes/origin/main
+git -C "$D" checkout -q -B other-y origin/release/stable
+OUT="$(runD)"; rc=$?
+[[ $rc == 1 && "$(jqr .verdict)" == not_yet && "$(jqr '[.items[]|select(.category=="branches" and .consequence=="unknown")]|length')" -ge 1 ]] \
+  || { echo "$OUT" >&2; fail "no default evidence did not give unknown"; }
+ok "no resolvable default is unknown, not exempt"
+
+# fallback: origin/HEAD absent, origin/main present -> clean main is still the default
+git -C "$D" fetch -q origin 2>/dev/null
+git -C "$D" update-ref refs/remotes/origin/main "$(git --git-dir="$TMP/origin.git" rev-parse main)"
+git -C "$D" checkout -q -B main origin/main
+OUT="$(runD)"
+[[ "$(nbranch main)" == 0 ]] || fail "fallback origin/main default produced a branch item"
+head_called main && fail "fallback default was looked up as a PR head"
+ok "with origin/HEAD absent the origin/main fallback still exempts main"
+unset STUB_CALL_LOG
+echo '{}' > "$STATE"
 
 # ---- 14. usage ---------------------------------------------------------------------------------
 help_out="$("$SCRIPT" --help)"
