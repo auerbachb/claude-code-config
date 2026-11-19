@@ -25,6 +25,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [issue-deps.sh](../issue-deps.sh) | Parse issue dependency markers (`Depends on #N`, `blocked by`, `unblocks`, …) from bodies and comments — the one reading `/pm` 1B.3, `/wave` 5.1, and the desk's derived impact share; `edges` and transitive `dependents` |
 | [issue-file.sh](../issue-file.sh) | Validate a seven-section issue body and file it with checked labels: the one create path for /issue-maker and the desk's idea: intent |
 | [makespan.sh](../makespan.sh) | Model batch makespan from per-issue estimates, respecting the concurrency ceiling, dependency chains, and reviewer throughput |
+| [owner-task.sh](../owner-task.sh) | Keep one GitHub-stored list per repo of human tasks (add, list, done with proof, where), redirecting public repos to a private bucket |
 | [park-generation.sh](../park-generation.sh) | Mints a durable usage-limit park identity from OS entropy |
 | [park-retire.sh](../park-retire.sh) | Retires a bound park snapshot without adopting a replacement |
 | [park-wake-publish.sh](../park-wake-publish.sh) | Publishes a wake identity onto its bound park; recovery can replace a proven-dead wake |
