@@ -209,7 +209,7 @@ case "$ESCALATION_STATUS" in
       # verdicts are routed here defensively; the router no longer emits them.
       # Report the blocker once: "paid review requires owner approval", and
       # add `PAID_REVIEW: skipped (<vendor>, no_grant)` to the exit report
-      # notes. Grants: the "Owner approval required" note below (#1898).
+      # `RESULT` field (the compact extractor drops NOTES). Grants: the "Owner approval required" note below (#1898).
     ;;
   tier_gate)
     : # The PR's review tier (ci-only / ci+codeant-one-round) excludes BugBot
