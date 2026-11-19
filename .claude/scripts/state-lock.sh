@@ -252,6 +252,10 @@ _state_lock_host_init() {
   local h="${HOSTNAME:-}"
   [[ -n "$h" ]] || h="$(hostname 2>/dev/null)" || h=""
   [[ -n "$h" ]] || h="$(uname -n 2>/dev/null)" || h=""
+  # One line only: an embedded newline (an environment-supplied HOSTNAME)
+  # would inject extra `key=` records into the owner file.
+  h="${h%%$'\n'*}"
+  h="${h//$'\r'/}"
   [[ -n "$h" ]] || h="unknown-host"
   _STATE_LOCK_HOST_CACHE="$h"
 }
@@ -321,8 +325,12 @@ _state_lock_timeout_message() {
     # failure, not another holder.
     holder="held by pid unknown on unknown (lock directory could not be created; not contention)"
   fi
-  printf 'state-lock: timed out after %ss waiting for %s (%s); refusing to write unserialized\n' \
-    "$timeout" "$lock_dir" "$holder"
+  # The contract is ONE line: flatten any newline a path or owner field holds.
+  local msg
+  msg="$(printf 'state-lock: timed out after %ss waiting for %s (%s); refusing to write unserialized' \
+    "$timeout" "$lock_dir" "$holder")"
+  msg="${msg//$'\n'/ }"
+  printf '%s\n' "${msg//$'\r'/ }"
 }
 
 # Read one `key=value` line out of an owner file. Prints nothing when absent.

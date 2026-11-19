@@ -5,6 +5,27 @@
 # Bash remains available for checkpoint, TaskStop bookkeeping, and handoffs.
 
 set -uo pipefail
+
+# Millisecond clock (issue #2433). The retry budget below is measured from the
+# hook's own start, so slow preflight (payload parsing, repo resolution) is
+# charged against it too. CLOCK_SLACK_MS covers the seconds-only fallback,
+# which can under-report elapsed time by up to a second.
+CLOCK_SLACK_MS=0
+if [[ -z "${EPOCHREALTIME:-}" ]] && ! command -v perl >/dev/null 2>&1; then
+  CLOCK_SLACK_MS=1000
+fi
+now_ms() {
+  if [[ -n "${EPOCHREALTIME:-}" ]]; then
+    local t="${EPOCHREALTIME/[.,]/}"
+    printf '%s' "$(( 10#${t:0:${#t}-3} ))"
+  elif command -v perl >/dev/null 2>&1; then
+    perl -MTime::HiRes=time -e 'printf "%d", time()*1000'
+  else
+    printf '%s' "$(( $(date +%s) * 1000 ))"
+  fi
+}
+GATE_START_MS="$(now_ms)"
+
 INPUT="$(cat 2>/dev/null || true)"
 
 field() { printf '%s' "$INPUT" | jq -r "$1 // empty" 2>/dev/null; }
@@ -75,30 +96,22 @@ fi
 # the state lock — an unlocked read can observe a half-applied activation or
 # clear — but a lock that is merely BUSY is retried briefly instead of refusing
 # on the first exit 6. Only exit 6 is retried; `active` blocks at once. The
-# whole loop fits CLAUDE_PAUSE_GATE_BUDGET_MS (default 3500 ms), leaving margin
-# for payload parsing and repo resolution under the 5 s host hook timeout in
-# global-settings.json. Each attempt waits at most
+# hook — preflight included, measured from GATE_START_MS at the top — fits
+# CLAUDE_PAUSE_GATE_BUDGET_MS (default 3500 ms) under the 5 s host hook
+# timeout in global-settings.json. Each attempt waits at most
 # CLAUDE_PAUSE_GATE_ATTEMPT_TIMEOUT seconds (default 1) for the lock, and a new
-# attempt starts only when a full attempt still fits in the budget.
-now_ms() {
-  if [[ -n "${EPOCHREALTIME:-}" ]]; then
-    local t="${EPOCHREALTIME/[.,]/}"
-    printf '%s' "$(( 10#${t:0:${#t}-3} ))"
-  elif command -v perl >/dev/null 2>&1; then
-    perl -MTime::HiRes=time -e 'printf "%d", time()*1000'
-  else
-    printf '%s' "$(( $(date +%s) * 1000 ))"
-  fi
-}
+# attempt starts only when a full attempt still fits in the budget. The first
+# attempt always runs, so a slow preflight still ends in a verdict.
 BUDGET_MS="${CLAUDE_PAUSE_GATE_BUDGET_MS:-3500}"
-[[ "$BUDGET_MS" =~ ^[0-9]+$ ]] || BUDGET_MS=3500
+[[ "$BUDGET_MS" =~ ^[0-9]{1,5}$ ]] || BUDGET_MS=3500
+BUDGET_MS=$(( 10#$BUDGET_MS ))
 ATTEMPT_TIMEOUT="${CLAUDE_PAUSE_GATE_ATTEMPT_TIMEOUT:-1}"
-[[ "$ATTEMPT_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || ATTEMPT_TIMEOUT=1
+# One digit 1-4 only: a long digit string could overflow the arithmetic below.
+[[ "$ATTEMPT_TIMEOUT" =~ ^[1-4]$ ]] || ATTEMPT_TIMEOUT=1
 # Overrides can never outlive the 5 s host timeout: the budget is capped at
 # 4000 ms, and a single attempt (the first one included) must fit inside it.
 (( BUDGET_MS <= 4000 )) || BUDGET_MS=4000
 (( ATTEMPT_TIMEOUT * 1000 <= BUDGET_MS )) || ATTEMPT_TIMEOUT=1
-GATE_START_MS="$(now_ms)"
 
 status_attempt() {
   if [[ -n "$CWD" && -d "$CWD" ]]; then
@@ -125,7 +138,7 @@ while :; do
   ELAPSED=$(( $(now_ms) - GATE_START_MS ))
   # Jittered 100-290 ms back-off, then retry only if a whole attempt still fits.
   JITTER_MS=$(( 100 + RANDOM % 20 * 10 ))
-  (( ELAPSED + JITTER_MS + ATTEMPT_TIMEOUT * 1000 <= BUDGET_MS )) || break
+  (( ELAPSED + CLOCK_SLACK_MS + JITTER_MS + ATTEMPT_TIMEOUT * 1000 <= BUDGET_MS )) || break
   sleep "0.$(printf '%03d' "$JITTER_MS")"
 done
 

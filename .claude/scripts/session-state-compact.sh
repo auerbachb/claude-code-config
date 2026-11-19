@@ -141,12 +141,13 @@ file_bytes() { jq . "$1" 2>/dev/null | wc -c | tr -d ' '; }
 #                                    unless babysit.active, wrap_sweep.needs_decision,
 #                                    or a kept agent's .pr names it
 #     .repos[R].background_tasks[i]  terminal status and updated_at/started_at < CUT_TASK
+#                                    (stopped/failed: < CUT_PR — /end-resume recovers them)
 #     .active_agents[ID]             last_seen_at/launched < CUT_AGENT, unless its
 #                                    .pr names a PR entry the age pass retained
 #     .polling_failures / .polling_backoffs   keep the newest $hist items
 #     .repos[R]                      only once nothing but empty prs/background_tasks remain
 #   Then, while the estimated size is over the cap, further eligible-category
-#   items (unprotected PRs, terminal tasks, unreferenced agents) oldest first.
+#   items (unprotected PRs, terminal tasks — never agents) oldest first.
 #   An item without a parseable timestamp is never eligible.
 # ---------------------------------------------------------------------------
 # shellcheck disable=SC2016
@@ -167,7 +168,10 @@ def ts_of:
           elif ($c.z == null or $c.z == "Z") then $base
           else ($c.z | sub(":"; "")) as $z
             | (if $z[0:1] == "-" then -1 else 1 end) as $sign
-            | $base - $sign * (($z[1:3] | tonumber) * 3600 + ($z[3:5] | tonumber) * 60)
+            | ($z[1:3] | tonumber) as $oh | ($z[3:5] | tonumber) as $om
+            # An out-of-range offset (+99:99) makes the timestamp invalid.
+            | if $oh > 23 or $om > 59 then null
+              else $base - $sign * ($oh * 3600 + $om * 60) end
           end
       end
   end;
@@ -178,6 +182,9 @@ def pr_protected:
   or ((.wrap_sweep | if type == "object" then .needs_decision else null end) | nonempty);
 # Scalar membership only: an array status must not match as a subsequence.
 def terminal: type == "string" and (. as $s | ["done","failed","stopped","abandoned","rearmed"] | any(. == $s));
+# /end-resume lists `stopped` and `failed` entries as recoverable work, and an
+# /end can last days: those keep the PR age window ($cut_pr), not the task one.
+def recoverable: type == "string" and (. == "stopped" or . == "failed");
 def objents: if type == "object" then to_entries[] else empty end;
 def arrents: if type == "array" then to_entries[] else empty end;
 def sz: tojson | length;
@@ -201,7 +208,9 @@ def sz: tojson | length;
     | .background_tasks | arrents | select(.value | type == "object")
     | ((.value.updated_at // .value.started_at) | ts_of) as $t
     | {cat:"background_task", path:["repos",$rk,"background_tasks",.key], container:"array", ts:$t,
-       protected:((.value.status | terminal) | not), bytes:(.value | sz), value:.value} ] as $tasks
+       protected:(((.value.status | terminal) | not)
+                  or ((.value.status | recoverable) and ($t == null or $t >= $cut_pr))),
+       bytes:(.value | sz), value:.value} ] as $tasks
 | ($prs | map(select((.protected | not) and .ts != null and .ts < $cut_pr))) as $age_prs
 | ([$age_prs[].path | tostring]) as $age_pr_paths
 | ([$prs[] | select((.path | tostring) as $p | $age_pr_paths | index($p) | not) | .pr]) as $kept_prs
@@ -223,8 +232,14 @@ def sz: tojson | length;
 | ($doc | delpaths([$age_removed[].path])) as $after_age
 | (($after_age | sz) * $ratio) as $est_after_age
 | ([$age_removed[].path | tostring]) as $removed_keys
+# PRs named by EVERY agent the age pass kept (old agents kept for their PR
+# included): the size pass must not archive a PR a retained agent points at.
+| [ $agents[] | select((.path | tostring) as $p | $removed_keys | index($p) | not)
+    | .value.pr | select(. != null) | tostring ] as $retained_agent_prs
+# The size pass never takes an agent: every agent the age pass kept is within
+# its age window (or protected), i.e. possibly live, and agents are tiny.
 | ( if $est_after_age > $size_cap then
-      ( ($prs + $tasks + $agents)
+      ( (($prs | map(select(.pr as $k | $retained_agent_prs | index($k) | not))) + $tasks)
         | map(select((.protected | not) and .ts != null
                      and ((.path | tostring) as $p | $removed_keys | index($p) | not)))
         | sort_by(.ts) ) as $pool
@@ -374,7 +389,8 @@ if [[ "$REMOVED" == 0 ]]; then
 fi
 
 CAND="$STATE_FILE.compact.tmp.$$"
-if ! jq '.doc' "$WORK/plan.json" > "$CAND" 2>/dev/null; then
+# Owner-only, whatever the caller's umask: the candidate replaces the state file.
+if ! (umask 077 && jq '.doc' "$WORK/plan.json" > "$CAND") 2>/dev/null; then
   rm -f "$CAND"; echo "session-state-compact.sh: could not build candidate" >&2; exit 5
 fi
 
@@ -407,9 +423,11 @@ if ! (umask 077 && mkdir -p "$ARCHIVE_DIR") || ! chmod 700 "$ARCHIVE_DIR"; then
   echo "session-state-compact.sh: could not create archive dir $ARCHIVE_DIR" >&2
   exit 5
 fi
-# Prefixed by the state file's name, so retention below only ever rotates
-# archives of THIS state file (two state files may share the directory).
-ARCHIVE_PREFIX="compact-${STATE_FILE##*/}-"
+# Prefixed by the state file's name AND a checksum of its full path, so
+# retention below only ever rotates archives of THIS state file (two state
+# files — even with the same basename — may share the directory).
+STATE_PATH_ID="$(printf '%s' "$STATE_FILE" | cksum | awk '{print $1}')"
+ARCHIVE_PREFIX="compact-${STATE_FILE##*/}-${STATE_PATH_ID}-"
 ARCHIVE_FILE="$ARCHIVE_DIR/$ARCHIVE_PREFIX$COMPACTION_ID.json"
 if ! (umask 077 && jq --arg id "$COMPACTION_ID" --arg at "$(date -u +%FT%TZ)" \
         --arg state "$STATE_FILE" --arg trigger "$TRIGGER" \
@@ -432,11 +450,16 @@ fi
 state_lock_release
 : > "$STAMP" 2>/dev/null || true
 
-# Bounded archive retention: newest ARCHIVE_KEEP files.
+# Bounded archive retention: newest ARCHIVE_KEEP files. Names embed a UTC
+# timestamp right after the prefix, so a C-locale glob (sorted by name) is
+# oldest first — no newline-delimited listing to parse.
 if [[ "$ARCHIVE_KEEP" -gt 0 ]]; then
-  # shellcheck disable=SC2012
-  ls -1t "$ARCHIVE_DIR/$ARCHIVE_PREFIX"*.json 2>/dev/null | tail -n +"$(( ARCHIVE_KEEP + 1 ))" \
-    | while IFS= read -r old; do rm -f "$old"; done
+  _archives=()
+  while IFS= read -r -d '' _a; do _archives+=("$_a"); done < <(
+    LC_ALL=C; shopt -s nullglob
+    for _a in "$ARCHIVE_DIR/$ARCHIVE_PREFIX"*.json; do printf '%s\0' "$_a"; done)
+  _drop=$(( ${#_archives[@]} - ARCHIVE_KEEP ))
+  for (( _i = 0; _i < _drop; _i++ )); do rm -f "${_archives[_i]}"; done
 fi
 
 print_summary "$WORK/plan.json" "archived $REMOVED item(s) to $ARCHIVE_FILE"

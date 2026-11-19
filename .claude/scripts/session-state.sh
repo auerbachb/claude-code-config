@@ -1777,7 +1777,11 @@ maybe_trigger_compaction() {
   local attempt_interval="${CLAUDE_STATE_COMPACT_ATTEMPT_INTERVAL:-60}"
   local compactor="$SCRIPT_DIR/session-state-compact.sh"
   [[ -x "$compactor" && -f "$STATE_FILE" ]] || return 0
-  size="$(wc -c < "$STATE_FILE" 2>/dev/null | tr -d ' ')"
+  # Metadata only (stat), never a read of the file's bytes.
+  # `|| true`: this script runs under `set -e`, and GNU-vs-BSD stat means one
+  # of the two forms always fails.
+  size="$(stat -c %s "$STATE_FILE" 2>/dev/null || true)"
+  [[ "$size" =~ ^[0-9]+$ ]] || size="$(stat -f %z "$STATE_FILE" 2>/dev/null || true)"
   [[ "$size" =~ ^[0-9]+$ && "$cap" =~ ^[0-9]+$ ]] || return 0
   (( size > cap )) || return 0
   now="$(date +%s)"
@@ -2023,6 +2027,21 @@ if [[ "$MODE" == "migrate" ]]; then
   # WITHOUT the lock on every call, so a concurrent locked writer's update (or
   # a compaction) could be silently overwritten, and every startup paid for a
   # full-file rewrite even when nothing needed migrating.
+  #
+  # Unlocked pre-check first: the common startup case is a no-op, and it must
+  # neither wait for nor hold the lock. Writers replace the file atomically
+  # (mv), so this read sees one whole document. A file that does need
+  # migrating is re-read and re-planned under the lock below.
+  if is_single_object_state_file "$STATE_FILE" \
+     && _mig_pre_map="$(migrate_jq_args "$STATE_FILE" 2>/dev/null)" \
+     && jq --argjson __pathmap "$_mig_pre_map" --arg __unknown "$UNKNOWN_REPO_KEY" \
+          "$MIG_FILTER" "$STATE_FILE" > "$MIG_TMP" 2>/dev/null \
+     && jq -n -e --slurpfile a "$STATE_FILE" --slurpfile b "$MIG_TMP" \
+          '($a[0] | del(.last_updated)) == ($b[0] | del(.last_updated))' >/dev/null 2>&1; then
+    rm -f "$MIG_TMP" "$MIG_ERR" 2>/dev/null
+    exit 0
+  fi
+  rm -f "$MIG_TMP" 2>/dev/null
   state_lock_acquire "$STATE_FILE" || exit "$STATE_LOCK_EXIT_TIMEOUT"
   # shellcheck disable=SC2064
   trap "state_lock_release; rm -f '$MIG_TMP' '$MIG_TMP.2' '$MIG_ERR' 2>/dev/null" EXIT

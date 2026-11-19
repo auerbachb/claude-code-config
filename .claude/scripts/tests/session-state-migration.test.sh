@@ -223,11 +223,12 @@ cat > "$STATE_FILE" <<'JSON'
 JSON
 SHIM="$WORK_DIR/jq-shim"; PARK="$WORK_DIR/park"; mkdir -p "$SHIM" "$PARK"
 REAL_JQ="$(command -v jq)"
-# Parks the FIRST jq call that runs the migrate filter, only in the process
+# Parks the FIRST jq call that runs the migrate filter UNDER THE LOCK (the
+# unlocked no-op pre-check runs first and must not park), only in the process
 # that carries MIG_PARK (the --migrate under test), until released.
 cat > "$SHIM/jq" <<SH
 #!/bin/bash
-if [[ -n "\${MIG_PARK:-}" && ! -e "\$MIG_PARK/parked" && "\$*" == *"migrate("* ]]; then
+if [[ -n "\${MIG_PARK:-}" && ! -e "\$MIG_PARK/parked" && "\$*" == *"migrate("* && -d "$STATE_FILE.lock" ]]; then
   : > "\$MIG_PARK/parked"
   while [[ ! -e "\$MIG_PARK/release" ]]; do sleep 0.05; done
 fi

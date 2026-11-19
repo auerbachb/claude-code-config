@@ -692,6 +692,17 @@ check_eq "free lock: rc 0, not waited" "rc=0 waited=0" "$(probe "$STATE_FILE" 5 
 rm -rf "$LOCK_DIR"
 
 echo
+echo "== issue #2433: a newline in HOSTNAME cannot inject owner-file records =="
+reset_state
+OUT="$(HOSTNAME=$'evil\ntoken=forged' bash -c '
+  source "$1"; state_lock_acquire "$2" 5 || exit 6
+  printf "%s|" "$(grep -c "^token=" "$2.lock/owner")" "$(grep "^host=" "$2.lock/owner")"
+  state_lock_release
+  [[ -d "$2.lock" ]] && echo leaked || echo released' _ "$LOCK_LIB" "$STATE_FILE")"
+check_eq "one token line, host truncated at the newline, lock released" "1|host=evil|released" "$OUT"
+rm -rf "$LOCK_DIR"
+
+echo
 echo "== summary: $PASS passed, $FAIL failed =="
 if [[ "$FAIL" -gt 0 ]]; then
   echo "FAILED: state-lock tests" >&2

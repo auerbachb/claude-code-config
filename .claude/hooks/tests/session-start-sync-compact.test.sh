@@ -13,6 +13,11 @@ TMP_DIR="$(mktemp -d)"
 cleanup() { chmod -R u+w "$TMP_DIR" 2>/dev/null || true; rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
+# Inherited compactor overrides must never apply here: each case runs under
+# the policy it names, and archives stay inside the fixture HOME.
+while IFS= read -r _v; do unset "$_v"; done < <(compgen -e | grep '^CLAUDE_STATE_COMPACT_')
+unset CLAUDE_STATE_LOCK_HELD CLAUDE_STATE_LOCK_TOKEN
+
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   — $*"; }
 
@@ -29,7 +34,8 @@ run_hook() { # run_hook <source-json> [extra env assignments...]
   STATE="$HOME/.claude/session-state.json"
   printf '%s' "$OLD_STATE" > "$STATE"
   local src="$1"; shift
-  printf '%s' "$src" | env "$@" bash "$HOOK" >/dev/null 2>&1
+  printf '%s' "$src" | env CLAUDE_STATE_COMPACT_ARCHIVE_DIR="$HOME/.claude/session-state-archive" "$@" \
+    bash "$HOOK" >/dev/null 2>&1
 }
 wait_for() { local p="$1" n="${2:-200}"; while (( n-- > 0 )); do compgen -G "$p" >/dev/null && return 0; sleep 0.05; done; return 1; }
 
@@ -82,5 +88,16 @@ printf '{"source":"startup"}' | CLAUDE_STATE_COMPACT_BIN="$STUB" CLAUDE_STATE_CO
 sleep 1
 [[ ! -e "$HOME/.claude/stub-ran" ]] || fail "CLAUDE_STATE_COMPACT_AUTO=0 did not disable the trigger"
 ok "CLAUDE_STATE_COMPACT_AUTO=0 disables the trigger"
+
+# --- 5. a fresh run guard gates the spawn; an abandoned one does not ---------
+rm -f "$HOME/.claude/stub-ran" "$HOME/.claude/session-state.json.compact.stamp"
+mkdir -p "$HOME/.claude/session-state.json.compact.run"
+printf '{"source":"startup"}' | CLAUDE_STATE_COMPACT_BIN="$STUB" bash "$HOOK" >/dev/null 2>&1
+sleep 1
+[[ ! -e "$HOME/.claude/stub-ran" ]] || fail "a fresh run guard did not gate the spawn"
+touch -t 202001010000 "$HOME/.claude/session-state.json.compact.run"
+printf '{"source":"startup"}' | CLAUDE_STATE_COMPACT_BIN="$STUB" bash "$HOOK" >/dev/null 2>&1
+wait_for "$HOME/.claude/stub-ran" || fail "an abandoned (old) run guard blocked the spawn forever"
+ok "a fresh run guard suppresses the spawn; an abandoned one does not"
 
 echo "OK: session-start compaction trigger tests passed"

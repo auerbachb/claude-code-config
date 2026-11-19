@@ -1066,8 +1066,19 @@ _compact_bin="${CLAUDE_STATE_COMPACT_BIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.
 _compact_state="${HOME:-}/.claude/session-state.json"
 _compact_cadence="${CLAUDE_STATE_COMPACT_CADENCE_SECS:-86400}"
 case "$_compact_cadence" in ''|*[!0-9]*) _compact_cadence=86400 ;; esac
+# A run guard younger than 10 minutes means a compactor is (or just was)
+# running. An older one — left by a killed compactor — must not block the
+# spawn: the compactor itself is the only code that reclaims it.
+_compact_guard_busy=0
+if [[ -d "$_compact_state.compact.run" ]]; then
+  _compact_g="$(stat -c %Y "$_compact_state.compact.run" 2>/dev/null)"
+  [[ "$_compact_g" =~ ^[0-9]+$ ]] || _compact_g="$(stat -f %m "$_compact_state.compact.run" 2>/dev/null)"
+  if [[ ! "$_compact_g" =~ ^[0-9]+$ ]] || (( $(date +%s) - _compact_g < 600 )); then
+    _compact_guard_busy=1
+  fi
+fi
 if [[ -n "${HOME:-}" && -x "$_compact_bin" && -f "$_compact_state" \
-      && "${CLAUDE_STATE_COMPACT_AUTO:-1}" != 0 && ! -d "$_compact_state.compact.run" ]]; then
+      && "${CLAUDE_STATE_COMPACT_AUTO:-1}" != 0 && "$_compact_guard_busy" == 0 ]]; then
   _compact_due=1
   if [[ -f "$_compact_state.compact.stamp" ]]; then
     _compact_m="$(stat -c %Y "$_compact_state.compact.stamp" 2>/dev/null)"

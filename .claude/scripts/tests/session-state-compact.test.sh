@@ -220,6 +220,11 @@ check_eq "recent PRs were archived to meet the cap" "true" \
   "$(jq '[.repos[].prs | keys[] | select(startswith("new"))] | length < 60' "$STATE")"
 check_eq "size pass recorded in the archive" "true" \
   "$(jq -s '[.[].items[] | select(.cat == "pr" and (.path[3] | startswith("new")))] | length > 0' "$ARCHIVE_DIR"/compact-*.json)"
+# An unreachable cap drains every eligible item: a recent agent with no PR
+# link must still survive (it may be live).
+bash "$COMPACT" --apply --size-cap 1 >/dev/null 2>&1
+check_eq "size pass never archives a live (recent) agent" "spawned" \
+  "$(jq -r '.active_agents["new-agent"].status' "$STATE")"
 
 echo
 echo "== Post-write trigger: fires only above the cap, never recursively =="
@@ -257,11 +262,16 @@ jq -n --arg now "$NOW_ISO" '{
       "11": {merged_at:"2020-01-01T00:00:00Z"},
       "12": {merged_at:"2020-00-01T00:00:00Z"},
       "13": {merged_at:($now[0:10] + "T23:59:59-11:00")},
-      "14": {merged_at:"2020-01-01T00:00:00+05:30"}
+      "14": {merged_at:"2020-01-01T00:00:00+05:30"},
+      "15": {merged_at:"2020-01-01T00:00:00+99:99"}
     },
     background_tasks: [
       {task_id:"arr-status", status:["done"], updated_at:"2020-01-01T00:00:00Z"},
-      {task_id:"plain-done", status:"done", updated_at:"2020-01-01T00:00:00Z"}
+      {task_id:"plain-done", status:"done", updated_at:"2020-01-01T00:00:00Z"},
+      {task_id:"bad-offset-done", status:"done", updated_at:"2020-01-01T00:00:00+99:99"},
+      {task_id:"stopped-recent", status:"stopped", updated_at:(($now | fromdateiso8601) - 5*86400 | todateiso8601)},
+      {task_id:"failed-recent", status:"failed", updated_at:(($now | fromdateiso8601) - 5*86400 | todateiso8601)},
+      {task_id:"stopped-ancient", status:"stopped", updated_at:"2020-01-01T00:00:00Z"}
     ]}},
   active_agents: {"recent": {id:"recent", pr:"11", launched:$now}}
 }' > "$STATE"
@@ -275,6 +285,29 @@ check_eq "array status is not terminal: retained" "1" \
   "$(jq '[.repos["org/e"].background_tasks[] | select(.task_id == "arr-status")] | length' "$STATE")"
 check_eq "plain terminal status archived" "0" \
   "$(jq '[.repos["org/e"].background_tasks[] | select(.task_id == "plain-done")] | length' "$STATE")"
+check_eq "out-of-range offset is not a timestamp: PR retained" "true" "$(jq '.repos["org/e"].prs | has("15")' "$STATE")"
+check_eq "out-of-range offset is not a timestamp: task retained" "1" \
+  "$(jq '[.repos["org/e"].background_tasks[] | select(.task_id == "bad-offset-done")] | length' "$STATE")"
+check_eq "recoverable stopped/failed tasks inside the 30-day window retained" "2" \
+  "$(jq '[.repos["org/e"].background_tasks[] | select(.task_id | test("-recent$"))] | length' "$STATE")"
+check_eq "a stopped task past the 30-day window is archived" "0" \
+  "$(jq '[.repos["org/e"].background_tasks[] | select(.task_id == "stopped-ancient")] | length' "$STATE")"
+
+echo
+echo "== Size pass keeps a PR any retained agent names; candidate is owner-only =="
+rm -rf "$ARCHIVE_DIR"
+jq -n --arg now "$NOW_ISO" '{
+  repos: {"org/s": {prs: {
+    "21": {note:("x" * 4000), pipeline_started_at:$now},
+    "22": {note:("x" * 4000), pipeline_started_at:$now}}}},
+  active_agents: {"old-but-kept": {id:"old-but-kept", pr:21, launched:"2020-01-01T00:00:00Z"}}
+}' > "$STATE"
+chmod 600 "$STATE"
+(umask 022; bash "$COMPACT" --apply --size-cap 1 >/dev/null 2>&1)
+check_eq "PR named by an old agent the age pass kept survives the size pass" "true" \
+  "$(jq '.repos["org/s"].prs | has("21")' "$STATE")"
+check_eq "(control) an unreferenced recent PR is size-archived" "false" "$(jq '.repos["org/s"].prs | has("22")' "$STATE")"
+check_eq "state file stays 0600 after an apply under umask 022" "600" "$(mode_of "$STATE")"
 
 echo
 echo "== Archive retention only rotates this state file's archives =="
@@ -284,6 +317,18 @@ build_state
 bash "$COMPACT" --apply --keep-archives 1 >/dev/null 2>&1
 check_eq "another state file's archive survives rotation" "1" \
   "$([[ -f "$ARCHIVE_DIR/compact-other-state.json-20200101T000000Z-1-1.json" ]] && echo 1 || echo 0)"
+# Same basename, different directory, shared archive dir.
+OTHER="$HOME/elsewhere/session-state.json"; mkdir -p "${OTHER%/*}"
+build_state; cp "$STATE" "$OTHER"
+bash "$COMPACT" --apply --keep-archives 1 --state-file "$OTHER" >/dev/null 2>&1
+build_state
+bash "$COMPACT" --apply --keep-archives 1 >/dev/null 2>&1
+check_eq "same-basename state files keep separate archives under rotation" "2" \
+  "$(find "$ARCHIVE_DIR" -name 'compact-session-state.json-*.json' | wc -l | tr -d ' ')"
+build_state
+bash "$COMPACT" --apply --keep-archives 1 >/dev/null 2>&1
+check_eq "(control) rotation still trims this file's own archives" "2" \
+  "$(find "$ARCHIVE_DIR" -name 'compact-session-state.json-*.json' | wc -l | tr -d ' ')"
 
 echo
 echo "== Run guard: ownerless fresh guard is in progress; dead owner is reclaimed =="
