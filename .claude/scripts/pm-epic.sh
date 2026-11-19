@@ -42,6 +42,8 @@
 #   close-if-done  re-reads the children from GitHub (never a cached list)
 #                  and, when there is at least one child and every child is
 #                  CLOSED, closes the parent with a comment naming them.
+#                  It never closes on a partial child list: when the
+#                  sub-issues read failed it exits 1 and leaves the parent open.
 #                  Prints `closed #N (k children)`, `already-closed #N`, or
 #                  `open #N (j of k children open)`.
 #
@@ -182,6 +184,9 @@ close_if_done() {
   fi
   if [[ "$open" -gt 0 ]]; then
     printf 'open #%s (%s of %s children open)\n' "$n" "$open" "$total"; exit 0
+  fi
+  if [[ "$(jq -r '.sub_issues' <<< "$json")" != read ]]; then
+    die 1 "sub-issues of #$n unreadable; not closing on a partial child list"
   fi
   names=$(jq -r '[.children[].number | "#\(.)"] | join(", ")' <<< "$json")
   gh issue close "$n" --repo "$repo" \
