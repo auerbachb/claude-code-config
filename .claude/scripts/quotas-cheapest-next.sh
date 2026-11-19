@@ -90,7 +90,7 @@
 #
 # WHERE THE PRICES COME FROM
 #   The table is CHECKED IN, here and in prose in .claude/reference/
-#   ai-quotas.md, and it is only as fresh as its `last_verified` dates. It is
+#   ai-quotas-reader.md, and it is only as fresh as its `last_verified` dates. It is
 #   deliberately NOT read from `.claude/reference/pricing-matrix.md`: that
 #   file is the REVIEW-STACK wallet (CodeRabbit, BugBot, Greptile, CodeAnt),
 #   a different wallet from these coding-assistant subscriptions. Numbers
@@ -144,7 +144,7 @@
 #
 # SEE ALSO
 #   ai-quotas.sh --help              the reader that produces the rows
-#   .claude/reference/ai-quotas.md   the overage table in prose, with sources
+#   .claude/reference/ai-quotas-reader.md   the overage table in prose, with sources
 #   .claude/skills/quotas/SKILL.md   the /quotas surface
 
 set -uo pipefail
@@ -283,7 +283,7 @@ resolve_threshold() {
 }
 
 # --- the checked-in overage table --------------------------------------------
-# Mirrored in prose, with the same dates, in .claude/reference/ai-quotas.md.
+# Mirrored in prose, with the same dates, in .claude/reference/ai-quotas-reader.md.
 # `cost_rank` is what continuing costs ONCE THE INCLUDED QUOTA IS GONE, and it
 # is an ordering, not a price: 2 = metered (you pay for the work you actually
 # do), 3 = a flat fee for a fixed week you may not use. Included quota you

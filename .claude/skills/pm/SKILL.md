@@ -451,7 +451,7 @@ If `PM_CONFIG_GET` is empty, the Step 0 degraded line already covers it and this
 Use the config-refresh row in [PM module routing](#pm-module-routing). Read `shared:config` and run its Step 1 detection. When the file exists, its refresh runs: automatic by default (silent when nothing changed, one line when it rewrites; user-edited sections are carried over verbatim), explicit when `CONFIG_REFRESH=true` (confirms before writing). A missing file is left to cold start's bootstrap at Step 1B. An unreadable file stops the refresh, and the mode continues without rewriting it.
 <!-- pm-routing:end -->
 
-**Claude usage reading (desktop app).** At each start, and again before Step 3.1 launches and Step 3.4 refills, call `mcp__ccd_session_mgmt__get_usage` when it exists and pipe its JSON to `"$(resolve_script claude-usage-observe.sh)" -`; a refusal or a missing tool is skipped silently and gates nothing (`.claude/reference/ai-quotas.md` §The app usage tool reading).
+**Claude usage reading (desktop app).** At each start, and again before Step 3.1 launches and Step 3.4 refills, call `mcp__ccd_session_mgmt__get_usage` when it exists and pipe its JSON to `"$(resolve_script claude-usage-observe.sh)" -`; a refusal or a missing tool is skipped silently and gates nothing (`.claude/reference/ai-quotas-claude.md` §The app usage tool reading).
 
 ---
 

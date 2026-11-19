@@ -487,7 +487,7 @@ Custom `subagent_type` agents (phase-a-fixer, phase-b-reviewer, phase-c-merger, 
 
 For each qualifying issue, spawn a Phase A subagent using the Agent tool.
 
-**Claude usage reading (desktop app).** At session start and before each autonomous launch or refill, call `mcp__ccd_session_mgmt__get_usage` when it exists and pipe its JSON to `"$(resolve_script claude-usage-observe.sh)" -`; a refusal or a missing tool is skipped silently and gates nothing (`.claude/reference/ai-quotas.md` §The app usage tool reading).
+**Claude usage reading (desktop app).** At session start and before each autonomous launch or refill, call `mcp__ccd_session_mgmt__get_usage` when it exists and pipe its JSON to `"$(resolve_script claude-usage-observe.sh)" -`; a refusal or a missing tool is skipped silently and gates nothing (`.claude/reference/ai-quotas-claude.md` §The app usage tool reading).
 
 **Parallel execution rules — the concurrent-pipeline ceiling:**
 
