@@ -356,6 +356,16 @@ check_eq "clock fallback: the newest archive survives same-second rotation" "1" 
   "$([[ -n "$LAST" && -f "$LAST" ]] && echo 1 || echo 0)"
 check_eq "clock fallback: exactly one own archive kept" "1" \
   "$(find "$ARCHIVE_DIR" -name "${PFX}*.json" ! -name '*20000101T*' | wc -l | tr -d ' ')"
+# Microsecond rollover: after .999999 the next id carries into the next second.
+find "$ARCHIVE_DIR" -name "${PFX}*.json" ! -name '*20000101T*' -exec rm -f {} +
+jq -n --arg s "$STATE" '{state_file:$s, items:[]}' > "$ARCHIVE_DIR/${PFX}29991231T235958.999999Z-99999-1.json"
+build_state
+LAST="$(CLAUDE_STATE_COMPACT_CLOCK_FALLBACK=1 bash "$COMPACT" --apply --keep-archives 1 2>/dev/null \
+        | sed -n 's/.* to \(.*\.json\)$/\1/p' | head -n 1)"
+check_eq "rollover: the new id carries into the next second" "1" \
+  "$([[ "$LAST" == *"-29991231T235959.000000Z-"* && -f "$LAST" ]] && echo 1 || echo 0)"
+check_eq "rollover: the older .999999 archive is the one rotated out" "0" \
+  "$(find "$ARCHIVE_DIR" -name "${PFX}29991231T235958.999999Z-*" | wc -l | tr -d ' ')"
 
 echo
 echo "== Run guard: ownerless fresh guard is in progress; dead owner is reclaimed =="

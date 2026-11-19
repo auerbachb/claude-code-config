@@ -456,7 +456,23 @@ _last="$(LC_ALL=C; shopt -s nullglob; _n=""
          _n="${_n#"$ARCHIVE_PREFIX"}"; printf '%s' "${_n%%Z-*}")"
 if [[ "$_last" =~ ^([0-9]{8}T[0-9]{6})\.([0-9]{6})$ ]] && [[ ! "$_stamp.$_usec" > "$_last" ]]; then
   _stamp="${BASH_REMATCH[1]}"
-  _usec="$(printf '%06d' $(( 10#${BASH_REMATCH[2]} + 1 )))"
+  _usec=$(( 10#${BASH_REMATCH[2]} + 1 ))
+  if (( _usec > 999999 )); then
+    # Carry into the next second (BSD date, then GNU date). If neither can,
+    # stop before archiving or committing: the state is left unchanged.
+    _e="$(date -u -j -f %Y%m%dT%H%M%S "$_stamp" +%s 2>/dev/null \
+          || date -u -d "${_stamp:0:4}-${_stamp:4:2}-${_stamp:6:2} ${_stamp:9:2}:${_stamp:11:2}:${_stamp:13:2}" +%s 2>/dev/null)"
+    if [[ "$_e" =~ ^[0-9]+$ ]] \
+       && _stamp="$(date -u -r "$(( _e + 1 ))" +%Y%m%dT%H%M%S 2>/dev/null \
+                    || date -u -d "@$(( _e + 1 ))" +%Y%m%dT%H%M%S 2>/dev/null)" && [[ -n "$_stamp" ]]; then
+      _usec=0
+    else
+      rm -f "$CAND"
+      echo "session-state-compact.sh: could not order the archive id after $_last; state unchanged" >&2
+      exit 5
+    fi
+  fi
+  _usec="$(printf '%06d' "$_usec")"
 fi
 COMPACTION_ID="${_stamp}.${_usec}Z-$$-${RANDOM}"
 ARCHIVE_FILE="$ARCHIVE_DIR/$ARCHIVE_PREFIX$COMPACTION_ID.json"
