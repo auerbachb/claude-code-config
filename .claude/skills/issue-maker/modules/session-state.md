@@ -56,7 +56,7 @@ DELIVERY_MODE=inline
 # attributable url matches NOTHING here: the readers over-count an
 # unattributable row (safe for a cap), while a writer must under-reach (safe
 # for someone else's data).
-MINE_DEF='def same_repo: (($repo | length) > 0 and (((.url // "") | (try capture("^https?://[^/]+/(?<r>[^/]+/[^/]+)/issues/") catch {r:""}) // {r:""} | .r | ascii_downcase) == ($repo | ascii_downcase))); def session_filed: (.origin == "create" or (.origin == null and .created_at != null and (.edited_at == null or .tier != null or .delivers != null or .est_bound != null or .chain != null))); def mine: select(.status == "open" and same_repo and session_filed); def runnable: mine | select((.chain.role // "") != "parent"); '
+MINE_DEF='def same_repo: (($repo | length) > 0 and (((.url // "") | (try capture("^https?://[^/]+/(?<r>[^/]+/[^/]+)/issues/") catch {r:""}) // {r:""} | .r | ascii_downcase) == ($repo | ascii_downcase))); def session_filed: (.origin == "create" or (.origin == null and .created_at != null and (.edited_at == null or .tier != null or .delivers != null or .est_bound != null or .chain != null))); def mine: select(.status == "open" and same_repo and session_filed); def runnable: mine | select((.chain.role // "") != "parent"); def epic_parent: mine | select(.origin == "create" and (.chain.role // "") == "parent" and (((.epic_scope.planned // 0) > 5) or ((.epic_scope.not_yet_cut // 0) > 0))); '
 ```
 
 **If `$LOG` exists (compaction recovery / re-invocation):** read it and lead with a recap before accepting new input — this is the first action after a compaction.
@@ -98,6 +98,7 @@ if [ -f "$LOG" ]; then
   jq -r --argjson accepted "$OFFER_ACCEPTED" --arg dmode "$DELIVERY_MODE" --arg repo "$REPO" \
     "$MINE_DEF"'.handoff_checkpoint.spawn_status as $spawn_status | "Resuming \(if $accepted then "execution" else "capture" end) mode for \(.target_repo) — \(.mode) mode. \(([.issues[]|mine]|length)) issue(s) opened so far:",
      (if .handoff_checkpoint then "  Handoff recovery needed — \(.handoff_checkpoint.state); registry \(.reg_tid // "unavailable"); task \(.handoff_checkpoint.task_id // "unknown"); spawn \(.handoff_checkpoint.spawn_status // "unknown")" else empty end),
+     (if .epic_offer and .epic_offer.repository == .target_repo then "  Epic offer for #\(.epic_offer.parent) — \(.epic_offer.state); resume at create:epic-offer" else empty end),
      (if .active_set then "  Coherence set \(.active_set.set_id) open in \(.active_set.repository) — \(if .active_set.review then "pass interrupted; rerun create:coherence before the offer" else "finish its members, then create:postfile Step 9b2" end)" else empty end),
      (.issues[] | select(same_repo) | "  #\(.number) — \(.title) [\(.status)]" +
                   (if .chip_task_id and ($accepted | not) and ($dmode == "chip-pending") then (if $spawn_status == "spawned" then " — chip spawned; task receipt needs reconciliation" else " — spawn outcome unknown; reconcile before any retry" end)
@@ -114,6 +115,8 @@ Offer tokens are not launch receipts. `inline` means a printed/pending inline of
 For an outstanding receipt, the next active phase is `offer:handoff` reconciliation only. Read the checkpoint repository (must equal target repo), registry ID, saved task ID, and `spawn_status`. With `not-started` and state `reservation-intent`, `reserved`, or `cleanup-pending`, resolve the registry and read `--repo "$REPO" --list` for that exact ID before choosing cleanup; no automatic reserve/spawn replay. An absent/retracted/expired entry plus confirmed no-spawn permits local receipt cleanup; an offered entry permits repo-scoped release followed by local cleanup. Running/pr-backed entries override stale local not-started assumptions and require task reconciliation. Registry read failure/ambiguous identity preserves the receipt. With unknown spawn, use the tool's task inventory/returned result to establish whether a task exists; absence of a registry entry alone proves nothing about spawn. Confirmed running tasks keep their registry ID until their actual terminal lifecycle transition. A closed captured issue is not proof of task termination. Never erase a receipt to enable another offer.
 
 An open `.active_set` is the coherence pass's recovery receipt: its members are the rows carrying its `set_id`, and a `review` field means the pass started and did not finish. A set recorded `done` in `.coherence_runs` is never read back again (`create:coherence`).
+
+`epic_parent` is the only test for the epic offer (`create:epic-offer`): a tracking parent this session filed (`origin:"create"`, `chain.role == "parent"`) whose `epic_scope`, written by `create:doc-gate`, plans more than five children or leaves some not yet cut. It reads no title, label, keyword or body, and update-only, foreign, closed and legacy rows never match, because it starts from `mine`. An open `.epic_offer` is that offer's recovery receipt; resume follows its recorded state rather than asking again.
 
 If `.inline_checkpoint` exists, report that the inline invocation needs reconciliation; do not retry execution or offer another run. A guard is not invocation success. If `.create_intent.kind` is `new-standalone`, recover that pending new ask rather than resuming the superseded chain. For explicit cancellation/resumption of a superseded plan, use the selected draft-cancel block below; it does not close issues. A partially filed new chain needs an explicit close/re-cut decision, not silent erasure.
 
@@ -191,7 +194,7 @@ if [[ ! "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
   echo "ERROR: expected owner/repo before retargeting; target_repo was not changed" >&2
   exit 1
 fi
-if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_checkpoint != null or .create_intent != null or .active_chain != null or .active_set != null or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved"' "$LOG" >/dev/null; then
+if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_checkpoint != null or .create_intent != null or .active_chain != null or .active_set != null or .epic_offer.state == "offered" or .epic_offer.state == "thread" or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved"' "$LOG" >/dev/null; then
   echo "ERROR: reconcile the existing handoff in its saved repository before retargeting" >&2
   exit 1
 fi
@@ -208,6 +211,7 @@ FOREIGN=$(jq -r --arg repo "$REPO" '
 case "$FOREIGN" in
   0) set_log 'if (.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_checkpoint != null
        or .create_intent != null or .active_chain != null or .active_set != null or .offer_accepted == true
+       or .epic_offer.state == "offered" or .epic_offer.state == "thread"
        or (.delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved")
        or any(.issues[]; .status == "open" and
          (((.url // "") | (try capture("^https?://[^/]+/(?<r>[^/]+/[^/]+)/issues/") catch {r:""}) // {r:""} | .r | ascii_downcase) as $r |

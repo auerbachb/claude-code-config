@@ -9,7 +9,7 @@ If the user describes multiple issues in one message (a numbered/bulleted list, 
 
 **Order within a batch.** Earlier `Created #N: …` links are intermediate output. Hold the last issue’s link for Step 9’s closing order, and print it only once.
 
-**Every issue is still created; the batch gets one inline-run offer after the last issue.** Step 9c owns the offer and its repo-wide cap check for both single issues and batches; place the offer or deferral before the closing table. The cap may defer execution, but it never prevents filing any issue. A separate-thread chip is available only on explicit request.
+**Every issue is still created; the batch gets one inline-run offer after the last issue.** Step 9c owns the offer and its repo-wide cap check for both single issues and batches; place the offer or deferral before the closing table. The cap may defer execution, but it never prevents filing any issue. A separate-thread chip is available only on explicit request, except Step 9c's epic gate: a tracking parent this filing created that plans more than five children, or leaves scope uncut, gets a recommended `/pm epic #N` thread (`create:epic-offer`).
 
 **Increment chains preserve order in that same inline-run offer.** The sizing check turns one oversized ask into up to five increment issues. The chain is ordered and its increments land in sequence, so Step 9c names the chain and its order; the launched thread's `/subagent` Step 6.0b serializes them from there.
 
