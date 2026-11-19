@@ -187,7 +187,9 @@ def terminal: type == "string" and (. as $s | ["done","failed","stopped","abando
 def recoverable: type == "string" and (. == "stopped" or . == "failed");
 def objents: if type == "object" then to_entries[] else empty end;
 def arrents: if type == "array" then to_entries[] else empty end;
-def sz: tojson | length;
+# Encoded UTF-8 bytes, never characters: a character count under-weights
+# multibyte text and skews every size decision (issue #2433 review).
+def sz: tojson | utf8bytelength;
 
 . as $doc
 | ($doc | sz) as $compact_len
@@ -238,12 +240,12 @@ def sz: tojson | length;
     | .value.pr | select(. != null) | tostring ] as $retained_agent_prs
 # The size pass never takes an agent: every agent the age pass kept is within
 # its age window (or protected), i.e. possibly live, and agents are tiny.
-| ( if $est_after_age > $size_cap then
+| ( if $est_after_age > $target_cap then
       ( (($prs | map(select(.pr as $k | $retained_agent_prs | index($k) | not))) + $tasks)
         | map(select((.protected | not) and .ts != null
                      and ((.path | tostring) as $p | $removed_keys | index($p) | not)))
         | sort_by(.ts) ) as $pool
-      | ($est_after_age - $size_cap) as $excess
+      | ($est_after_age - $target_cap) as $excess
       | reduce $pool[] as $c ({acc:0, items:[]};
           if .acc < $excess then .acc += ($c.bytes * $ratio) | .items += [$c] else . end)
       | .items
@@ -285,10 +287,31 @@ def sz: tojson | length;
 | compact_plan
 '
 
-run_plan() { # run_plan <input-file> <file-bytes>
+run_plan() { # run_plan <input-file> <file-bytes> [target-cap]
   jq -c --argjson cut_pr "$CUT_PR" --argjson cut_agent "$CUT_AGENT" --argjson cut_task "$CUT_TASK" \
-     --argjson hist "$HISTORY" --argjson size_cap "$SIZE_CAP" --argjson file_bytes "$2" \
-     "$PLAN_JQ" "$1"
+     --argjson hist "$HISTORY" --argjson size_cap "$SIZE_CAP" --argjson target_cap "${3:-$SIZE_CAP}" \
+     --argjson file_bytes "$2" "$PLAN_JQ" "$1"
+}
+
+# The size pass works from an estimate (compact UTF-8 bytes scaled by the
+# file's pretty-print overhead, which varies with nesting depth). Verify the
+# real committed size — the candidate's pretty-printed bytes — and, while it
+# is still over the cap and the size pass took items, re-plan against a cap
+# lowered by the measured overshoot. Bounded; the plan is deterministic.
+plan_to_cap() { # plan_to_cap <input-file> <out-file>
+  local bytes target="$SIZE_CAP" actual _i
+  bytes="$(file_bytes "$1")"
+  run_plan "$1" "$bytes" > "$2" || return 1
+  for _i in 1 2 3 4 5; do
+    [[ "$(jq '.summary.size_pass_items' "$2")" -gt 0 ]] || return 0
+    actual="$(jq '.doc' "$2" | wc -c | tr -d ' ')"
+    [[ "$actual" =~ ^[0-9]+$ ]] || return 1
+    (( actual > SIZE_CAP )) || return 0
+    target=$(( target - (actual - SIZE_CAP) ))
+    (( target > 0 )) || target=0
+    run_plan "$1" "$bytes" "$target" > "$2" || return 1
+  done
+  return 0
 }
 
 print_summary() { # print_summary <plan-json-file> <verb>
@@ -323,7 +346,7 @@ is_one_object() { [[ "$(jq -s 'length == 1 and (.[0] | type) == "object"' "$1" 2
 if [[ "$MODE" == check ]]; then
   is_one_object "$STATE_FILE" \
     || { echo "session-state-compact.sh: $STATE_FILE must contain exactly one top-level JSON object" >&2; exit 4; }
-  run_plan "$STATE_FILE" "$(file_bytes "$STATE_FILE")" > "$WORK/plan.json" \
+  plan_to_cap "$STATE_FILE" "$WORK/plan.json" \
     || { echo "session-state-compact.sh: plan failed" >&2; exit 4; }
   print_summary "$WORK/plan.json" "check (no changes made)"
   exit 0
@@ -377,7 +400,7 @@ if ! is_one_object "$STATE_FILE"; then
   exit 4
 fi
 
-run_plan "$STATE_FILE" "$(file_bytes "$STATE_FILE")" > "$WORK/plan.json" \
+plan_to_cap "$STATE_FILE" "$WORK/plan.json" \
   || { echo "session-state-compact.sh: plan failed" >&2; exit 4; }
 
 REMOVED="$(jq '.removed | length' "$WORK/plan.json")"

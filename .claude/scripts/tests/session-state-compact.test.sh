@@ -227,6 +227,21 @@ check_eq "size pass never archives a live (recent) agent" "spawned" \
   "$(jq -r '.active_agents["new-agent"].status' "$STATE")"
 
 echo
+echo "== Size cap is met in real bytes, even with multibyte-heavy retained data =="
+rm -rf "$ARCHIVE_DIR"
+jq -n --arg now "$NOW_ISO" '{
+  repos: {"org/u": {
+    notes: ("€" * 60000),
+    prs: ([range(0;200)] | map({key:"p\(.)", value:{note:("a" * 1000), pipeline_started_at:$now}}) | from_entries)}}
+}' > "$STATE"
+U_CAP=250000
+bash "$COMPACT" --apply --size-cap "$U_CAP" >/dev/null 2>&1; RC=$?
+check_eq "multibyte fixture: --apply exits 0" "0" "$RC"
+check_eq "multibyte fixture: committed file is at or under the cap" "1" \
+  "$(( $(wc -c < "$STATE") <= U_CAP ))"
+check_eq "multibyte fixture: the multibyte text is retained" "60000" "$(jq '.repos["org/u"].notes | length' "$STATE")"
+
+echo
 echo "== Post-write trigger: fires only above the cap, never recursively =="
 rm -rf "$ARCHIVE_DIR"; build_state
 rm -f "$STATE.compact.stamp" "$STATE.compact.attempt"
