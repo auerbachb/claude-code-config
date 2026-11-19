@@ -206,6 +206,24 @@ OUT=$(bash "$SCRIPT" --json)
 check_json_has "Test5: pinned label suppresses inactive flag" "$OUT" '[.[] | select(.number==101)] | length == 0'
 
 # ---------------------------------------------------------------------------
+# Test 5b (issue #2539): the owner's human-tasks list issue is never flagged —
+# not inactive, and not solved-by-pr even when a merged PR says "Closes" it.
+# A control issue in the same fixture proves both checks still ran.
+# ---------------------------------------------------------------------------
+jq -n --arg u "$OLD_ISO" '[
+  {number: 103, title: "Human tasks", labels: [{name:"Human-Tasks"}], assignees: [],
+   createdAt: $u, updatedAt: $u, body: "- [ ] renew the domain"},
+  {number: 104, title: "Old stale issue about gadgets", labels: [], assignees: [],
+   createdAt: $u, updatedAt: $u, body: "nothing interesting here"}]' > "$TMP/open.json"
+jq -n --arg u "$NOW_ISO" '[{number: 89, title: "Owner chores", body: "Closes #103. Closes #104.", mergedAt: $u, headRefName: "issue-103-chores"}]' > "$TMP/merged.json"
+echo "[]" > "$TMP/openprs.json"
+echo "[]" > "$TMP/closed_page1.json"
+OUT=$(bash "$SCRIPT" --json)
+check_json_has "Test5b: human-tasks issue appears in no category" "$OUT" '[.[] | select(.number==103)] | length == 0'
+check_json_has "Test5b: control issue is still flagged solved-by-pr" "$OUT" '[.[] | select(.number==104 and .category=="solved-by-pr")] | length == 1'
+check_json_has "Test5b: control issue is still flagged inactive" "$OUT" '[.[] | select(.number==104 and .category=="inactive")] | length == 1'
+
+# ---------------------------------------------------------------------------
 # Test 6: superseded — 5+ commits on a single referenced file (strong evidence)
 # ---------------------------------------------------------------------------
 jq -n --arg u "$NOW_ISO" '[{number: 200, title: "Parser needs cleanup", labels: [], assignees: [],

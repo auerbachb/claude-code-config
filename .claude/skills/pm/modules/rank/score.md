@@ -129,7 +129,7 @@ Sort candidates into four tiers — **Critical**, **High**, **Medium**, **Low**.
 6. **Exclusions:**
    - Skip issues that already have an open PR (per the in-flight signal cross-referenced in 1B.3 — a closing keyword in an open PR body means in flight)
    - Skip issues assigned to someone else (unless stale > 14 days)
-   - Skip issues labeled `blocked`, `on-hold`, `wontfix`, `duplicate`
+   - Skip issues labeled `blocked`, `on-hold`, `wontfix`, `duplicate`, or `human-tasks` (the owner's own to-do list issue — never agent work, #2539)
 
 7. **Operator order (`/desk`) — last, after every exclusion.** Skip this step when 1B.1a found no override (`.order` and `.parked` both empty) or the file was unreadable. Otherwise flatten the surviving candidates into one ranked list — Critical first, each tier in its final order — and overlay the operator's order on it:
 
@@ -142,7 +142,7 @@ Sort candidates into four tiers — **Critical**, **High**, **Medium**, **Low**.
    [[ "$PRIO_APPLY_RC" -eq 0 ]] || PRIORITY_UNREADABLE=true   # the file changed under us: 1B.1a's unreadable case
    ```
 
-   Its `.order` is the presentation and dispatch order: `source: "override"` rows first, in the operator's order, then the `ranked` rows in yours; parked issues are gone. **The overlay moves rows and nothing else** — each row keeps the tier, leverage, OKR alignment, and rationale (1)-(6) gave it, so an issue dropped from the file returns straight to its ranked place. `.not_eligible` lists ordered issues that did not survive (1)-(6): name each with the exclusion that removed it (open PR, assigned to someone else, a `blocked`/`on-hold`/`wontfix`/`duplicate` label, closed) and never promote one past it.
+   Its `.order` is the presentation and dispatch order: `source: "override"` rows first, in the operator's order, then the `ranked` rows in yours; parked issues are gone. **The overlay moves rows and nothing else** — each row keeps the tier, leverage, OKR alignment, and rationale (1)-(6) gave it, so an issue dropped from the file returns straight to its ranked place. `.not_eligible` lists ordered issues that did not survive (1)-(6): name each with the exclusion that removed it (open PR, assigned to someone else, a `blocked`/`on-hold`/`wontfix`/`duplicate`/`human-tasks` label, closed) and never promote one past it.
 
 **Misaligned effort ("stop doing"):** cross-reference the user's current work (their open PRs and assigned issues from 1B.2) against the tiers. If they are actively on Low/Medium work while Critical/High issues sit unassigned and within their scope, flag it — name the low-impact work and the higher-impact work to switch to. Only flag when the misalignment is clear and the alternative is materially better; when their current work is already Critical/High, say it is well-aligned instead.
 

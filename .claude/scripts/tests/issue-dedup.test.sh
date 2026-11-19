@@ -54,6 +54,14 @@ cat > "$WORK/open.json" <<'JSON'
     "url": "https://github.com/o/r/issues/611",
     "state": "OPEN",
     "body": "The explicit full review trigger has no ceiling per PR per hour beyond the documented convention. Add an enforced cap in cr-review-hourly.sh."
+  },
+  {
+    "number": 900,
+    "title": "Human tasks",
+    "url": "https://github.com/o/r/issues/900",
+    "state": "OPEN",
+    "labels": [{"name": "Human-Tasks"}],
+    "body": "Owner to-dos: check root_repo polling-state-gate.sh session-state.json concurrent scoping greptile severity badge parsing poll"
   }
 ]
 JSON
@@ -149,6 +157,18 @@ if has_number 638; then
 else
   ok "#638 excluded"
 fi
+
+echo "== the human-tasks list issue is never a candidate (issue #2539) =="
+# #900's body holds every term the other cases search for, so any case above
+# would have surfaced it had the label filter not dropped it.
+run "polling-state-gate.sh root_repo session-state.json concurrent scoping" --max-results 10
+if has_number 900; then
+  fail "#900 (labelled human-tasks) returned as a candidate"
+else
+  ok "#900 (labelled human-tasks) never returned"
+fi
+run "greptile severity badge parsing"
+assert_eq "a match only in the human-tasks issue is no candidate" "1" "$RC"
 
 echo "== term matching is boundary-aware =="
 # Alphanumerics and `_` bind: `poll` must not match `polling` (the fixture's only
