@@ -191,6 +191,9 @@ grep -Fq 'a fresh `/go-on` invocation applies the full 0.4 precedence table agai
 grep -Fq "re-check Step 0b's authorship guard and Step 1's diff-survival guard" "$entry" || fail "compaction gates"
 grep -Fq 'always re-runs Step 8 (read-only) before Step 9a or Step 10' "$entry" || fail "compaction re-derives CLEAN_BEHIND"
 grep -Fq "Before Step 6 or Step 7, run that module's Step 5" "$token_kind" || fail "token resume reloads the sticky reviewer"
+grep -Fq 'so a `continue_fixes` resume reaches Step 7 rather than waiting at Step 6' "$token_kind" || fail "continue_fixes overrides Step 5 exit 1"
+grep -Fq '`continue_fixes` (Step 5, then Step 7, even when Step 5 exits `1`)' "$skill/modules/review/respond.md" || fail "respond header continue_fixes route"
+grep -Fq 'to `/pause-resume` only, `--generation`' "$skill/modules/kinds/planned-stop.md" || fail "end-resume must not receive --generation"
 
 # --- Preflight: a missing lane module blocks before any write ---------------
 # Simulated caller: resolve every lane module, then write the receipt.
@@ -324,11 +327,19 @@ after = Counter(line for path in sys.argv[2:] for line in lines(path, True))
 #    review/respond.md now assigns it there too.
 # 2. The token_exhaustion lane had no step for phase-a-fixer's
 #    `needs: continue_fixes`; kinds/token-exhaustion.md maps it to Step 7.
-TOKEN_OLD = "`continue_polling` → Step 6, unpushed fixes → Step 1b"
-TOKEN_NEW = "`continue_polling` → Step 6, `continue_fixes` → Step 7, unpushed fixes → Step 1b"
-for line in list(before):
-    if TOKEN_OLD in line:
-        before[line.replace(TOKEN_OLD, TOKEN_NEW)] += before.pop(line)
+# 3. The pause/end lane forwarded --generation to /end-resume, which declares
+#    no such flag; kinds/planned-stop.md now forwards it to /pause-resume only.
+REPLACED = [
+    ("`continue_polling` → Step 6, unpushed fixes → Step 1b",
+     "`continue_polling` → Step 6, `continue_fixes` → Step 7, unpushed fixes → Step 1b"),
+    ("**and `--generation` when 0.2a validated one**. Forwarding it",
+     "**and, to `/pause-resume` only, `--generation` when 0.2a validated one** (`/end-resume` declares no such flag). Forwarding it"),
+]
+for old, new in REPLACED:
+    hits = [line for line in before if old in line]
+    if len(hits) != 1 or before[hits[0]] != 1:
+        sys.exit(f"go-on split parity: FAIL — deliberate replacement base not found once: {old[:60]}")
+    before[hits[0].replace(old, new)] += before.pop(hits[0])
 deliberate = Counter({
     "SHA=$(gh pr view $PR_NUM --json commits --jq '.commits[-1].oid')": 1,
 })

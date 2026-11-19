@@ -1,7 +1,7 @@
 <!-- go-on-routing:begin -->
 Route `review:respond`.
 
-**Trigger:** the lane reaches Step 5, a `token_exhaustion` entry whose `needs` is `continue_polling` (Step 5, then Step 6) or `continue_fixes` (Step 5, then Step 7), or Step 8 returns to Step 6 or Step 7.
+**Trigger:** the lane reaches Step 5, a `token_exhaustion` entry whose `needs` is `continue_polling` (Step 5, then Step 6) or `continue_fixes` (Step 5, then Step 7, even when Step 5 exits `1`), or Step 8 returns to Step 6 or Step 7.
 
 **Prerequisites:** the `token-exhaustion` or `unplanned` kind module routed the lane here, and the lane preflight resolved every review module. `review:prepare` ran: its helpers are resolved and Step 0b's authorship guard passed.
 
