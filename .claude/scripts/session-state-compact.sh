@@ -421,8 +421,11 @@ fi
 # retention's name sort is age order (pid order is not).
 # Seconds and microseconds come from ONE clock read, so a second boundary
 # between two reads cannot misorder the stamp.
+# CLAUDE_STATE_COMPACT_CLOCK_FALLBACK=1 forces the seconds-only path (tests).
 _rt=""
-if [[ -n "${EPOCHREALTIME:-}" ]]; then
+if [[ "${CLAUDE_STATE_COMPACT_CLOCK_FALLBACK:-0}" == 1 ]]; then
+  :
+elif [[ -n "${EPOCHREALTIME:-}" ]]; then
   _rt="${EPOCHREALTIME/,/.}"
 elif command -v perl >/dev/null 2>&1; then
   _rt="$(perl -MTime::HiRes=time -e 'my $t = time; printf "%d.%06d", int $t, ($t - int $t) * 1e6' 2>/dev/null)"
@@ -435,7 +438,6 @@ if [[ "$_sec" =~ ^[0-9]+$ && "$_usec" =~ ^[0-9]{6}$ ]] \
 else
   _stamp="$(date -u +%Y%m%dT%H%M%S)" _usec="000000"
 fi
-COMPACTION_ID="${_stamp}.${_usec}Z-$$-${RANDOM}"
 if ! (umask 077 && mkdir -p "$ARCHIVE_DIR") || ! chmod 700 "$ARCHIVE_DIR"; then
   rm -f "$CAND"
   echo "session-state-compact.sh: could not create archive dir $ARCHIVE_DIR" >&2
@@ -446,6 +448,17 @@ fi
 # files — even with the same basename — may share the directory).
 STATE_PATH_ID="$(printf '%s' "$STATE_FILE" | cksum | awk '{print $1}')"
 ARCHIVE_PREFIX="compact-${STATE_FILE##*/}-${STATE_PATH_ID}-"
+# Strictly increasing stamps: runs of one state file are serialized by the run
+# guard, so if the newest existing archive's stamp is not older than ours (the
+# seconds-only fallback, or a coarse clock), take the next microsecond after it.
+_last="$(LC_ALL=C; shopt -s nullglob; _n=""
+         for _a in "$ARCHIVE_DIR/$ARCHIVE_PREFIX"*.json; do _n="${_a##*/}"; done
+         _n="${_n#"$ARCHIVE_PREFIX"}"; printf '%s' "${_n%%Z-*}")"
+if [[ "$_last" =~ ^([0-9]{8}T[0-9]{6})\.([0-9]{6})$ ]] && [[ ! "$_stamp.$_usec" > "$_last" ]]; then
+  _stamp="${BASH_REMATCH[1]}"
+  _usec="$(printf '%06d' $(( 10#${BASH_REMATCH[2]} + 1 )))"
+fi
+COMPACTION_ID="${_stamp}.${_usec}Z-$$-${RANDOM}"
 ARCHIVE_FILE="$ARCHIVE_DIR/$ARCHIVE_PREFIX$COMPACTION_ID.json"
 if ! (umask 077 && jq --arg id "$COMPACTION_ID" --arg at "$(date -u +%FT%TZ)" \
         --arg state "$STATE_FILE" --arg trigger "$TRIGGER" \
