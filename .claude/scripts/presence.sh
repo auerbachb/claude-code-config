@@ -539,6 +539,7 @@ eval_json() {
        away: decide($p; $u; $now).away,
        claim: ($p.expiry_claim // null), ps: ($p.state // null), pt: ($p.declared_epoch // null),
        ut: ($u.since_epoch // null), ua: (if ($u | has("active")) then $u.active else null end), rec: $rec,
+       pu: ($p.until_epoch // null), uu: ($u.until_epoch // null),
        dlg: ($p.return.dialog? // null), dlg_gen: ($p.return.generation? // null)}' "$STATE_FILE" 2>/dev/null ||
     printf '{"lapse":null,"rec":null}\n'
 }
@@ -679,9 +680,10 @@ cmd_return() {
   if [ -n "$lp" ] && [ "$lp" != null ]; then
     guard=(--expect-at "$(deadline_path "$lp")" "$(jf "$lp" '.until')")
   elif [ "$early" -eq 1 ] && [ "$(jr "$e" '.away')" = true ]; then
-    # A live away window: guard both stored ends, so a re-declaration meanwhile makes this lose.
-    guard=(--expect-at ".presence.until_epoch" "$("$JQ" -c '.presence.until_epoch // null' "$STATE_FILE" 2>/dev/null || echo null)"
-           --expect-at ".unattended.until_epoch" "$("$JQ" -c '.unattended.until_epoch // null' "$STATE_FILE" 2>/dev/null || echo null)")
+    # A live away window: guard both stored ends from the same snapshot the other guards come
+    # from, so a re-declaration meanwhile (even in the same second) makes this lose.
+    guard=(--expect-at ".presence.until_epoch" "$(jf "$e" '.pu')"
+           --expect-at ".unattended.until_epoch" "$(jf "$e" '.uu')")
   else
     return 1
   fi
