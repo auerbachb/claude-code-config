@@ -74,7 +74,8 @@ COMMON_CAP = 15  # a shingle/identifier in more files than this is boilerplate
 REASON_MAX = 240
 
 FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
-HEADING_RE = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t#]*$")
+BLANK_QUOTE_RE = re.compile(r"^ {0,3}(?:>[ \t]*)+$")
+HEADING_RE =re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t#]*$")
 LIST_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s")
 WORD_RE = re.compile(r"[A-Za-z0-9_']+")
 ID_RES = [
@@ -145,8 +146,34 @@ def read_bytes(top, rel):
     real = os.path.realpath(os.path.join(top, rel))
     if not inside(top, real):
         die("%s now resolves outside the checkout; restart the audit" % rel)
-    with open(real, "rb") as fh:
-        return fh.read()
+    data = read_regular(real)
+    if data is None:
+        die("%s is no longer a regular file; restart the audit" % rel)
+    return data
+
+
+def read_regular(path):
+    """Read a regular file without blocking: open non-blocking and refuse
+    anything fstat() does not report as a regular file (FIFO, device,
+    socket). Returns None for a non-regular file; OSError propagates."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        chunks = []
+        while True:
+            b = os.read(fd, 1 << 20)
+            if not b:
+                break
+            chunks.append(b)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def is_env_file(path):
+    base = os.path.basename(path)
+    return base == ".env" or base.startswith(".env.")
 
 
 def read_lines(top, rel, data=None):
@@ -199,6 +226,9 @@ def cmd_inventory(args):
         real = os.path.realpath(full)
         if not inside(top, real):
             excluded.append({"path": item, "reason": "symlink resolves outside the checkout"})
+            continue
+        if is_env_file(full) or is_env_file(real):
+            excluded.append({"path": item, "reason": "environment file (never read)"})
             continue
         if not os.path.isfile(real):
             excluded.append({"path": item, "reason": "not a regular file"})
@@ -314,7 +344,8 @@ def scan(lines):
             skipped.append({"kind": "comment", "start": i + 1, "end": end + 1})
             i = end + 1
             continue
-        if not line.strip():
+        if not line.strip() or BLANK_QUOTE_RE.match(line):
+            # A quote line holding only ">" separates quoted paragraphs.
             kinds[i] = "blank"
         else:
             h = HEADING_RE.match(line)
@@ -538,7 +569,7 @@ def cmd_pairs(args):
 
 # ---------------------------------------------------------------- read-only check
 
-def path_digest(full):
+def path_digest(full, top=None):
     """Digest one path without following it out of the checkout: a symlink is
     hashed by its target string, a special file (FIFO, socket, device) and any
     .env file by metadata only, never opened. None for a directory."""
@@ -553,14 +584,20 @@ def path_digest(full):
             return "link:" + hashlib.sha256(os.fsencode(os.readlink(full))).hexdigest()
         except OSError:
             return "link:unreadable"
-    base = os.path.basename(full)
-    if not stat.S_ISREG(st.st_mode) or base == ".env" or base.startswith(".env."):
-        return "meta:%o:%d:%d" % (st.st_mode, st.st_size, st.st_mtime_ns)
+    meta = "meta:%o:%d:%d" % (st.st_mode, st.st_size, st.st_mtime_ns)
+    if not stat.S_ISREG(st.st_mode) or is_env_file(full):
+        return meta
+    real = os.path.realpath(full)
+    if is_env_file(real):
+        return meta
+    if top is not None and not inside(top, real):
+        # A parent directory now links out of the checkout: never read it.
+        return "outside:" + meta
     try:
-        with open(full, "rb") as fh:
-            return hashlib.sha256(fh.read()).hexdigest()
+        data = read_regular(real)
     except OSError:
         return "missing"
+    return meta if data is None else hashlib.sha256(data).hexdigest()
 
 
 def fingerprint(snap):
@@ -581,7 +618,7 @@ def fingerprint(snap):
         i += 1
     hashes = {}
     for rel in sorted(paths):
-        hashes[rel] = path_digest(os.path.join(top, rel))
+        hashes[rel] = path_digest(os.path.join(top, rel), top)
     hashes = {k: v for k, v in hashes.items() if v is not None}
     return {"head": git(top, "rev-parse", "HEAD").decode().strip(),
             "status_sha256": hashlib.sha256(st).hexdigest(), "files": hashes}
@@ -600,6 +637,8 @@ def cmd_verify(args):
         die("cannot read %s: %s" % (args.before, exc))
     now = fingerprint(snap)
     diffs = []
+    if snap.get("head") and snap.get("head") != before.get("head"):
+        diffs.append("HEAD moved between inventory and baseline: %s -> %s" % (snap.get("head"), before.get("head")))
     if before.get("head") != now["head"]:
         diffs.append("HEAD moved: %s -> %s" % (before.get("head"), now["head"]))
     if before.get("status_sha256") != now["status_sha256"]:
@@ -623,6 +662,21 @@ def cmd_verify(args):
 
 # ---------------------------------------------------------------- report
 
+class ParseError(str):
+    """A JSONL line that did not decode to an object; kept apart from agent fields."""
+
+
+def _no_constant(name):
+    raise ValueError("non-finite number: " + name)
+
+
+def _finite_float(text):
+    v = float(text)
+    if v != v or v in (float("inf"), float("-inf")):
+        raise ValueError("non-finite number: " + text)
+    return v
+
+
 def read_jsonl(path):
     rows = []
     if not path:
@@ -632,11 +686,11 @@ def read_jsonl(path):
             for n, line in enumerate(fh, 1):
                 if line.strip():
                     try:
-                        row = json.loads(line)
+                        row = json.loads(line, parse_constant=_no_constant, parse_float=_finite_float)
                     except ValueError:
                         row = None
                     if not isinstance(row, dict):
-                        row = {"_parse_error": "line %d is not a JSON object" % n}
+                        row = ParseError("line %d is not a JSON object with finite numbers" % n)
                     rows.append(row)
     except OSError as exc:
         die("cannot read %s: %s" % (path, exc))
@@ -656,8 +710,8 @@ def line_no(v):
 
 def validate(f, snap):
     errs = []
-    if "_parse_error" in f:
-        return [f["_parse_error"]]
+    if isinstance(f, ParseError):
+        return [str(f)]
     try:
         lvl = line_no(f.get("level"))
     except (TypeError, ValueError):
@@ -670,7 +724,7 @@ def validate(f, snap):
     reason = f.get("reason")
     if not isinstance(reason, str) or not reason.strip():
         errs.append("reason is required")
-    elif "\n" in reason.strip() or len(reason) > REASON_MAX:
+    elif re.search("[\r\n\v\f\x85\u2028\u2029]", reason.strip()) or len(reason) > REASON_MAX:
         errs.append("reason must be one line of at most %d characters" % REASON_MAX)
     if act in ("merge", "move") and not str(f.get("target") or "").strip():
         errs.append("%s needs a target" % act)
@@ -723,7 +777,7 @@ def parse_level_soft(v):
 
 def norm_level(v):
     try:
-        return int(v)
+        return line_no(v)
     except (TypeError, ValueError):
         return parse_level_soft(v)
 
@@ -754,17 +808,35 @@ def cmd_report(args):
     valid, invalid = [], []
     for f in read_jsonl(args.findings):
         errs = validate(f, snap)
-        lvl = norm_level(f.get("level"))
+        lvl = None if errs else norm_level(f.get("level"))
         if not errs and not lo <= lvl <= hi:
             errs.append("level %d is outside the run range %d-%d" % (lvl, lo, hi))
         if errs:
-            invalid.append({"finding": f, "errors": errs})
+            invalid.append({"finding": None if isinstance(f, ParseError) else f, "errors": errs})
         else:
             f = dict(f)
             f["level"] = lvl
             f["end"] = int(f.get("end", f["start"]))
             f["start"] = int(f["start"])
             valid.append(f)
+
+    # A level-6/7 finding counts only when its pair has a "reviewed" coverage
+    # line; otherwise it is listed as unreviewed and kept out of tallies and
+    # filing.
+    cov_rows = read_jsonl(args.coverage)
+    reviewed_pairs = set()
+    for r in cov_rows:
+        if isinstance(r, dict) and r.get("status") == "reviewed":
+            pr, rl = r.get("pair"), norm_level(r.get("level"))
+            if rl and isinstance(pr, list) and len(pr) == 2 and all(isinstance(x, str) for x in pr):
+                reviewed_pairs.add((rl, tuple(sorted(pr))))
+    pair_unreviewed, checked = [], []
+    for f in valid:
+        if f["level"] >= 6 and (f["level"], tuple(sorted((f["file"], f["other_file"])))) not in reviewed_pairs:
+            pair_unreviewed.append(f)
+        else:
+            checked.append(f)
+    valid = checked
 
     # A cut/merge/move overlapping a `keep` range in the same file is a
     # conflict: it is listed, excluded from the tallies and from filing.
@@ -820,11 +892,12 @@ def cmd_report(args):
         "total_moved": sum(count_lines(top, r, set(span_lines(s)) - set(span_lines(total_rm.get(r, []))), cache)
                            for r, s in total_mv.items()),
         "conflicts": conflicts,
+        "unreviewed_pair_findings": pair_unreviewed,
         "note": "per-level figures can add up to more than the total: a line cut at two levels is counted once "
                 "in the total, and a moved line that is also removed counts only as removed. Counts are words on the "
                 "affected lines: a sentence cut on a line holding other sentences counts the whole line, so "
                 "sentence-level figures are an upper bound",
-        "coverage": coverage(read_jsonl(args.coverage), snap, lo, hi, args.pairs),
+        "coverage": coverage(cov_rows, snap, lo, hi, args.pairs),
         "excluded": snap.get("excluded", []),
     }
     if args.format == "json":
@@ -837,7 +910,11 @@ def coverage(rows, snap, lo, hi, pair_files):
     reviewed = set()
     reviewed_pairs = set()
     for r in rows:
+        if not isinstance(r, dict):
+            continue
         lvl = norm_level(r.get("level"))
+        if lvl is None:
+            continue
         pr = r.get("pair")
         if pr is not None:
             ok = isinstance(pr, list) and len(pr) == 2 and all(isinstance(x, str) for x in pr)
@@ -928,7 +1005,12 @@ def render(r):
             "Proposals that overlap a passage another finding keeps. Excluded from the tallies and from filing until resolved.", ""]
     for f in r["conflicts"]:
         out.append("- %s (level %d, %s) — %s" % (loc(f), f["level"], f["action"], cell(f["reason"])))
-    keeps = [f for f in r["findings"] if f["action"] == "keep"]
+    upf = r.get("unreviewed_pair_findings", [])
+    out += ["", "## Pair findings without a reviewed pair (%d)" % len(upf), "",
+            "No \"reviewed\" coverage line for the pair. Excluded from the tallies and from filing.", ""]
+    for f in upf:
+        out.append("- %s (level %d, %s) — %s" % (loc(f), f["level"], f["action"], cell(f["reason"])))
+    keeps =[f for f in r["findings"] if f["action"] == "keep"]
     out += ["", "## What NOT to change (%d)" % len(keeps), ""]
     for f in keeps:
         out.append("- %s (level %d) — %s" % (loc(f), f["level"], cell(f["reason"])))

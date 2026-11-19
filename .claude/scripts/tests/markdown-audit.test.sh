@@ -23,6 +23,17 @@ FAIL=0
 ok()   { PASS=$((PASS + 1)); echo "ok   - $1"; }
 bad()  { FAIL=$((FAIL + 1)); echo "FAIL - $1"; [ "$#" -gt 1 ] && printf '       %s\n' "$2"; }
 check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected [$3] got [$2]"; fi; }
+# Run a command with a 20s limit using only python3 (no extra prerequisite).
+with_timeout() {
+  python3 -I -B -c 'import subprocess, sys
+try:
+    sys.exit(subprocess.run(sys.argv[1:], timeout=20).returncode)
+except subprocess.TimeoutExpired:
+    sys.exit(124)' "$@"
+}
+# Call one helper function directly: mda_py '<expr using mdaudit and a>' args...
+mda_py() { local expr="$1"; shift
+  with_timeout python3 -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import mdaudit; a = sys.argv[2:]; print('"$expr"')' "$(dirname "$MDAUDIT")" "$@"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/markdown-audit-test.XXXXXX")" || exit 1
 trap 'rm -rf "$WORK"' EXIT
@@ -78,7 +89,7 @@ $SHARED
 Unrelated words here about something else entirely.
 EOF
 
-printf '# Spaced\n\nA file in a folder with a space.\n' > "$FX/docs/sub dir/spaced file.md"
+printf '# Spaced\n\nA file in a folder with a space.\n' > "$FX/docs/sub dir/spaced fixture-note.md"
 printf '# Outside\n\nOutside text.\n' > "$WORK/outside/out.md"
 ln -s "$WORK/outside/out.md" "$FX/docs/escape.md"
 ln -s "../.claude/skills/beta/SKILL.md" "$FX/docs/beta-link.md"
@@ -102,7 +113,7 @@ run_md inventory > "$SNAP"
 check "inventory: repo kind" "$(jq -r .target_kind "$SNAP")" "repo"
 check "inventory: corpus (symlink escape dropped, link deduplicated)" \
   "$(jq -r '.corpus | join(",")' "$SNAP")" \
-  ".claude/skills/alpha/SKILL.md,.claude/skills/beta/SKILL.md,docs/sub dir/spaced file.md"
+  ".claude/skills/alpha/SKILL.md,.claude/skills/beta/SKILL.md,docs/sub dir/spaced fixture-note.md"
 check "inventory: escape recorded" "$(jq -r '[.excluded[] | select(.path=="docs/escape.md") | .reason] | .[0]' "$SNAP")" \
   "symlink resolves outside the checkout"
 check "inventory: link recorded as duplicate" "$(jq -r '[.excluded[] | select(.path=="docs/beta-link.md")] | length' "$SNAP")" "1"
@@ -113,7 +124,7 @@ MDA_CWD="$FX/.claude/skills" run_md inventory --target alpha/SKILL.md > "$FSNAP"
 check "inventory: relative file target from a subdirectory" "$(jq -r '[.target_kind, (.in_scope|join(","))] | join(" ")' "$FSNAP")" \
   "file .claude/skills/alpha/SKILL.md"
 check "inventory: folder with spaces" "$(run_md inventory --target "docs/sub dir" | jq -r '.target_kind + " " + (.in_scope|join(","))')" \
-  "folder docs/sub dir/spaced file.md"
+  "folder docs/sub dir/spaced fixture-note.md"
 run_md inventory --target "$WORK/outside" >/dev/null 2>&1; check "inventory: outside target rejected" "$?" "2"
 run_md inventory --target notes.txt >/dev/null 2>&1; check "inventory: non-Markdown target rejected" "$?" "2"
 check "inventory: checkout root is a repo run" "$(MDA_CWD="$FX/docs" run_md inventory --target .. | jq -r .target_kind)" "repo"
@@ -194,9 +205,9 @@ F2="$WORK/findings2.jsonl"
   echo 'null'
   echo '[1,2]'
   echo '{"level":2,"file":".claude/skills/alpha/SKILL.md","start":3,"end":3,"other_file":".claude/skills/beta/SKILL.md","action":"cut","reason":"second file at level 2"}'
-  echo '{"level":6,"file":".claude/skills/alpha/SKILL.md","start":3,"end":3,"other_file":"docs/sub dir/spaced file.md","other_start":1,"other_end":1,"action":"merge","target":"x","reason":"not one sibling group"}'
+  echo '{"level":6,"file":".claude/skills/alpha/SKILL.md","start":3,"end":3,"other_file":"docs/sub dir/spaced fixture-note.md","other_start":1,"other_end":1,"action":"merge","target":"x","reason":"not one sibling group"}'
   echo '{"level":6,"file":[],"start":1,"end":1,"other_file":".claude/skills/beta/SKILL.md","other_start":1,"other_end":1,"action":"cut","reason":"file is not a string"}'
-  echo '{"level":7,"file":".claude/skills/beta/SKILL.md","start":1,"end":1,"other_file":"docs/sub dir/spaced file.md","other_start":1,"other_end":1,"action":"merge","target":"x","reason":"neither file in scope"}'
+  echo '{"level":7,"file":".claude/skills/beta/SKILL.md","start":1,"end":1,"other_file":"docs/sub dir/spaced fixture-note.md","other_start":1,"other_end":1,"action":"merge","target":"x","reason":"neither file in scope"}'
 } > "$F2"
 R2="$(run_md report --snapshot "$FSNAP" --findings "$F2" --format json)"
 check "report: moved line also removed counts only as removed" "$(jq -r '"\(.total_removed) \(.total_moved)"' <<<"$R2")" "3 2"
@@ -214,13 +225,32 @@ FK="$WORK/fk.jsonl"
   echo '{"level":6,"file":".claude/skills/beta/SKILL.md","start":5,"end":5,"other_file":".claude/skills/alpha/SKILL.md","other_start":1,"other_end":1,"action":"keep","reason":"beta owns the gate wording"}'
   echo '{"level":6,"file":".claude/skills/alpha/SKILL.md","start":18,"end":18,"other_file":".claude/skills/beta/SKILL.md","other_start":5,"other_end":5,"action":"merge","target":"beta","reason":"conflicts only in other_file"}'
 } > "$FK"
-check "report: keep conflict detected at the second pair location" \
-  "$(run_md report --snapshot "$SNAP" --findings "$FK" --format json | jq -r '.conflicts | length')" "1"
 C6="$WORK/c6.jsonl"
 {
   echo '{"level":6,"pair":[".claude/skills/alpha/SKILL.md",null],"status":"reviewed"}'
   echo '{"level":6,"pair":[".claude/skills/beta/SKILL.md",".claude/skills/alpha/SKILL.md"],"status":"reviewed"}'
 } > "$C6"
+check "report: keep conflict detected at the second pair location" \
+  "$(run_md report --snapshot "$SNAP" --findings "$FK" --coverage "$C6" --format json | jq -r '.conflicts | length')" "1"
+check "report: pair finding without a reviewed pair is kept out of filing" \
+  "$(run_md report --snapshot "$SNAP" --findings "$FP" --format json | jq -r '"\(.findings | length) \(.unreviewed_pair_findings | length)"')" "0 1"
+check "report: pair finding with a reviewed pair is offered" \
+  "$(run_md report --snapshot "$SNAP" --findings "$FP" --coverage "$C6" --format json | jq -r '"\(.findings | length) \(.unreviewed_pair_findings | length)"')" "1 0"
+C9="$WORK/c9.jsonl"
+echo '{"level":6.9,"pair":[".claude/skills/beta/SKILL.md",".claude/skills/alpha/SKILL.md"],"status":"reviewed"}' > "$C9"
+check "report: fractional coverage level is not counted as reviewed" \
+  "$(run_md report --snapshot "$SNAP" --findings "$FP" --coverage "$C9" --pairs "$WORK/p6.json" --format json | jq -r '.coverage.pairs.reviewed | length')" "0"
+FBAD="$WORK/fbad.jsonl"
+{
+  echo '{"level":Infinity,"file":".claude/skills/alpha/SKILL.md","start":3,"end":3,"action":"cut","reason":"inf level"}'
+  echo '{"level":1e999,"file":".claude/skills/alpha/SKILL.md","start":3,"end":3,"action":"cut","reason":"overflow level"}'
+  echo '{"level":1,"file":".claude/skills/alpha/SKILL.md","start":3,"end":3,"action":"cut","reason":"agent field","_parse_error":7}'
+  echo '{"level":1,"file":".claude/skills/alpha/SKILL.md","start":3,"end":3,"action":"cut","reason":"carriage\rreturn"}'
+} > "$FBAD"
+RB="$(run_md report --snapshot "$FSNAP" --findings "$FBAD" --format json)"; RC=$?
+check "report: non-finite level and CR reason rejected without a crash" "$RC $(jq -r '.invalid | length' <<<"$RB")" "0 3"
+check "report: an agent _parse_error field is just a field" "$(jq -r '.findings | length' <<<"$RB")" "1"
+if run_md report --snapshot "$FSNAP" --findings "$FBAD" >/dev/null; then ok "report: markdown renders with malformed rows"; else bad "report: markdown renders with malformed rows"; fi
 check "report: malformed coverage pair skipped, valid pair in either order counted" \
   "$(run_md report --snapshot "$SNAP" --findings "$FP" --coverage "$C6" --pairs "$WORK/p6.json" --format json | jq -r '"\(.coverage.pairs.reviewed | length) \(.coverage.pairs.unreviewed | length)"')" "1 0"
 
@@ -236,7 +266,7 @@ RUN="$(sed -n 's/^MDA_RUN=//p' <<<"$OUT")"
 check "block: stop at section runs levels 1-3" "$(sed -n 's/^LEVELS=//p' <<<"$OUT")" "1-3"
 if [ -n "$RUN" ] && [ -f "$RUN/segments.json" ]; then ok "block: segments built"; else bad "block: segments built" "$OUT"; fi
 if [ -n "$RUN" ] && [ ! -e "$RUN/pairs-6.json" ] && [ ! -e "$RUN/pairs-7.json" ]; then ok "block: no pair work above the stop level"; else bad "block: no pair work above the stop level"; fi
-case "$RUN" in "$TMPDIR"/*) ok "block: run directory outside the checkout" ;; *) bad "block: run directory outside the checkout" "$RUN" ;; esac
+case "$RUN" in "$(cd "$TMPDIR" && pwd -P)"/*) ok "block: run directory outside the checkout" ;; *) bad "block: run directory outside the checkout" "$RUN" ;; esac
 if [ -n "$RUN" ]; then
   REP="$(cd "$FX" && MDAUDIT="$MDAUDIT" MDA_RUN="$RUN" MDA_LO=1 MDA_HI=3 bash -c "$REPBLOCK" 2>&1)"
   check "report block: runs with no findings" "$?" "0"
@@ -280,16 +310,46 @@ printf 'outside\n' > "$WORK/outside.txt"
 ln -s "$WORK/outside.txt" "$FX/ext-link"
 mkfifo "$FX/pipe"
 (cd "$FX" && python3 "$MDAUDIT" inventory > "$WORK/snap-special.json")
-FP="$(cd "$FX" && perl -e 'alarm 20; exec @ARGV' python3 "$MDAUDIT" fingerprint --snapshot "$WORK/snap-special.json")"; RC=$?
+FP="$(cd "$FX" && with_timeout python3 "$MDAUDIT" fingerprint --snapshot "$WORK/snap-special.json")"; RC=$?
 check "fingerprint: FIFO in the checkout does not block" "$RC" "0"
 check "fingerprint: dirty symlink hashed by its target string" "$(jq -r '.files["ext-link"][0:5]' <<<"$FP")" "link:"
 check "fingerprint: a FIFO is never opened (metadata only)" \
-  "$(perl -e 'alarm 20; exec @ARGV' python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import mdaudit; print(mdaudit.path_digest(sys.argv[2])[0:5])' "$(dirname "$MDAUDIT")" "$FX/pipe")" "meta:"
+  "$(with_timeout python3 -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import mdaudit; print(mdaudit.path_digest(sys.argv[2])[0:5])' "$(dirname "$MDAUDIT")" "$FX/pipe")" "meta:"
 printf '%s\n' "$FP" > "$WORK/before-special.json"
 printf 'changed outside\n' >> "$WORK/outside.txt"
 check "verify-unchanged: an out-of-tree symlink target is not read" \
-  "$(cd "$FX" && perl -e 'alarm 20; exec @ARGV' python3 "$MDAUDIT" verify-unchanged --snapshot "$WORK/snap-special.json" --before "$WORK/before-special.json")" "UNCHANGED"
+  "$(cd "$FX" && with_timeout python3 "$MDAUDIT" verify-unchanged --snapshot "$WORK/snap-special.json" --before "$WORK/before-special.json")" "UNCHANGED"
 rm -f "$FX/ext-link" "$FX/pipe"
+
+# A parent directory swapped for a link out of the checkout is never read.
+mkdir -p "$WORK/outdir" "$WORK/fx-parent"
+printf 'secret\n' > "$WORK/outdir/a.md"
+ln -s "$WORK/outdir" "$WORK/fx-parent/docs"
+check "fingerprint: file under an out-of-tree parent link is not read" \
+  "$(mda_py 'mdaudit.path_digest(a[0], a[1])[0:8]' "$WORK/fx-parent/docs/a.md" "$WORK/fx-parent")" "outside:"
+
+# A corpus file replaced by a FIFO is refused without blocking.
+mkfifo "$WORK/swapped.md"
+check "read: a FIFO is refused without blocking" "$(mda_py 'mdaudit.read_regular(a[0])' "$WORK/swapped.md")" "None"
+
+# Environment files are never read, even behind a Markdown-named link.
+check "env: names recognised" "$(mda_py 'mdaudit.is_env_file(a[0]) and mdaudit.is_env_file(a[1]) and not mdaudit.is_env_file(a[2])' "x/.env" "x/.env.local" "x/env.md")" "True"
+mkdir -p "$WORK/fx-env"
+printf '# Ok\n\ntext\n' > "$WORK/fx-env/ok.md"
+ln -s "cfg/.env.local" "$WORK/fx-env/notes.md"
+git -C "$WORK/fx-env" init -q && git -C "$WORK/fx-env" add -A && git -C "$WORK/fx-env" commit -qm init
+check "inventory: Markdown link to an environment file excluded unread" \
+  "$(cd "$WORK/fx-env" && python3 "$MDAUDIT" inventory | jq -r '[(.corpus | join(",")), ([.excluded[] | select(.path=="notes.md") | .reason] | .[0])] | join(" | ")')" \
+  "ok.md | environment file (never read)"
+
+# HEAD recorded by inventory must match the baseline.
+jq '.head = "0000000000000000000000000000000000000000"' "$WORK/snap-special.json" > "$WORK/snap-oldhead.json"
+OUTH="$(cd "$FX" && python3 "$MDAUDIT" verify-unchanged --snapshot "$WORK/snap-oldhead.json" --before "$WORK/before-special.json")"; RC=$?
+if [ "$RC" -eq 1 ] && grep -q 'between inventory and baseline' <<<"$OUTH"; then ok "verify-unchanged: inventory HEAD differs from baseline"; else bad "verify-unchanged: inventory HEAD differs from baseline" "$OUTH"; fi
+
+# A quote line holding only ">" separates two quoted paragraphs.
+check "segment: blank quote line splits quoted paragraphs" \
+  "$(mda_py '[ (b["start"], b["end"]) for b in mdaudit.segment_lines(["> one", ">", "> two"])["blocks"] ]')" "[(1, 1), (3, 3)]"
 
 # TMPDIR inside the checkout is refused before anything is written there.
 OUT="$(cd "$FX" && TMPDIR="$FX/docs" MDA_TARGET="" MDA_FROM="" MDA_STOP="" bash -c "$BLOCK" 2>&1)"; RC=$?

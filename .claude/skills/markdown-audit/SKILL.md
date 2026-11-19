@@ -64,18 +64,20 @@ MDA_FROM="${MDA_FROM-}"       # --from value, or empty
 MDA_STOP="${MDA_STOP-}"       # --stop-at value, or empty
 MDA_TOP=$(git rev-parse --show-toplevel) || { echo "ERROR: not inside a git checkout" >&2; exit 1; }
 MDA_TOP=$(cd "$MDA_TOP" && pwd -P) || exit 1
+# Installed copies only: never run a helper the audited checkout supplies.
 MDAUDIT=""
 for mda_candidate in \
   "${HOME:+$HOME/.claude/skills-worktree/.claude/skills/markdown-audit/mdaudit.py}" \
-  "${HOME:+$HOME/.claude/skills/markdown-audit/mdaudit.py}" \
-  "$MDA_TOP/.claude/skills/markdown-audit/mdaudit.py"; do
+  "${HOME:+$HOME/.claude/skills/markdown-audit/mdaudit.py}"; do
   if [[ -n "$mda_candidate" && -f "$mda_candidate" ]]; then MDAUDIT="$mda_candidate"; break; fi
 done
-[[ -n "$MDAUDIT" ]] || { echo "ERROR: mdaudit.py not found (checked all three paths) — markdown audit unavailable" >&2; exit 1; }
-MDA_RUN=$(mktemp -d "${TMPDIR:-/tmp}/markdown-audit.XXXXXX") || exit 1
-case "$(cd "$MDA_RUN" && pwd -P)/" in
-  "$MDA_TOP"/*) echo "ERROR: TMPDIR resolves inside the checkout ($MDA_RUN); set TMPDIR elsewhere" >&2; rmdir "$MDA_RUN"; exit 1 ;;
+[[ -n "$MDAUDIT" ]] || { echo "ERROR: mdaudit.py not found (checked both installed paths; the checkout's own copy is never run) — markdown audit unavailable" >&2; exit 1; }
+mda_tmp_parent=$(cd "${TMPDIR:-/tmp}" && pwd -P) || { echo "ERROR: TMPDIR is not a directory" >&2; exit 1; }
+case "$mda_tmp_parent/" in
+  "$MDA_TOP"/*) echo "ERROR: TMPDIR resolves inside the checkout ($mda_tmp_parent); set TMPDIR elsewhere" >&2; exit 1 ;;
 esac
+MDA_RUN=$(mktemp -d "$mda_tmp_parent/markdown-audit.XXXXXX") || exit 1
+echo "MDA_RUN=$MDA_RUN"
 mda_inv_args=()
 [[ -n "$MDA_TARGET" ]] && mda_inv_args+=(--target "$MDA_TARGET")
 python3 "$MDAUDIT" inventory ${mda_inv_args[@]+"${mda_inv_args[@]}"} > "$MDA_RUN/snapshot.json" || exit 1
@@ -87,20 +89,29 @@ MDA_RANGE=$(python3 "$MDAUDIT" levels "${mda_lvl_args[@]}") || exit 1
 MDA_LO=${MDA_RANGE%% *}
 MDA_HI=${MDA_RANGE##* }
 python3 "$MDAUDIT" fingerprint --snapshot "$MDA_RUN/snapshot.json" > "$MDA_RUN/before.json" || exit 1
+# From here a failure still runs the read-only check before stopping.
+mda_fail() {
+  echo "ERROR: $1" >&2
+  python3 "$MDAUDIT" verify-unchanged --snapshot "$MDA_RUN/snapshot.json" --before "$MDA_RUN/before.json"
+  exit 1
+}
+[[ "$(jq -r .head "$MDA_RUN/snapshot.json")" == "$(jq -r .head "$MDA_RUN/before.json")" ]] \
+  || mda_fail "HEAD moved between inventory and baseline; restart the audit"
 if (( MDA_LO <= 5 )); then
-  python3 "$MDAUDIT" segment --snapshot "$MDA_RUN/snapshot.json" > "$MDA_RUN/segments.json" || exit 1
+  python3 "$MDAUDIT" segment --snapshot "$MDA_RUN/snapshot.json" > "$MDA_RUN/segments.json" || mda_fail "segment failed"
 fi
 if (( MDA_LO <= 6 && MDA_HI >= 6 )); then
-  python3 "$MDAUDIT" pairs --snapshot "$MDA_RUN/snapshot.json" --level 6 > "$MDA_RUN/pairs-6.json" || exit 1
+  python3 "$MDAUDIT" pairs --snapshot "$MDA_RUN/snapshot.json" --level 6 > "$MDA_RUN/pairs-6.json" || mda_fail "pairs (level 6) failed"
 fi
 if (( MDA_HI >= 7 )); then
-  python3 "$MDAUDIT" pairs --snapshot "$MDA_RUN/snapshot.json" --level 7 > "$MDA_RUN/pairs-7.json" || exit 1
+  python3 "$MDAUDIT" pairs --snapshot "$MDA_RUN/snapshot.json" --level 7 > "$MDA_RUN/pairs-7.json" || mda_fail "pairs (level 7) failed"
 fi
-printf 'MDA_RUN=%s\nMDAUDIT=%s\nMDA_TOP=%s\nKIND=%s\nLEVELS=%s-%s\nFILES=%s\n' "$MDA_RUN" "$MDAUDIT" "$MDA_TOP" \
+printf 'MDAUDIT=%s\nMDA_TOP=%s\nKIND=%s\nLEVELS=%s-%s\nFILES=%s\n' "$MDAUDIT" "$MDA_TOP" \
   "$MDA_KIND" "$MDA_LO" "$MDA_HI" "$(jq '.in_scope | length' "$MDA_RUN/snapshot.json")"
 ```
 
-Any non-zero exit: print the error line and STOP. Keep `MDA_RUN`, `MDAUDIT`,
+Any non-zero exit: print the error line and STOP (after the baseline exists,
+the block itself runs `verify-unchanged` first). Keep `MDA_RUN`, `MDAUDIT`,
 `MDA_TOP`, `MDA_LO` and `MDA_HI` for the later steps. The run directory is outside the
 checkout; nothing in this skill writes inside it.
 
@@ -175,7 +186,16 @@ case "$(cd "$MDA_DIR" && pwd -P)/" in
   "$MDA_TOP"/*) echo "ERROR: report directory resolves inside the checkout; report not written" >&2; exit 1 ;;
 esac
 MDA_OUT="$MDA_DIR/$(date -u +%Y%m%dT%H%M%SZ)-$$.md"
-( set -o noclobber; cat "$MDA_RUN/report.md" > "$MDA_OUT" ) || { echo "ERROR: report path taken: $MDA_OUT" >&2; exit 1; }
+# Write a temporary file, then publish it with a hard link, which never
+# replaces an existing report; a failed or partial write leaves no report.
+mda_tmp=$(mktemp "$MDA_DIR/.partial.XXXXXX") || { echo "ERROR: cannot create a file in $MDA_DIR" >&2; exit 1; }
+if ! cat "$MDA_RUN/report.md" > "$mda_tmp"; then
+  rm -f "$mda_tmp"; echo "ERROR: writing the report failed; report not stored" >&2; exit 1
+fi
+if ! ln "$mda_tmp" "$MDA_OUT"; then
+  rm -f "$mda_tmp"; echo "ERROR: could not publish $MDA_OUT (path taken or link refused)" >&2; exit 1
+fi
+rm -f "$mda_tmp"
 echo "REPORT=$MDA_OUT"
 ```
 
@@ -193,7 +213,8 @@ and the report path. Then:
 1. Build proposed issues **only from `.findings` in `$MDA_RUN/report.json`** —
    already validated and free of keep conflicts — never from `findings.jsonl`.
    Group the non-`keep` rows that share one fix: all findings in one file, or
-   in one file pair. Invalid rows and conflicts are never offered.
+   in one file pair. Invalid rows, conflicts, and pair findings whose pair has
+   no `"reviewed"` coverage line (`report` lists them apart) are never offered.
 2. `--no-file`, or the session is unattended (`human-queue.md`): STOP here.
    Unattended runs record the pending filing question for the operator's return.
 3. Otherwise ask once, multi-select, **Skip first**: `"Skip — file nothing"`,
