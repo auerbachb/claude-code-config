@@ -24,6 +24,11 @@
 #   behaviour and asserts it DOES corrupt. Without those, a scoping test passes
 #   vacuously the moment the selector stops matching anything at all.
 #
+# It ends by running tests/test-issue-maker-dispatch.sh, which also executes
+# blocks from modules/batch.md, modules/update.md, modules/create/coherence.md
+# and modules/create/doc-gate.md — named here so CI selects this suite when
+# any of them changes.
+#
 # Offline: no gh, no network, no git. Temp HOME throughout, so the real
 # ~/.claude/handoffs is never touched.
 
