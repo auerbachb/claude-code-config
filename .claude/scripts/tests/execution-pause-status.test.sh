@@ -158,6 +158,10 @@ if [[ "$fast" == "0|inactive" ]]; then pass; else fail "malformed flat .prs: fas
 reset; write_state "$(repo_state "$(jq -nc --arg s "$SID" '{execution_pauses:{($s):{active:false}}}')")"
 READY="$TMP/holder.ready"; RELEASE="$TMP/holder.release"
 (
+  # Drop the inherited cleanup trap first: bash 5 shows the parent's EXIT trap
+  # in a subshell, state_lock_acquire chains onto it, and the holder would
+  # then delete $TMP when it exits.
+  trap - EXIT
   # shellcheck source=../state-lock.sh
   source "$ROOT/.claude/scripts/state-lock.sh"
   state_lock_acquire "$STATE" 5 || exit 1
@@ -189,6 +193,10 @@ if [[ ! -e "$STATE.lock" ]]; then pass; else fail "holder did not release the lo
 reset; write_state "$(repo_state "$(jq -nc --arg s "$SID" '{execution_pauses:{($s):{active:false}}}')")"
 READY="$TMP/race1.ready"; RELEASE="$TMP/race1.release"; rm -f "$READY" "$RELEASE"
 (
+  # Drop the inherited cleanup trap first: bash 5 shows the parent's EXIT trap
+  # in a subshell, state_lock_acquire chains onto it, and the holder would
+  # then delete $TMP when it exits.
+  trap - EXIT
   # shellcheck source=../state-lock.sh
   source "$ROOT/.claude/scripts/state-lock.sh"
   state_lock_acquire "$STATE" 5 || exit 1
@@ -264,6 +272,10 @@ if [[ "$got" == "0|active" ]]; then pass; else fail "status after stubbed activa
 reset; write_state "$(repo_state "$(jq -nc --arg s "$SID" '{execution_pauses:{($s):{active:false}}}')")"
 READY="$TMP/race3.ready"; RELEASE="$TMP/race3.release"; rm -f "$READY" "$RELEASE"
 (
+  # Drop the inherited cleanup trap first: bash 5 shows the parent's EXIT trap
+  # in a subshell, state_lock_acquire chains onto it, and the holder would
+  # then delete $TMP when it exits.
+  trap - EXIT
   # shellcheck source=../state-lock.sh
   source "$ROOT/.claude/scripts/state-lock.sh"
   state_lock_acquire "$STATE" 5 || exit 1
