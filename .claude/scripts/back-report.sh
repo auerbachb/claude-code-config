@@ -29,7 +29,9 @@
 #     list, open or done, or repeated earlier in FILE, is not saved again. Prints one JSON object
 #     {saved: [{id, what, why, source}], duplicates: [{what, existing_id}],
 #      not_saved: [{what, why, reason}]}. A task that could not be saved is always in not_saved with
-#     the reason (no location, unreadable list, secret refused, checker or helper missing).
+#     the reason (why-human reason refused, no location, unreadable list, secret refused, checker or
+#     helper missing). `why` is passed through unchanged; give it as "<reason>: <text>" with <reason>
+#     one of owner-task.sh's why-human reasons, which owner-task.sh validates (exit 2 = refused).
 #
 # OUTPUT (stdout, one JSON object)
 #   scope            thread | all
@@ -205,6 +207,8 @@ if [ -n "$RECOVER" ]; then
     fi
     case "$ARC" in
       0) R="owner-task.sh add printed no task id" ;;
+      # owner-task.sh owns the reason list; this only names its usage refusal (Issue #2561).
+      2) R="why-human reason missing or not one of the six (owner-task.sh add exited 2)" ;;
       3) R="no location for this repo's tasks: a public repo with no private bucket in the pointer file (owner-task.sh add exited 3)" ;;
       4) R="a task source could not be read (owner-task.sh add exited 4)" ;;
       5) R="refused as a possible secret (owner-task.sh add exited 5)" ;;

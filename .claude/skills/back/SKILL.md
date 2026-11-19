@@ -128,8 +128,10 @@ A checklist, one line each: `- [ ] <what> — <why a person is needed> (<source>
   person can: an `OWNER_ACTION:` line, "only you can…", "you need to…", a sign-in or login, a `.env` or
   secret value to fill in, an agreement to accept, a live test on his own profile or account. Not a
   question (those are Step 3), not a status line, not work an agent can still do. Write each one as
-  `{"what": "<the step, one line>", "why": "<why a person is needed>"}` into a JSON array in a file
-  (the scratchpad), never with a secret value in it, then save them in one call:
+  `{"what": "<the step, one line>", "why": "<reason>: <why a person is needed>"}` into a JSON array in
+  a file (the scratchpad), never with a secret value in it. `<reason>` is exactly one of `sign-in`,
+  `legal-agreement`, `payment-detail`, `secret-value`, `physical-device`, `judgment-call`, followed by
+  free text (`owner-task.sh` validates it). Then save them in one call:
 
   ```bash
   "$BACK_REPORT_SH" --save-recovered "<file>"
@@ -143,7 +145,7 @@ A checklist, one line each: `- [ ] <what> — <why a person is needed> (<source>
   - `saved`: show in the checklist with `(recovered)` after the source.
   - `duplicates`: already on the list; nothing is saved twice and nothing extra is shown.
   - `not_saved`: show each under `Not saved:` as `- [ ] <what> — <why> (<reason>)`, so a task is never
-    dropped. Reasons include a public repo with no private bucket (`add` exit 3), an unreadable list
+    dropped. Reasons include a why-human reason missing or not one of the six (`add` exit 2), a public repo with no private bucket (`add` exit 3), an unreadable list
     (4), a refused secret (5), a missing secret checker (7) and a missing `owner-task.sh`.
 
   Nothing found: skip the call. A usage error (exit 2) means the file was malformed: show the found
