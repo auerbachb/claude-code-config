@@ -117,7 +117,7 @@
 #   from context, never carried forward to the next issue.
 #
 # USAGE
-#   issue-claim.sh <issue_number> --check   [--repo owner/repo] [--holder ID] [--json]
+#   issue-claim.sh <issue_number> --check   [--repo owner/repo] [--holder ID] [--json] [--no-viewer]
 #   issue-claim.sh <issue_number> --claim   [--repo owner/repo] [--holder ID] [--json] [--allow-claimed]
 #                    [--provider NAME] [--device NAME] [--label TEXT]
 #                    [--batch LABEL --batch-size N]
@@ -137,6 +137,14 @@
 #   --expect-claim-id ID|none  Release only the observed winner (exit 5 if changed).
 #                    --check --json exposes claim_comment_id; none means no marker.
 #   --json           Machine-readable object on stdout instead of the verdict word.
+#   --no-viewer      Check-only (exit 2 with any other action): skip the
+#                    `gh api user` viewer lookup, for automated read-only
+#                    consumers whose token cannot call it, such as the PR claim
+#                    checker under an Actions installation token (issue #2412).
+#                    The verdict, the holder comparison and every other
+#                    fail-closed path are unchanged; --json reports
+#                    viewer: null and omits the claimant_* evidence fields.
+#                    Without it, a failed viewer lookup is still unknown/4.
 #   --allow-claimed  Explicit user override; only valid with --claim.
 #   --provider/--device/--label  Who-holds-it facts (see above); only valid with
 #                    --claim or --renew. A renewal carries the old marker's
@@ -317,6 +325,7 @@ DEVICE_ARG=""
 LABEL_ARG=""
 BATCH_ARG=""
 BATCH_SIZE_ARG=""
+NO_VIEWER=0
 
 set_action() {
   [[ -n "$ACTION" ]] && die_usage "only one of --check / --claim / --release / --renew may be given (got --$ACTION and $1)"
@@ -329,6 +338,7 @@ while [[ $# -gt 0 ]]; do
     --check|--claim|--release|--renew) set_action "$1"; shift ;;
     --json)         JSON=1; shift ;;
     --allow-claimed) ALLOW_CLAIMED=1; shift ;;
+    --no-viewer)    NO_VIEWER=1; shift ;;
     --repo)
       [[ $# -lt 2 || -z "${2-}" ]] && die_usage "--repo requires a value (owner/repo)"
       REPO="$2"; shift 2 ;;
@@ -402,6 +412,12 @@ fi
 # into a config default. Reject it outright instead.
 if (( ALLOW_CLAIMED )) && [[ "$ACTION" != "claim" ]]; then
   die_usage "--allow-claimed is only valid with --claim"
+fi
+
+# --no-viewer drops the account lookup that every write authorizes against, so
+# it is a read-only mode: rejected outright with any action that writes.
+if (( NO_VIEWER )) && [[ "$ACTION" != "check" ]]; then
+  die_usage "--no-viewer is only valid with --check"
 fi
 
 if [[ -n "$PROVIDER_ARG$DEVICE_ARG$LABEL_ARG" && "$ACTION" != claim && "$ACTION" != renew ]]; then
@@ -663,9 +679,12 @@ fail_closed() {
 }
 
 # --- resolve the authenticated viewer ------------------------------------------
-VIEWER="$(gh api user --jq '.login' 2>/dev/null || true)"
-if [[ -z "$VIEWER" || "$VIEWER" == "null" ]]; then
-  fail_closed "could not resolve the authenticated user (gh api user failed)"
+# --no-viewer (check-only) skips it: VIEWER stays empty and --json says null.
+if (( ! NO_VIEWER )); then
+  VIEWER="$(gh api user --jq '.login' 2>/dev/null || true)"
+  if [[ -z "$VIEWER" || "$VIEWER" == "null" ]]; then
+    fail_closed "could not resolve the authenticated user (gh api user failed)"
+  fi
 fi
 
 # --- read the issue ------------------------------------------------------------
@@ -870,6 +889,8 @@ describe_claim() {
 compute_claimant_evidence() {
   [[ "$VERDICT" == claimed || "$VERDICT" == stale ]] || return 0
   [[ -n "$CLAIMANT_HOLDER" ]] || return 0
+  # Without a viewer there is no account to compare against; report no evidence.
+  (( NO_VIEWER )) && return 0
   if [[ "$CLAIMANT" == "$VIEWER" && "$MARKER_AUTHOR" == "$VIEWER" ]]; then
     EV_IS_VIEWER=true
   else

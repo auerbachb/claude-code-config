@@ -199,6 +199,10 @@ The default holder is a digest of `<hostname>:<git toplevel>`, so two linked wor
 
 **Workers.** Claim with an explicit holder before creating a worktree and carry that holder; run the claim as its own command; on a *not visible* block, rerun with the printed prefix only if you made that claim. Never copy a holder from the GitHub marker.
 
+## Viewerless check for automated readers (issue #2412)
+
+`--check --no-viewer` skips the `gh api user` lookup. It exists for automated read-only consumers whose token cannot call `GET /user` — the PR claim checker (`pr-claim-check.sh`) runs under the Actions installation token, where that call always fails, so without the flag every CI run came back `unknown` and the checker reported `unverifiable`. The issue, comment and timeline reads, the winner selection, the holder comparison (`mine` before stale) and every fail-closed path are unchanged; `--json` reports `viewer: null` and omits the `claimant_*` evidence fields, which compare against the viewer. The flag is check-only: with `--claim`, `--renew` or `--release` it exits 2 before any GitHub read or write, because every write authorizes against the viewer. Ordinary `--check` is untouched — a failed viewer lookup there is still `unknown`/4.
+
 ## Call sites
 
 | Path | Where |

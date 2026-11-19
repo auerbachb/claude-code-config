@@ -234,6 +234,37 @@ for f in "${ALL_FILES[@]}"; do
   fi
 done
 
+# Issue #2412: the claim gate's helpers are provisioned with the checker, mode
+# 755 (the AGENTS.md claim block calls both directly), so the gate can compare
+# ownership instead of passing with a notice.
+file_mode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null; }
+for f in .claude/scripts/issue-claim.sh .claude/scripts/pr-claim-line.sh; do
+  check_eq "case2c: $f installed with mode 755" "755" "$(file_mode "$REPO2C/$f")"
+done
+
+# --------------------------------------------------------------------------
+# Case 2d (issue #2412): --check reports each claim helper as missing when it
+# is the only absent file, so a repo cannot look provisioned without it.
+# --------------------------------------------------------------------------
+for helper in .claude/scripts/issue-claim.sh .claude/scripts/pr-claim-line.sh; do
+  REPO2D="$TMP/repo-no-$(basename "$helper" .sh)"
+  make_repo "$REPO2D"
+  for f in "${ALL_FILES[@]}"; do
+    [[ "$f" == "$helper" ]] && continue
+    mkdir -p "$REPO2D/$(dirname "$f")"
+    printf 'stub\n' > "$REPO2D/$f"
+  done
+  OUT=$(cd "$REPO2D" && bash "$SUT" --check 2>&1)
+  RC=$?
+  check_eq "case2d: --check exits 1 without $helper" "1" "$RC"
+  MISSING_HELPER_LINE="$(printf '%s\n' "$OUT" | grep -F '[MISSING]' | grep -F "$helper" || true)"
+  if [[ -n "$MISSING_HELPER_LINE" ]]; then
+    pass "case2d: $helper reported [MISSING]"
+  else
+    fail "case2d: $helper not reported [MISSING]"
+  fi
+done
+
 # --------------------------------------------------------------------------
 # Case 3: all files missing → --check exits 1, lists ALL of them
 # --------------------------------------------------------------------------
@@ -498,6 +529,13 @@ ln -s "$TMP/9e-target" "$R9E/AGENTS.md"
 OUT=$(cd "$R9E" && bash "$SUT" --apply 2>&1)
 check_contains "case9e: symlink reported" "[SYMLINK]   AGENTS.md" "$OUT"
 check_eq "case9e: symlink target untouched" "elsewhere" "$(cat "$TMP/9e-target")"
+
+# 9g (issue #2412): this repo's own AGENTS.md carries the marked block byte for
+# byte as the source, so an edit to one copy cannot ship without the other.
+sed -n '/^<!-- BEGIN agent-issue-claims/,/^<!-- END agent-issue-claims -->$/p' \
+  "$REPO_ROOT/AGENTS.md" > "$TMP/9g-block"
+check_eq "case9g: checked-in AGENTS.md block is byte-identical to the source" "0" \
+  "$(cmp -s "$SRC_BLOCK" "$TMP/9g-block"; echo $?)"
 
 # --------------------------------------------------------------------------
 # Summary
