@@ -201,6 +201,57 @@ check_eq "no mixed-case scope created for #200" "null" \
 check_eq "no mixed-case scope created for #201" "null" \
   "$(jq -r '.repos["Org/CAPS"] // "null"' "$STATE_FILE")"
 
+# --- issue #2433: --migrate is locked and skips no-op rewrites ---------------
+mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
+
+echo
+echo "== issue #2433: a no-op --migrate leaves bytes and mtime untouched =="
+# Already migrated by the previous case; backdate the file so a rewrite shows.
+touch -t 202001010000 "$STATE_FILE"
+BEFORE_BYTES="$(cat "$STATE_FILE")"
+BEFORE_MTIME="$(mtime_of "$STATE_FILE")"
+run --migrate; RC=$?
+check_eq "no-op --migrate exits 0" "0" "$RC"
+check_eq "bytes unchanged" "$BEFORE_BYTES" "$(cat "$STATE_FILE")"
+check_eq "mtime unchanged" "$BEFORE_MTIME" "$(mtime_of "$STATE_FILE")"
+check_eq "--dry-run still prints the document" "B" "$(run --migrate --dry-run | jq -r '.repos["org/caps"].prs["201"].phase')"
+
+echo
+echo "== issue #2433: a concurrent --set is serialized behind --migrate =="
+cat > "$STATE_FILE" <<'JSON'
+{ "prs": { "300": {"owner_repo": "org/serial", "phase": "A"} } }
+JSON
+SHIM="$WORK_DIR/jq-shim"; PARK="$WORK_DIR/park"; mkdir -p "$SHIM" "$PARK"
+REAL_JQ="$(command -v jq)"
+# Parks the FIRST jq call that runs the migrate filter UNDER THE LOCK (the
+# unlocked no-op pre-check runs first and must not park), only in the process
+# that carries MIG_PARK (the --migrate under test), until released.
+cat > "$SHIM/jq" <<SH
+#!/bin/bash
+if [[ -n "\${MIG_PARK:-}" && ! -e "\$MIG_PARK/parked" && "\$*" == *"migrate("* && -d "$STATE_FILE.lock" ]]; then
+  : > "\$MIG_PARK/parked"
+  while [[ ! -e "\$MIG_PARK/release" ]]; do sleep 0.05; done
+fi
+exec "$REAL_JQ" "\$@"
+SH
+chmod +x "$SHIM/jq"
+( PATH="$SHIM:$PATH" MIG_PARK="$PARK" run --migrate; echo "$?" > "$PARK/mig.rc" ) &
+MIG_PID=$!
+for _ in $(seq 1 200); do [[ -e "$PARK/parked" ]] && break; sleep 0.05; done
+check_eq "(setup) --migrate parked inside its jq pass" "1" "$([[ -e "$PARK/parked" ]] && echo 1 || echo 0)"
+# The serialization claim rests on --migrate holding the lock while parked.
+check_eq "--migrate holds the state lock while parked" "1" "$([[ -d "$STATE_FILE.lock" ]] && echo 1 || echo 0)"
+( CLAUDE_STATE_LOCK_TIMEOUT=30 run --set '.marker="kept"'; echo "$?" > "$PARK/set.rc" ) &
+SET_PID=$!
+sleep 0.5
+check_eq "the concurrent --set is waiting on the lock" "0" "$([[ -e "$PARK/set.rc" ]] && echo 1 || echo 0)"
+: > "$PARK/release"
+wait "$MIG_PID" "$SET_PID"
+check_eq "--migrate exited 0" "0" "$(cat "$PARK/mig.rc")"
+check_eq "--set exited 0" "0" "$(cat "$PARK/set.rc")"
+check_eq "the concurrent --set value survived" "kept" "$(jq -r '.marker' "$STATE_FILE")"
+check_eq "the migration landed too" "A" "$(jq -r '.repos["org/serial"].prs["300"].phase' "$STATE_FILE")"
+
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1

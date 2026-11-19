@@ -1757,6 +1757,58 @@ STATE_FILE="${HOME}/.claude/session-state.json"
 # --- ensure state-file directory exists (only needed for --set) ---
 STATE_DIR="$(dirname "$STATE_FILE")"
 
+# Captured before this process acquires anything: non-empty means an ancestor
+# holds the state lock and this call is a nested writer (issue #2433).
+_SS_INHERITED_LOCK="${CLAUDE_STATE_LOCK_HELD:-}"
+
+# Post-write size trigger (issue #2433). Called only after a successful commit
+# AND after this process released the lock: a cheap size check, then — when
+# the file is over the compactor's size cap and the compactor has not run (or
+# been attempted) recently — one detached `session-state-compact.sh --apply`.
+# Never from inside an inherited lock, never from the compactor itself, never
+# on the launch-critical path (it does not wait). CLAUDE_STATE_COMPACT_AUTO=0
+# disables it.
+maybe_trigger_compaction() {
+  [[ -z "$_SS_INHERITED_LOCK" ]] || return 0
+  [[ -z "${CLAUDE_STATE_COMPACT_RUNNING:-}" ]] || return 0
+  [[ "${CLAUDE_STATE_COMPACT_AUTO:-1}" != 0 ]] || return 0
+  local cap="${CLAUDE_STATE_COMPACT_SIZE_CAP:-2097152}" size now m
+  local min_interval="${CLAUDE_STATE_COMPACT_MIN_INTERVAL:-600}"
+  local attempt_interval="${CLAUDE_STATE_COMPACT_ATTEMPT_INTERVAL:-60}"
+  local compactor="$SCRIPT_DIR/session-state-compact.sh"
+  [[ -x "$compactor" && -f "$STATE_FILE" ]] || return 0
+  # Metadata only (stat), never a read of the file's bytes.
+  # `|| true`: this script runs under `set -e`, and GNU-vs-BSD stat means one
+  # of the two forms always fails.
+  size="$(stat -c %s "$STATE_FILE" 2>/dev/null || true)"
+  [[ "$size" =~ ^[0-9]+$ ]] || size="$(stat -f %z "$STATE_FILE" 2>/dev/null || true)"
+  [[ "$size" =~ ^[0-9]+$ && "$cap" =~ ^[0-9]+$ ]] || return 0
+  (( size > cap )) || return 0
+  now="$(date +%s)"
+  # A run guard younger than 10 minutes means a compactor is (or just was)
+  # running. An older one is left for the compactor's own recovery to reclaim,
+  # so an abandoned guard cannot disable this trigger forever.
+  # A published owner pid that is dead marks an abandoned guard at any age.
+  local gpid
+  gpid="$(cat "$STATE_FILE.compact.run/pid" 2>/dev/null || true)"
+  if [[ -d "$STATE_FILE.compact.run" ]] && m="$(_state_lock_file_mtime "$STATE_FILE.compact.run")" \
+     && (( now - m < 600 )) \
+     && ! { [[ "$gpid" =~ ^[0-9]+$ ]] && ! kill -0 "$gpid" 2>/dev/null; }; then
+    return 0
+  fi
+  if m="$(_state_lock_file_mtime "$STATE_FILE.compact.stamp")" && (( now - m < min_interval )); then
+    return 0
+  fi
+  if m="$(_state_lock_file_mtime "$STATE_FILE.compact.attempt")" && (( now - m < attempt_interval )); then
+    return 0
+  fi
+  : > "$STATE_FILE.compact.attempt" 2>/dev/null || return 0
+  ( unset CLAUDE_STATE_LOCK_HELD CLAUDE_STATE_LOCK_TOKEN
+    CLAUDE_STATE_COMPACT_RUNNING=1 nohup "$compactor" --apply --state-file "$STATE_FILE" --lock-timeout 5 \
+      --trigger post-write >> "$STATE_FILE.compact.log" 2>&1 < /dev/null & ) 2>/dev/null
+  return 0
+}
+
 # Warn (once) when the file carries legacy keys we refuse to reshape, so the
 # data is never silently stranded under an old path nobody reads any more.
 warn_if_unmigratable() {
@@ -1960,30 +2012,90 @@ if [[ "$MODE" == "migrate" ]]; then
     exit 4
   fi
   warn_if_unmigratable "$STATE_FILE"
-  MIG_PATHMAP="$(migrate_jq_args "$STATE_FILE")"
+  MIG_FILTER="$MIGRATE_JQ migrate(\$__pathmap; \$__unknown)"
   MIG_ERR="$(mktemp)"
   MIG_TMP="$STATE_FILE.tmp.$$"
-  # shellcheck disable=SC2064
-  trap "rm -f '$MIG_TMP' '$MIG_ERR' 2>/dev/null" EXIT
-  MIG_FILTER="$MIGRATE_JQ migrate(\$__pathmap; \$__unknown)"
-  if [[ "$DRY_RUN" != "1" ]]; then
-    MIG_FILTER="$MIG_FILTER | .last_updated = \$__last_updated"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    # Read-only: no lock, nothing written.
+    # shellcheck disable=SC2064
+    trap "rm -f '$MIG_TMP' '$MIG_ERR' 2>/dev/null" EXIT
+    MIG_PATHMAP="$(migrate_jq_args "$STATE_FILE")"
+    if ! jq --argjson __pathmap "$MIG_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY" \
+            "$MIG_FILTER" "$STATE_FILE" 2>"$MIG_ERR"; then
+      echo "session-state.sh: migration failed: $(cat "$MIG_ERR")" >&2
+      exit 5
+    fi
+    exit 0
   fi
-  if ! jq --argjson __pathmap "$MIG_PATHMAP" \
-          --arg __unknown "$UNKNOWN_REPO_KEY" \
-          --arg __last_updated "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+  # Locked read-compare-write (issue #2433). The old path rewrote the file
+  # WITHOUT the lock on every call, so a concurrent locked writer's update (or
+  # a compaction) could be silently overwritten, and every startup paid for a
+  # full-file rewrite even when nothing needed migrating.
+  #
+  # Unlocked pre-check first: the common startup case is a no-op, and it must
+  # neither wait for nor hold the lock. Writers replace the file atomically
+  # (mv), so this read sees one whole document. A file that does need
+  # migrating is re-read and re-planned under the lock below.
+  if is_single_object_state_file "$STATE_FILE" \
+     && _mig_pre_map="$(migrate_jq_args "$STATE_FILE" 2>/dev/null)" \
+     && jq --argjson __pathmap "$_mig_pre_map" --arg __unknown "$UNKNOWN_REPO_KEY" \
+          "$MIG_FILTER" "$STATE_FILE" > "$MIG_TMP" 2>/dev/null \
+     && jq -n -e --slurpfile a "$STATE_FILE" --slurpfile b "$MIG_TMP" \
+          '($a[0] | del(.last_updated)) == ($b[0] | del(.last_updated))' >/dev/null 2>&1; then
+    rm -f "$MIG_TMP" "$MIG_ERR" 2>/dev/null
+    exit 0
+  fi
+  rm -f "$MIG_TMP" 2>/dev/null
+  state_lock_acquire "$STATE_FILE" || exit "$STATE_LOCK_EXIT_TIMEOUT"
+  # shellcheck disable=SC2064
+  trap "state_lock_release; rm -f '$MIG_TMP' '$MIG_TMP.2' '$MIG_ERR' 2>/dev/null" EXIT
+  if ! is_single_object_state_file "$STATE_FILE"; then
+    echo "session-state.sh: $STATE_FILE must contain exactly one top-level JSON object" >&2
+    exit 4
+  fi
+  MIG_PATHMAP="$(migrate_jq_args "$STATE_FILE")"
+  if ! jq --argjson __pathmap "$MIG_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY" \
           "$MIG_FILTER" "$STATE_FILE" > "$MIG_TMP" 2>"$MIG_ERR"; then
     echo "session-state.sh: migration failed: $(cat "$MIG_ERR")" >&2
     exit 5
   fi
-  if [[ "$DRY_RUN" == "1" ]]; then
-    cat "$MIG_TMP"
+  # No-op migration (the common startup case): leave bytes and mtime alone.
+  # `last_updated` is ignored — it is the only field the pass itself stamps.
+  if jq -n -e --slurpfile a "$STATE_FILE" --slurpfile b "$MIG_TMP" \
+       '($a[0] | del(.last_updated)) == ($b[0] | del(.last_updated))' >/dev/null 2>&1; then
     exit 0
   fi
-  if ! mv "$MIG_TMP" "$STATE_FILE" 2>/dev/null; then
+  if ! jq --arg __last_updated "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+          '.last_updated = $__last_updated' "$MIG_TMP" > "$MIG_TMP.2" 2>"$MIG_ERR" \
+     || ! mv "$MIG_TMP.2" "$MIG_TMP" 2>/dev/null \
+     || ! is_single_object_state_file "$MIG_TMP"; then
+    echo "session-state.sh: migration candidate invalid: $(cat "$MIG_ERR")" >&2
+    exit 5
+  fi
+  # Same stolen-lock retry as --set (issue #930): the ownership check and the
+  # mv run together under the commit gate inside state_lock_commit (#2460).
+  _commit_rc=0
+  _commit_err="$(state_lock_commit "$MIG_TMP" "$STATE_FILE" 2>&1)" || _commit_rc=$?
+  (( _commit_rc == 0 || _commit_rc == STATE_LOCK_EXIT_TIMEOUT )) || [[ -z "$_commit_err" ]] || printf '%s\n' "$_commit_err" >&2
+  if (( _commit_rc == STATE_LOCK_EXIT_TIMEOUT )); then
+    _n="${CLAUDE_STATE_RMW_RETRY:-0}"; _max="${CLAUDE_STATE_RMW_MAX_RETRY:-8}"
+    if (( _n < _max )); then
+      export CLAUDE_STATE_RMW_RETRY=$(( _n + 1 ))
+      state_lock_release
+      rm -f "$MIG_TMP" "$MIG_ERR" 2>/dev/null || true
+      trap - EXIT
+      sleep "0.0$(( (RANDOM % 8) + 1 ))"
+      exec bash "$0" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
+    fi
+    echo "session-state.sh: lock was broken by another writer $_max times running; giving up with $STATE_FILE unchanged (retry)" >&2
+    exit "$STATE_LOCK_EXIT_TIMEOUT"
+  fi
+  if (( _commit_rc != 0 )); then
     echo "session-state.sh: could not write $STATE_FILE" >&2
     exit 5
   fi
+  state_lock_release
+  maybe_trigger_compaction
   exit 0
 fi
 
@@ -2152,6 +2264,8 @@ if [[ "$MODE" == "cas" ]]; then
     exit 5
   fi
 
+  state_lock_release
+  maybe_trigger_compaction
   exit 0
 fi
 
@@ -2296,4 +2410,8 @@ if (( _commit_rc != 0 )); then
   exit 5
 fi
 
+# Release before the (detached, non-blocking) size check — the trigger must
+# never run inside a held lock (issue #2433).
+state_lock_release
+maybe_trigger_compaction
 exit 0

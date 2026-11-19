@@ -112,6 +112,31 @@
 #                                verify the inherited lock with
 #                                state_lock_assert_held.
 #
+# BOUNDED DEADLINE AND TIMEOUT DIAGNOSTICS (issue #2433)
+#   CLAUDE_STATE_LOCK_TIMEOUT is a real upper bound: the deadline is checked
+#   after every lost mkdir, after a failed parent-directory creation, and
+#   before every stale-break attempt after the first (a break's 0.2s resample
+#   counts as waiting; the first break is always allowed so a zero-timeout
+#   caller still recovers a dead holder). Overshoot is at most one poll or one
+#   break resample.
+#
+#   The timeout message is ONE line on stderr and always names a holder pid
+#   and host. It keeps the substrings `timed out after <N>s waiting` and
+#   `refusing to write unserialized`. The parenthesised holder is one of:
+#     held by pid <pid> on <host> (cmd <cmd>, held <n>s)   current owner file
+#     last observed held by pid <pid> on <host> (<n>s ago) owner gone at the
+#                                    deadline; last snapshot taken mid-wait
+#     held by pid unknown on unknown (owner not published or unreadable; lock age <n>s)
+#     held by pid unknown on unknown (holder released before its owner was observed)
+#     held by pid unknown on unknown (lock directory could not be created; not contention)
+#                                    (only when the directory was never seen)
+#     held by pid unknown on unknown (parent directory <p> could not be created; not contention)
+#   Contention forms contain `held by pid <digits>`; non-contention forms
+#   contain `not contention` (pause-launch-gate.sh classifies on these). Every
+#   field comes from ONE read of the owner file, and the waiter's own pid/host
+#   is never reported. The owner file's `host=` is never empty: $HOSTNAME,
+#   hostname(1), `uname -n`, then `unknown-host`.
+#
 # EXIT / RETURN CODE
 #   state_lock_acquire returns 0 on success and STATE_LOCK_EXIT_TIMEOUT (6)
 #   when the lock could not be acquired within the timeout. Callers propagate
@@ -215,13 +240,97 @@ _state_lock_stamp() {
 }
 
 # Hostname without forking hostname(1) when bash already knows it. Used to
-# decide whether a recorded pid is meaningful on THIS machine.
+# decide whether a recorded pid is meaningful on THIS machine, and published
+# into the owner file. Never prints an empty string (issue #2433): $HOSTNAME,
+# then hostname(1), then `uname -n`, then the literal `unknown-host`. Cached
+# per process so the staleness check and the owner file always agree.
+_STATE_LOCK_HOST_CACHE=""
+# Fill the cache in the CALLING shell (never inside $(...), where the
+# assignment would be lost with the subshell).
+_state_lock_host_init() {
+  [[ -n "$_STATE_LOCK_HOST_CACHE" ]] && return 0
+  local h="${HOSTNAME:-}"
+  [[ -n "$h" ]] || h="$(hostname 2>/dev/null)" || h=""
+  [[ -n "$h" ]] || h="$(uname -n 2>/dev/null)" || h=""
+  # One line only: an embedded newline (an environment-supplied HOSTNAME)
+  # would inject extra `key=` records into the owner file.
+  h="${h%%$'\n'*}"
+  h="${h//$'\r'/}"
+  [[ -n "$h" ]] || h="unknown-host"
+  _STATE_LOCK_HOST_CACHE="$h"
+}
 _state_lock_hostname() {
-  if [[ -n "${HOSTNAME:-}" ]]; then
-    printf '%s' "$HOSTNAME"
-  else
-    hostname
+  _state_lock_host_init
+  printf '%s' "$_STATE_LOCK_HOST_CACHE"
+}
+
+# Read the owner file ONCE and publish its fields as
+# _SL_SNAP_PID / _SL_SNAP_HOST / _SL_SNAP_EPOCH / _SL_SNAP_CMD (issue #2433).
+# Reading each field with a separate open can mix two acquisitions' fields
+# when the lock changes hands between reads. Returns 0 when a pid was read,
+# 1 otherwise (all four left empty).
+_state_lock_snapshot() {
+  local file="$1/owner" line
+  _SL_SNAP_PID="" _SL_SNAP_HOST="" _SL_SNAP_EPOCH="" _SL_SNAP_CMD=""
+  [[ -f "$file" ]] || return 1
+  { while IFS= read -r line || [[ -n "$line" ]]; do
+      case "$line" in
+        pid=*) _SL_SNAP_PID="${line#*=}" ;;
+        host=*) _SL_SNAP_HOST="${line#*=}" ;;
+        epoch=*) _SL_SNAP_EPOCH="${line#*=}" ;;
+        cmd=*) _SL_SNAP_CMD="${line#*=}" ;;
+      esac
+    done < "$file"; } 2>/dev/null
+  if [[ -z "$_SL_SNAP_PID" ]]; then
+    _SL_SNAP_HOST="" _SL_SNAP_EPOCH="" _SL_SNAP_CMD=""
+    return 1
   fi
+  [[ -n "$_SL_SNAP_HOST" ]] || _SL_SNAP_HOST="unknown"
+  return 0
+}
+
+# One-line timeout diagnostic (issue #2433). Always names a holder pid and
+# host — the real current holder, the last one observed during the wait
+# (labelled), or `unknown` with an explicit reason. Never the waiter's own.
+#   $1 lock dir  $2 timeout  $3 last-observed pid  $4 host  $5 seen-at (unix)
+#   $6 optional reason override (e.g. parent directory creation failed)
+#   $7 1 when the lock directory was seen present after some lost mkdir
+_state_lock_timeout_message() {
+  local lock_dir="$1" timeout="$2" lpid="$3" lhost="$4" lseen="$5" reason="${6:-}" saw_dir="${7:-0}"
+  local now holder age
+  now="$(_state_lock_now)"
+  if [[ -n "$reason" ]]; then
+    holder="held by pid unknown on unknown ($reason; not contention)"
+  elif _state_lock_snapshot "$lock_dir"; then
+    holder="held by pid ${_SL_SNAP_PID} on ${_SL_SNAP_HOST}"
+    if [[ "$_SL_SNAP_EPOCH" =~ ^[0-9]+$ ]]; then
+      holder+=" (cmd ${_SL_SNAP_CMD:-unknown}, held $(( now - _SL_SNAP_EPOCH ))s)"
+    else
+      holder+=" (cmd ${_SL_SNAP_CMD:-unknown})"
+    fi
+  elif [[ -n "$lpid" ]]; then
+    holder="last observed held by pid ${lpid} on ${lhost:-unknown} ($(( now - lseen ))s ago)"
+  elif [[ -d "$lock_dir" ]]; then
+    if age="$(_state_lock_age "$lock_dir")"; then
+      holder="held by pid unknown on unknown (owner not published or unreadable; lock age ${age}s)"
+    else
+      holder="held by pid unknown on unknown (owner not published or unreadable; lock age unknown)"
+    fi
+  elif [[ "$saw_dir" == 1 ]]; then
+    # The lock existed during the wait but is gone now: a holder that never
+    # published an owner (or released just now). Contention, identity unknown.
+    holder="held by pid unknown on unknown (holder released before its owner was observed)"
+  else
+    # mkdir failed every time and the directory was never seen: a creation
+    # failure, not another holder.
+    holder="held by pid unknown on unknown (lock directory could not be created; not contention)"
+  fi
+  # The contract is ONE line: flatten any newline a path or owner field holds.
+  local msg
+  msg="$(printf 'state-lock: timed out after %ss waiting for %s (%s); refusing to write unserialized' \
+    "$timeout" "$lock_dir" "$holder")"
+  msg="${msg//$'\n'/ }"
+  printf '%s\n' "${msg//$'\r'/ }"
 }
 
 # Read one `key=value` line out of an owner file. Prints nothing when absent.
@@ -299,7 +408,8 @@ _state_lock_is_stale() {
   # when a pid was actually recorded. An ABSENT owner file means the lock is
   # mid-acquire or mid-release (both sub-millisecond, both routine), never
   # that the holder died; reading it as a dead holder is the #930 bug.
-  if [[ -n "$pid" && "$host" == "$(_state_lock_hostname)" && "$pid" =~ ^[0-9]+$ ]]; then
+  _state_lock_host_init
+  if [[ -n "$pid" && "$host" == "$_STATE_LOCK_HOST_CACHE" && "$pid" =~ ^[0-9]+$ ]]; then
     if ! kill -0 "$pid" 2>/dev/null; then
       return 0
     fi
@@ -492,6 +602,9 @@ state_lock_acquire() {
   # Not waited until an attempt actually loses to a lock already present —
   # set inside the loop, never inferred from a clock (issue #1567).
   STATE_LOCK_WAITED=0
+  # Resolve the host once, in this shell, so the owner file and every
+  # staleness check use the same identity.
+  _state_lock_host_init
 
   # Legacy artifact: before issue #639, cr-review-hourly.sh used flock(1) on a
   # regular FILE at this exact path. A file sitting there makes `mkdir` fail
@@ -503,6 +616,10 @@ state_lock_acquire() {
 
   # $SECONDS is a bash builtin counter — a deadline without forking date(1).
   started_at=$SECONDS
+  # Last non-empty owner snapshot seen while waiting (issue #2433), sampled
+  # every few polls so the diagnostic survives a holder that released (or an
+  # ownerless window) right at the deadline.
+  local polls=0 last_pid="" last_host="" last_seen="" saw_dir=0 breaks=0
   while :; do
     if mkdir "$lock_dir" 2>/dev/null; then
       # One stamp call for both fields, and $HOSTNAME instead of hostname(1):
@@ -521,7 +638,7 @@ state_lock_acquire() {
       # readers can catch it existing-but-incomplete — and an owner file
       # missing its `epoch=` line used to read as "ancient, break it" (#930).
       { printf 'pid=%s\n' "$$"
-        printf 'host=%s\n' "$(_state_lock_hostname)"
+        printf 'host=%s\n' "$_STATE_LOCK_HOST_CACHE"
         printf 'epoch=%s\n' "${stamp%% *}"
         printf 'started=%s\n' "${stamp#* }"
         printf 'cmd=%s\n' "${0##*/}"
@@ -550,7 +667,17 @@ state_lock_acquire() {
     # Create it lazily — off the hot path, where the parent normally exists.
     if [[ ! -d "${lock_dir%/*}" ]]; then
       parent="${lock_dir%/*}"
-      mkdir -p "$parent" 2>/dev/null || true
+      if mkdir -p "$parent" 2>/dev/null; then
+        continue
+      fi
+      # A parent that cannot be created used to spin here forever, past the
+      # timeout (issue #2433). The deadline bounds this path too.
+      if (( SECONDS - started_at >= timeout )); then
+        _state_lock_timeout_message "$lock_dir" "$timeout" "" "" "" \
+          "parent directory $parent could not be created" >&2
+        return "$STATE_LOCK_EXIT_TIMEOUT"
+      fi
+      sleep 0.05
       continue
     fi
 
@@ -568,7 +695,25 @@ state_lock_acquire() {
     # over-reporting a wait costs a caller only its conservative branch.
     STATE_LOCK_WAITED=1
 
+    # Low-rate identity sample (every 10th lost poll, plus the first): cheap,
+    # and enough for the timeout diagnostic to name a holder truthfully.
+    if (( polls % 10 == 0 )) && _state_lock_snapshot "$lock_dir"; then
+      last_pid="$_SL_SNAP_PID" last_host="$_SL_SNAP_HOST" last_seen="$(_state_lock_now)"
+    fi
+    polls=$(( polls + 1 ))
+    [[ -d "$lock_dir" ]] && saw_dir=1
+
+    # The deadline is checked before every stale-break attempt after the
+    # first, so neither a break that keeps failing nor a chain of successful
+    # breaks can run past it; overshoot is at most one 0.2s resample. The
+    # first break is always allowed, so even a zero-timeout caller still
+    # recovers a dead holder's lock (issue #2433).
     if [[ -d "$lock_dir" ]] && _state_lock_is_stale "$lock_dir" "$stale_age"; then
+      if (( breaks > 0 && SECONDS - started_at >= timeout )); then
+        _state_lock_timeout_message "$lock_dir" "$timeout" "$last_pid" "$last_host" "$last_seen" "" "$saw_dir" >&2
+        return "$STATE_LOCK_EXIT_TIMEOUT"
+      fi
+      breaks=$(( breaks + 1 ))
       # A refused break (commit gate busy, lock changed hands) falls through to
       # the timeout check below instead of retrying unconditionally — otherwise
       # a persistently busy gate would spin past the caller's timeout (#2460).
@@ -578,7 +723,7 @@ state_lock_acquire() {
     fi
 
     if (( SECONDS - started_at >= timeout )); then
-      echo "state-lock: timed out after ${timeout}s waiting for $lock_dir (held by pid $(_state_lock_meta "$lock_dir/owner" pid) on $(_state_lock_meta "$lock_dir/owner" host)); refusing to write unserialized" >&2
+      _state_lock_timeout_message "$lock_dir" "$timeout" "$last_pid" "$last_host" "$last_seen" "" "$saw_dir" >&2
       return "$STATE_LOCK_EXIT_TIMEOUT"
     fi
     sleep 0.05

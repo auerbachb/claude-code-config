@@ -15,6 +15,8 @@ Hooks are **automatically registered** in `~/.claude/settings.json` on every ses
 
 `session-start-sync.sh` schedules its lock-held git work, its symlink publishers and its root-repo sync leg against one deadline, `CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS` (default `30`, mirroring the `timeout: 30` its `global-settings.json` entry registers). That override — and the per-call ceilings clamped inside it — exist for timing-sensitive tests on slow CI runners, not for production, where a longer deadline would only let the hook outlive the registered timeout. Because an environment variable is inherited whether or not it was meant for you, raising the deadline above `30` also requires `CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_RAISE_OK=1`; a raise without it keeps 30 and says so in the session notice. Full table and rationale: [`.claude/reference/skill-sync-hooks.md`](../reference/skill-sync-hooks.md).
 
+After the config-sync lock is released, `session-start-sync.sh` also starts `session-state-compact.sh --apply` **detached**, for every `source`, when the compactor's stamp is missing or older than `CLAUDE_STATE_COMPACT_CADENCE_SECS` (default one day). It never waits for it, so it spends none of the 3-second tail reserve; a run that hits the state lock leaves the stamp alone and retries on the next trigger (Issue #2433, [`state-file-contracts.md` §Compaction](../reference/state-file-contracts.md)).
+
 Shared code that hooks source (rather than run) lives in `lib/` and is deliberately absent from `global-settings.json` — registration matches by basename, so anything listed there would be executed as a hook in its own right.
 
 **Initial setup** is handled by `setup-skills-worktree.sh` (see `SETUP.md`). The ongoing sync is a safety net that catches hooks added after initial setup.
@@ -38,6 +40,7 @@ proof of faster CI.
 | [session-start-sync-marker.test.sh](tests/session-start-sync-marker.test.sh) | 11–13b | Restart marker and lock eligibility |
 | [session-start-sync-resume.test.sh](tests/session-start-sync-resume.test.sh) | 14 | Fast-forward notices and publisher categories |
 | [session-start-sync-publish-bounds.test.sh](tests/session-start-sync-publish-bounds.test.sh) | 15 | Publisher/root-sync bounds and healthy controls |
+| [session-start-sync-compact.test.sh](tests/session-start-sync-compact.test.sh) | — (Issue #2433) | Detached, stamp-gated session-state compaction trigger |
 
 The split preserves all **20 scenario headings and 81 assertion sites**. The
 five moved scenario chunks remain byte-identical after excluding only cleanup
@@ -137,6 +140,19 @@ These hooks make `/end` and `/pause` cost-quiescent (Issue #1308).
 An active marker makes the launch gate fail closed if session state becomes
 unreadable after activation. Other hook/dependency failures stay fail-open so a
 malformed payload cannot brick all tool use.
+
+The status read stays serialized under the state lock (an unlocked read can see
+a half-applied activation or clear), but a busy lock is retried (Issue #2433).
+Only exit 6 is retried, with 100–290 ms jitter, each attempt waiting at most
+`CLAUDE_PAUSE_GATE_ATTEMPT_TIMEOUT` seconds (default 1) for the lock, all inside
+`CLAUDE_PAUSE_GATE_BUDGET_MS` (default 3500) — below the 5 s host timeout. The
+gate then reports one of three blocking outcomes, each exit 2:
+
+- **paused** — `active`; never retried; names `/end-resume` or `/pause-resume`.
+- **lock-busy** — the last lock diagnostic named a holder (`held by pid …`); the
+  message carries that pid and host and says retrying is safe and it is not a pause.
+- **unavailable** — the diagnostic says `not contention` (or there was none);
+  the message carries the reason.
 
 A registry write failure creates
 `claude-background-registry-failed-<session>` in the configured background-work

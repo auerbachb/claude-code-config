@@ -51,8 +51,13 @@ has "$ARM_HOOK" 'CLAUDE_STATE_LOCK_TIMEOUT=3'
 has "$ARM_HOOK" 'CLAUDE_STATE_RMW_MAX_RETRY=0'
 has "$COMPLETE_HOOK" 'CLAUDE_STATE_LOCK_TIMEOUT=3'
 has "$COMPLETE_HOOK" 'CLAUDE_STATE_RMW_MAX_RETRY=0'
-has "$GATE_HOOK" 'CLAUDE_STATE_LOCK_TIMEOUT=3'
+# issue #2433: the gate retries exit 6 inside a ms budget with a short
+# per-attempt lock timeout instead of one fixed 3s attempt.
+has "$GATE_HOOK" 'CLAUDE_PAUSE_GATE_BUDGET_MS:-3500'
+has "$GATE_HOOK" 'CLAUDE_STATE_LOCK_TIMEOUT="\$ATTEMPT_TIMEOUT"'
 has "$GATE_HOOK" 'RC.*-eq 6'
+has "$GATE_HOOK" 'lock-busy'
+has "$GATE_HOOK" 'could not be verified'
 has "$PAUSE_SCRIPT" 'execution-pause-markers'
 has "$PAUSE_SCRIPT" 'chmod 700'
 has "$REGISTRY" 'failed|stop_failed|rearmed'
@@ -363,6 +368,14 @@ jq -e '
   .hooks.PreToolUse[] | select(.matcher == "Agent|Workflow|Monitor|Bash")
   | .hooks[] | select(.command | endswith("/pause-launch-gate.sh"))
 ' "$SETTINGS" >/dev/null || fail "PreToolUse pause launch gate is not registered"
+GATE_HOST_TIMEOUT=$(jq -r '
+  [.hooks.PreToolUse[] | select(.matcher == "Agent|Workflow|Monitor|Bash")
+   | .hooks[] | select(.command | endswith("/pause-launch-gate.sh")) | .timeout][0] // 0
+' "$SETTINGS")
+GATE_BUDGET_MS=$(sed -n 's/.*CLAUDE_PAUSE_GATE_BUDGET_MS:-\([0-9]*\).*/\1/p' "$GATE_HOOK" | head -n 1)
+[[ "$GATE_BUDGET_MS" =~ ^[0-9]+$ ]] || fail "could not read the launch-gate budget"
+(( GATE_HOST_TIMEOUT * 1000 > GATE_BUDGET_MS + 1000 )) \
+  || fail "launch-gate host timeout ${GATE_HOST_TIMEOUT}s does not exceed its ${GATE_BUDGET_MS}ms budget plus margin"
 jq -e '
   .hooks.SubagentStop[].hooks[]
   | select(.command | endswith("/background-task-complete.sh"))

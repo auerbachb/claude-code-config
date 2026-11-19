@@ -528,6 +528,180 @@ check_eq "a library that is only sourced starts with no acquisition in effect" "
   "$(bash -c 'source "$1"; printf "[%s]" "$STATE_LOCK_WAITED"' _ "$LOCK_LIB")"
 rm -rf "$LOCK_DIR"
 
+# ---------------------------------------------------------------------------
+# issue #2433: truthful timeout diagnostics and a bounded deadline.
+# ---------------------------------------------------------------------------
+# contend <state-file> <timeout>: one acquire attempt in a child; prints
+# "rc=<n>" on stdout line 1, then the child's stderr, plus "self=<pid>@<host>"
+# so the tests can prove the waiter's own identity is never reported.
+contend() {
+  bash -c 'source "$1"; state_lock_acquire "$2" "$3" 2>&1; rc=$?
+           printf "rc=%s\nself=%s@%s\n" "$rc" "$$" "$(_state_lock_hostname)"' \
+    _ "$LOCK_LIB" "$1" "$2"
+}
+
+echo
+echo "== issue #2433: a real holder is named by pid and host in one line =="
+reset_state
+run --set '.held_by_real="yes"'
+BEFORE="$(cat "$STATE_FILE")"
+H2433="$TMP_HOME/h2433"; rm -rf "$H2433"; mkdir -p "$H2433"
+bash -c 'source "$1"; state_lock_acquire "$2" 5 || exit 6; : > "$3/held"
+         while [[ ! -e "$3/release" ]]; do sleep 0.05; done
+         state_lock_release' _ "$LOCK_LIB" "$STATE_FILE" "$H2433" &
+HOLDER=$!
+wait_for "$H2433/held"
+HPID="$(sed -n 's/^pid=//p' "$LOCK_DIR/owner")"
+HHOST="$(sed -n 's/^host=//p' "$LOCK_DIR/owner")"
+HTOKEN="$(sed -n 's/^token=//p' "$LOCK_DIR/owner")"
+OUT="$(contend "$STATE_FILE" 1)"
+MSG="$(grep 'timed out' <<<"$OUT")"
+SELF="$(sed -n 's/^self=//p' <<<"$OUT")"
+check_eq "contender exits 6" "rc=6" "$(grep '^rc=' <<<"$OUT")"
+check_eq "published host is non-empty" "1" "$([[ -n "$HHOST" ]] && echo 1 || echo 0)"
+check_eq "message names the holder pid and host" "1" "$(grep -cF "held by pid $HPID on $HHOST (cmd " <<<"$MSG")"
+check_eq "diagnostic is exactly one stderr line" "1" "$(grep -vc '^rc=\|^self=' <<<"$OUT")"
+check_eq "message never names the waiter's own pid" "0" "$(grep -cF "pid ${SELF%@*} " <<<"$MSG")"
+check_eq "legacy substrings preserved" "1" "$(grep -c 'timed out after 1s waiting.*refusing to write unserialized' <<<"$MSG")"
+check_eq "holder token unchanged" "$HTOKEN" "$(sed -n 's/^token=//p' "$LOCK_DIR/owner")"
+check_eq "state bytes unchanged" "$BEFORE" "$(cat "$STATE_FILE")"
+: > "$H2433/release"; wait "$HOLDER" 2>/dev/null
+
+echo
+echo "== issue #2433: an ownerless fresh lock reports pid unknown with a reason =="
+reset_state
+mkdir -p "$LOCK_DIR"
+OUT="$(contend "$STATE_FILE" 1)"
+MSG="$(grep 'timed out' <<<"$OUT")"
+SELF="$(sed -n 's/^self=//p' <<<"$OUT")"
+check_eq "contender exits 6" "rc=6" "$(grep '^rc=' <<<"$OUT")"
+check_eq "message says pid unknown with the ownerless reason" "1" \
+  "$(grep -c 'held by pid unknown on unknown (owner not published or unreadable; lock age [0-9]*s)' <<<"$MSG")"
+check_eq "message never names the waiter's own pid" "0" "$(grep -cF "pid ${SELF%@*} " <<<"$MSG")"
+check_eq "no empty pid/host fields" "0" "$(grep -c 'pid  on \|on )' <<<"$MSG")"
+check_eq "the fresh ownerless lock was NOT broken" "1" "$([[ -d "$LOCK_DIR" ]] && echo 1 || echo 0)"
+rm -rf "$LOCK_DIR"
+
+echo
+echo "== issue #2433: a holder that vanished mid-wait is reported as last observed =="
+reset_state
+plant_lock 4242 "$(date +%s)"
+# 4242 is not a live pid on most hosts — make the pid check meaningless by
+# planting a foreign host, so only the (fresh) age rule applies.
+sed -i.bak 's/^host=.*/host=foreign-host-2433/' "$LOCK_DIR/owner"; rm -f "$LOCK_DIR/owner.bak"
+# Start the contender FIRST (it samples the owner on its first lost poll),
+# and only then remove the owner file, so the sample cannot be skipped.
+( contend "$STATE_FILE" 3 > "$TMP_HOME/vanish.out" 2>&1 ) &
+VPID=$!
+sleep 1
+rm -f "$LOCK_DIR/owner"
+wait "$VPID"
+OUT="$(cat "$TMP_HOME/vanish.out")"
+MSG="$(grep 'timed out' <<<"$OUT")"
+check_eq "contender exits 6" "rc=6" "$(grep '^rc=' <<<"$OUT")"
+check_eq "labelled last observed with the vanished holder's fields" "1" \
+  "$(grep -c 'last observed held by pid 4242 on foreign-host-2433 ([0-9]*s ago)' <<<"$MSG")"
+check_eq "no mixed current-holder form" "0" "$(grep -c '(cmd ' <<<"$MSG")"
+rm -rf "$LOCK_DIR"
+
+echo
+echo "== issue #2433: an ownerless holder that left is contention, not a creation failure =="
+reset_state
+SHIM2="$TMP_HOME/mkdir-shim-seen"; rm -rf "$SHIM2"; mkdir -p "$SHIM2"
+REAL_MKDIR="$(command -v mkdir)"
+# The lock mkdir always fails here, so the contender can never take the lock
+# that the test planted and then removed.
+cat > "$SHIM2/mkdir" <<SH
+#!/bin/bash
+for a in "\$@"; do case "\$a" in *.lock) exit 1 ;; esac; done
+exec "$REAL_MKDIR" "\$@"
+SH
+chmod +x "$SHIM2/mkdir"
+mkdir -p "$LOCK_DIR"
+( PATH="$SHIM2:$PATH" contend "$STATE_FILE" 2 > "$TMP_HOME/seen.out" 2>&1 ) &
+SPID=$!
+sleep 0.7
+rm -rf "$LOCK_DIR"
+wait "$SPID"
+check_eq "not misreported as a creation failure" "0" "$(grep -c 'not contention' "$TMP_HOME/seen.out")"
+check_eq "reported as a holder that released unobserved" "1" \
+  "$(grep -c 'held by pid unknown on unknown (holder released before its owner was observed)' "$TMP_HOME/seen.out")"
+
+echo
+echo "== issue #2433: a lock mkdir that fails without contention says so =="
+reset_state
+SHIM="$TMP_HOME/mkdir-shim"; rm -rf "$SHIM"; mkdir -p "$SHIM"
+REAL_MKDIR="$(command -v mkdir)"
+cat > "$SHIM/mkdir" <<SH
+#!/bin/bash
+for a in "\$@"; do case "\$a" in *.lock) exit 1 ;; esac; done
+exec "$REAL_MKDIR" "\$@"
+SH
+chmod +x "$SHIM/mkdir"
+OUT="$(PATH="$SHIM:$PATH" contend "$STATE_FILE" 1)"
+MSG="$(grep 'timed out' <<<"$OUT")"
+check_eq "contender exits 6" "rc=6" "$(grep '^rc=' <<<"$OUT")"
+check_eq "message classifies it as not contention" "1" \
+  "$(grep -c 'held by pid unknown on unknown (lock directory could not be created; not contention)' <<<"$MSG")"
+
+echo
+echo "== issue #2433: the deadline bounds a parent that cannot be created =="
+BLOCKER="$TMP_HOME/blocker-file"; : > "$BLOCKER"
+# Watchdog: a regression retries parent creation forever, so bound the child.
+( contend "$BLOCKER/sub/state.json" 1 > "$TMP_HOME/parent.out" 2>&1 ) &
+PPID_C=$!
+T0=$SECONDS
+while kill -0 "$PPID_C" 2>/dev/null && (( SECONDS - T0 < 15 )); do sleep 0.1; done
+ELAPSED=$(( SECONDS - T0 ))
+kill -9 "$PPID_C" 2>/dev/null; wait "$PPID_C" 2>/dev/null
+OUT="$(cat "$TMP_HOME/parent.out")"
+check_eq "exits 6" "rc=6" "$(grep '^rc=' <<<"$OUT")"
+check_eq "names the parent-creation failure as not contention" "1" \
+  "$(grep -c 'parent directory .* could not be created; not contention' <<<"$OUT")"
+check_eq "returns within timeout + margin (<=4s)" "1" "$(( ELAPSED <= 4 ))"
+
+echo
+echo "== issue #2433: the deadline bounds a stale break that keeps failing =="
+RO="$TMP_HOME/ro-parent"; rm -rf "$RO"; mkdir -p "$RO/state.json.lock"
+{ printf 'pid=1\n'; printf 'host=foreign-host-2433\n'; printf 'epoch=1\n'; } > "$RO/state.json.lock/owner"
+chmod 555 "$RO"
+if touch "$RO/probe" 2>/dev/null; then
+  # root (or similar) ignores directory write permission, so the break would
+  # succeed and the case would test nothing. Skip rather than fail falsely.
+  rm -f "$RO/probe"
+  echo "skip — directory permissions are not enforced for this user"
+else
+  # Watchdog: a regression loops forever here, so bound the child externally.
+  ( contend "$RO/state.json" 1 > "$TMP_HOME/ro.out" 2>&1 ) &
+  CPID=$!
+  T0=$SECONDS
+  while kill -0 "$CPID" 2>/dev/null && (( SECONDS - T0 < 15 )); do sleep 0.1; done
+  ELAPSED=$(( SECONDS - T0 ))
+  kill -9 "$CPID" 2>/dev/null; wait "$CPID" 2>/dev/null
+  check_eq "(setup) the stale lock could not be broken" "1" "$([[ -d "$RO/state.json.lock" ]] && echo 1 || echo 0)"
+  check_eq "exits 6" "rc=6" "$(grep '^rc=' "$TMP_HOME/ro.out")"
+  check_eq "returns within timeout + margin (<=4s)" "1" "$(( ELAPSED <= 4 ))"
+fi
+chmod 755 "$RO"
+rm -rf "$RO"
+
+echo
+echo "== issue #2433: a free lock is still acquired immediately (positive control) =="
+reset_state
+check_eq "free lock: rc 0, not waited" "rc=0 waited=0" "$(probe "$STATE_FILE" 5 2>&1)"
+rm -rf "$LOCK_DIR"
+
+echo
+echo "== issue #2433: a newline in HOSTNAME cannot inject owner-file records =="
+reset_state
+OUT="$(HOSTNAME=$'evil\ntoken=forged' bash -c '
+  source "$1"; state_lock_acquire "$2" 5 || exit 6
+  printf "%s|" "$(grep -c "^token=" "$2.lock/owner")" "$(grep "^host=" "$2.lock/owner")"
+  state_lock_release
+  [[ -d "$2.lock" ]] && echo leaked || echo released' _ "$LOCK_LIB" "$STATE_FILE")"
+check_eq "one token line, host truncated at the newline, lock released" "1|host=evil|released" "$OUT"
+rm -rf "$LOCK_DIR"
+
 echo
 echo "== issue #2460: a paused cleaner must not remove a successor's fresh lock =="
 # Forced interleaving: cleaner B judges the lock stale and pauses; cleaner A
