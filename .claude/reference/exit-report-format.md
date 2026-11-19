@@ -48,7 +48,7 @@ A step only the operator can do (the capability ladder walked and failed) is rep
 OWNER_ACTION: secret-value: Fill in STRIPE_PUBLISHABLE in .env — only the operator holds the Stripe dashboard login
 ```
 
-The reason comes first, from the list in `owner-tasks.md` §Why a person. Name the variable or account, never a secret value. The parent saves each line with `owner-task.sh add` (`--source` the PR or issue) and prints the receipt; the report's `OUTCOME` is unaffected, so a phase that otherwise finished still reports its normal outcome.
+The reason comes first, from the list in `owner-tasks.md` §Why a person. Name the variable or account, never a secret value. `exit-report-extract.sh` forwards each one, as an `OWNER_ACTION=` line, from the prose above the last report only, so a parent reading only its output still sees them. The parent saves each line with `owner-task.sh add` (`--source` the PR or issue) and prints the receipt; the report's `OUTCOME` is unaffected, so a phase that otherwise finished still reports its normal outcome.
 
 The three `FIXPR_*` fields are required whenever the phase executed the `/fixpr` workflow (copy them from its `FIXPR_WAIT_SUMMARY` footer line); omit them otherwise.
 

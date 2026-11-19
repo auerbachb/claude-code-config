@@ -32,7 +32,7 @@ The rule is `human-queue.md` §Operator-only tasks (Issue #2561); this section i
    ```
 
 3. **Done straight away means marked done.** If he does it in the same conversation and the thread can check it, the thread marks it done with that check (below). Otherwise it simply waits on the list.
-4. **Not saved (exit 3, or any other non-zero exit).** A public repo with no private bucket in the pointer file exits 3 and writes nothing; this repo is one. The thread still states the task in chat and adds one line saying it was not saved and why, for example `not saved to the human-task list: this repo is public and no private bucket is set (owner-task.sh exit 3)`. Exit 5 means the text held a secret: rewrite it naming the variable, then retry.
+4. **Not saved (exit 3, or any other non-zero exit).** A public repo with no private bucket in the pointer file exits 3 and writes nothing; this repo is one. The thread still states the task in chat and adds one line saying it was not saved and why, for example `not saved to the human-task list: this repo is public and no private bucket is set (owner-task.sh exit 3)`. Exit 5 means the text held a secret: rewrite it naming the variable, then retry. Exit 1 (a write failed) may still have posted the comment, so run `owner-task.sh list` before any retry and add it again only if it is absent.
 
 ### Why a person: the reason list
 

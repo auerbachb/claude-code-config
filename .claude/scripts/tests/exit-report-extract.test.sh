@@ -143,4 +143,18 @@ run --phase A "$TMP/r.txt"
 [[ $RC -eq 0 && "$(field OUTCOME)" == blocked && "$(field RESULT)" == "unresolvable conflict in foo.ts" ]] || fail "blocked RESULT (rc=$RC out=$OUT)"
 pass "blocked report forwards its RESULT blocker reason"
 
+# OWNER_ACTION lines above the last report reach the parent (issue #2561);
+# ones above an earlier, quoted report do not.
+{ printf 'OWNER_ACTION: sign-in: old example — quoted\n'; report B clean B
+  printf '\nprose\nOWNER_ACTION: secret-value: Fill in STRIPE_PUBLISHABLE in .env — only he holds it\nOWNER_ACTION: sign-in: Run railway login — 2FA\n'
+  report B merge_ready C; } > "$TMP/r.txt"
+run --phase B "$TMP/r.txt"
+actions=$(printf '%s\n' "$OUT" | grep -c '^OWNER_ACTION=' || true)
+[[ $RC -eq 0 && "$(field OUTCOME)" == merge_ready && "$actions" == 2 \
+   && "$(printf '%s\n' "$OUT" | grep -m1 '^OWNER_ACTION=')" == "OWNER_ACTION=secret-value: Fill in STRIPE_PUBLISHABLE in .env — only he holds it" ]] \
+  || fail "OWNER_ACTION lines (rc=$RC out=$OUT)"
+report B clean B > "$TMP/r.txt"; run --phase B "$TMP/r.txt"
+[[ $RC -eq 0 && "$OUT" != *OWNER_ACTION* ]] || fail "no OWNER_ACTION expected (rc=$RC out=$OUT)"
+pass "OWNER_ACTION lines above the last report are forwarded"
+
 echo "All exit-report-extract tests passed."
