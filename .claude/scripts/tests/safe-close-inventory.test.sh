@@ -15,6 +15,8 @@ ok() { echo "ok   — $*"; }
 
 export HOME="$TMP/home"
 mkdir -p "$HOME/.claude" "$TMP/bin"
+# The inventory reads session transcripts from CLAUDE_CONFIG_DIR when set: pin it to the fixture.
+export CLAUDE_CONFIG_DIR="$HOME/.claude"
 # Read bgwork markers from this suite's own directory, not the shared /tmp (issue #2391).
 export CLAUDE_BGWORK_MARKER_DIR="$TMP/markers"; mkdir -p "$CLAUDE_BGWORK_MARKER_DIR"
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
@@ -145,6 +147,40 @@ OUT="$(run)"
   || { echo "$OUT" >&2; fail "unattributable record not reported as unknown (or terminal one was)"; }
 echo '{}' > "$STATE"
 ok "an unowned non-terminal record is unknown; a terminal one is ignored"
+
+# ---- 10b. an ownerless record that predates the session is excluded context (issue #2448) -----
+# October record naming a merged PR; the session's transcript starts in November.
+mkdir -p "$HOME/.claude/projects/proj"
+printf '%s\n' '{"type":"summary"}' '{"type":"user","timestamp":"2026-11-17T09:00:00.123Z"}' > "$HOME/.claude/projects/proj/$SESSION.jsonl"
+jq -n '{active_agents:{"a-old":{id:"a-old",task:"issue-873",pr:873,phase:"B",status:"spawned",launched:"2026-10-02T12:00:00Z"}},
+        pipelines:{"2718":{started_at:"2026-10-05T08:00:00Z",pr:null}}}' > "$STATE"
+OUT="$(run)"; rc=$?
+[[ $rc == 0 && "$(jqr .verdict)" == safe ]] || { echo "$OUT" >&2; fail "an ownerless record older than the session blocked the verdict"; }
+[[ "$(jqr '[.excluded[]|select(.id==".active_agents:a-old" or .id==".pipelines:2718")]|length')" == 2 ]] || { echo "$OUT" >&2; fail "predating records not listed in excluded[]"; }
+grep -q 'before this session' <<<"$(jqr '.excluded[]|select(.id==".active_agents:a-old")|.reason')" || fail "excluded reason does not say why"
+[[ "$(jqr .session_start.at)" == "2026-11-17T09:00:00.123Z" ]] || fail "session start not read from the transcript"
+ok "an ownerless record that predates the session's first activity is excluded with a reason"
+
+# Same record without a timestamp and without a PR: fail closed, one unknown item.
+jq -n '{active_agents:{"a-old":{id:"a-old",task:"issue-873",phase:"B",status:"spawned"}}}' > "$STATE"
+OUT="$(run)"; rc=$?
+[[ $rc == 1 && "$(jqr .verdict)" == not_yet && "$(jqr '[.items[]|select(.consequence=="unknown")]|length')" == 1 ]] \
+  || { echo "$OUT" >&2; fail "an ownerless record with no timestamp was not unknown"; }
+# A record written after the session started stays unknown too.
+jq -n '{active_agents:{"a-new":{id:"a-new",status:"spawned",launched:"2026-11-18T00:00:00Z"}}}' > "$STATE"
+OUT="$(run)"
+[[ "$(jqr .verdict)" == not_yet && "$(jqr .categories.subagents.status)" == unknown ]] || fail "a record newer than the session start was excluded"
+# No session start (no transcript, no flag): the old record stays unknown.
+rm -f "$HOME/.claude/projects/proj/$SESSION.jsonl"
+jq -n '{active_agents:{"a-old":{id:"a-old",status:"spawned",launched:"2026-10-02T12:00:00Z"}}}' > "$STATE"
+OUT="$(run)"
+[[ "$(jqr .verdict)" == not_yet && "$(jqr .session_start)" == null ]] || fail "an old record was excluded with no session start"
+# An explicit --session-start supplies it; an unparsable one is a usage error.
+OUT="$(run --session-start 2026-11-01T00:00:00Z)"
+[[ "$(jqr .verdict)" == safe ]] || { echo "$OUT" >&2; fail "--session-start was not honoured"; }
+run --session-start yesterday >/dev/null 2>&1; [[ $? == 2 ]] || fail "an unparsable --session-start should exit 2"
+echo '{}' > "$STATE"
+ok "no timestamp, a newer record, or no session start keeps the record unknown (fail closed)"
 
 # ---- 11. no session id and a failing GitHub read are unknown -------------------------------
 OUT="$(cd "$W" && env -u CLAUDE_SESSION_ID "$SCRIPT" --repo "$REPO" --worktree "$W")"
