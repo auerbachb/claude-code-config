@@ -21,7 +21,7 @@ Loaded on a `desk-tick <GEN> morning` event, when the operator's whole message i
 
 ```bash
 CHK_GET=$(mktemp "${TMPDIR:-/tmp}/desk-checkin-get.XXXXXX")
-"$HQ" checkin get --json > "$CHK_GET"; rc=$?
+"$HQ" checkin get --tasks --json > "$CHK_GET"; rc=$?
 if [ "$rc" -eq 0 ]; then
   jq -c '{checked_in: (.checkin != null)}' "$CHK_GET"
   jq -r -L "$DESK/skill" 'include "desk"; checkin_card' "$CHK_GET"
@@ -34,7 +34,7 @@ The first line says whether today's check-in is already stored. **From a new pla
 ```text
 > **Morning check-in · Thu Oct 8**
 > Yesterday: 22 Reviews read in about 3 h at the desk, 7.3 an hour; 6 Decisions answered, median 4 min from shown to answered.
-> Waiting now: 18 unreviewed Reviews.
+> Waiting now: 3 open Decisions · 18 unreviewed Reviews · 2 open human tasks.
 > 1. Hours at the desk today?
 > 2. Energy, in one word? (for example low, ok, high)
 > 3. Anything planned? (a piece of work and its pace, meetings, or none)
@@ -42,7 +42,7 @@ The first line says whether today's check-in is already stored. **From a new pla
 Reply in one line, `hours, energy, plan`: `4, ok, the PRD until noon`. `skip` leaves today without a reading budget.
 ```
 
-With no measured day in the last week the second line says so, and today starts from the 30 × 20 guess. The card is now **waiting for its reply** (keep that in this conversation until it is answered or skipped). `exit=7` → `Can't reach the store — the check-in waits until it is back; say "check-in" then.`
+With no measured day in the last week the second line says so, and today starts from the 30 × 20 guess. The "Waiting now" line counts the open human tasks across repos (`--tasks`, issue #2542; `tasks` lists them, `tasks.md`). When that list cannot be read (offline, `gh` unavailable), the line says `the task list could not be read` and the card still shows, Decisions and Reviews included: a task-list failure never fails the check-in. The card is now **waiting for its reply** (keep that in this conversation until it is answered or skipped). `exit=7` → `Can't reach the store — the check-in waits until it is back; say "check-in" then.`
 
 ## 2. The reply
 
