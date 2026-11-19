@@ -23,19 +23,31 @@
 # suppress the repeat, so emitting anyway is not "one extra warning" — it is a
 # warning on every subsequent tool call until the poll recovers.
 
-input=$(cat)
+#
+# Also registered as a Stop hook (Issue #2201). A Monitor on a runtime that
+# caps timeout_ms expires after 30 minutes, and a thread that misses the one
+# expiry notice makes no further tool calls — so PostToolUse alone never fires
+# in the idle case. At Stop the same check runs with its own dedupe namespace
+# (one notice per stale stretch, even after a PostToolUse warning) and emits a
+# Stop additionalContext notice. Never blocks; never stops, clears, or
+# replaces state.
 
-emit_context() {
-  jq -n --arg message "$1" '{
-    hookSpecificOutput: {
-      hookEventName: "PostToolUse",
-      additionalContext: $message
-    }
-  }'
-}
+input=$(cat)
 
 json_field() {
   printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null
+}
+
+hook_event=$(json_field '.hook_event_name')
+[[ "$hook_event" == "Stop" ]] || hook_event="PostToolUse"
+
+emit_context() {
+  jq -n --arg message "$1" --arg event "$hook_event" '{
+    hookSpecificOutput: {
+      hookEventName: $event,
+      additionalContext: $message
+    }
+  }'
 }
 
 # Portable ISO-8601 UTC -> epoch seconds. Echoes nothing and returns non-zero
@@ -74,7 +86,8 @@ records=$(printf '%s' "$prs_json" | jq -r '
     | [ .key,
         .value.babysit.last_tick_at,
         ((.value.babysit.cadence_effective_minutes
-          // .value.babysit.cadence_base_minutes // 5) | tostring)
+          // .value.babysit.cadence_base_minutes // 5) | tostring),
+        ((.value.babysit.monitor_task_id // "unrecorded") | tostring)
       ] | join("\u001f")
   end' 2>/dev/null) || exit 0
 
@@ -87,8 +100,22 @@ marker_dir="${CLAUDE_BABYSIT_WATCHDOG_MARKER_DIR:-/tmp}"
 
 now=$(date -u +%s)
 stalled=()
+written=()
 
-while IFS=$'\x1f' read -r pr last_tick cadence; do
+marker_ns="claude-babysit-tickwarn"
+repo_key=""
+if [[ "$hook_event" == "Stop" ]]; then
+  marker_ns="claude-babysit-tickwarn-stop"
+  repo_key="${CLAUDE_SESSION_REPO:-}"
+  [[ -n "$repo_key" ]] || repo_key=$("$state_helper" --repo-key 2>/dev/null)
+  repo_key="${repo_key:-this repo}"
+  # PR state is repo-scoped, so the Stop dedupe marker is too: the same PR
+  # number and last_tick_at in another repo must not suppress this warning.
+  repo_safe="${repo_key//[^[:alnum:]_.-]/_}"
+  marker_ns="${marker_ns}-${repo_safe}"
+fi
+
+while IFS=$'\x1f' read -r pr last_tick cadence task_id; do
   [[ -n "$pr" && -n "$last_tick" ]] || continue
 
   [[ "$cadence" =~ ^[0-9]+$ ]] || cadence=5
@@ -114,7 +141,7 @@ while IFS=$'\x1f' read -r pr last_tick cadence; do
   # advisory then re-fires on EVERY tool call — the nag loop this hook's
   # fail-silent policy exists to avoid.
   pr_safe="${pr//[^[:alnum:]_.-]/_}"
-  marker="${marker_dir}/claude-babysit-tickwarn-${session_id}-${pr_safe}"
+  marker="${marker_dir}/${marker_ns}-${session_id}-${pr_safe}"
   if [[ -f "$marker" ]] && [[ "$(cat "$marker" 2>/dev/null)" == "$last_tick" ]]; then
     continue
   fi
@@ -129,13 +156,33 @@ while IFS=$'\x1f' read -r pr last_tick cadence; do
     echo "babysit-tick-watchdog: cannot write $marker — suppressing the PR #${pr} advisory rather than repeating it every tool call" >&2
     continue
   fi
+  written+=( "$marker" )
 
-  stalled+=( "PR #${pr}: last tick ${age_min}m ago (cadence ${cadence}m, warn at ${warn_min}m)" )
+  if [[ "$hook_event" == "Stop" ]]; then
+    stalled+=( "${repo_key} PR #${pr} (Monitor task ${task_id}): no persisted tick observed for ${age_min}m (cadence ${cadence}m, warn at ${warn_min}m)" )
+  else
+    stalled+=( "PR #${pr}: last tick ${age_min}m ago (cadence ${cadence}m, warn at ${warn_min}m)" )
+  fi
 done <<< "$records"
 
 (( ${#stalled[@]} > 0 )) || exit 0
 
 printf -v body '%s; ' "${stalled[@]}"
-emit_context "BABYSIT WATCHER NOT TICKING — ${body%; }. A recorded Monitor task can still be stale, so treat this as a dead poll, not a quiet one (issues #914 and #924; scheduling-failure-modes.md Pattern 7). TO RECOVER, run /babysit-pr-stop <PR> FIRST, then /babysit-pr <PR>: re-arming on its own is refused as a duplicate until the watcher ages past max(3 x cadence, 30m), which is deliberately wider than this warning's 2 x cadence window — so a bare re-arm here silently no-ops. /babysit-pr records the replacement persistent Monitor task ID; never substitute CronCreate, either /loop mode, or a chained one-shot wake-up. If the watch is simply finished, /babysit-pr-stop alone is enough. The silence ceiling is a backstop, not this poll's cadence."
+if [[ "$hook_event" == "Stop" ]]; then
+  message="BABYSIT WATCH LAPSE SUSPECTED — ${body%; }. On a runtime that caps Monitor timeout_ms the watch ends after 30 minutes and must be re-armed on its expiry notice. If that task's expiry notice arrived, re-arm under the expiry procedure in /babysit-pr (.claude/reference/monitor-expiry.md); otherwise run /babysit-pr-stop <PR> FIRST, then /babysit-pr <PR>. If the watch is finished, /babysit-pr-stop alone is enough. Surface one line to the user only if you cannot restore the watch."
+else
+  message="BABYSIT WATCHER NOT TICKING — ${body%; }. A recorded Monitor task can still be stale, so treat this as a dead poll, not a quiet one (issues #914 and #924; scheduling-failure-modes.md Pattern 7). TO RECOVER, run /babysit-pr-stop <PR> FIRST, then /babysit-pr <PR>: re-arming on its own is refused as a duplicate until the watcher ages past max(3 x cadence, 30m), which is deliberately wider than this warning's 2 x cadence window — so a bare re-arm here silently no-ops. /babysit-pr records the replacement persistent Monitor task ID; never substitute CronCreate, either /loop mode, or a chained one-shot wake-up. If the watch is simply finished, /babysit-pr-stop alone is enough. The silence ceiling is a backstop, not this poll's cadence."
+fi
+
+# Build the output before committing to it: if it cannot be built, withdraw
+# this run's dedupe markers so the notice is retried instead of being recorded
+# as delivered when nothing was emitted.
+out=$(emit_context "$message")
+if [[ -z "$out" ]]; then
+  rm -f "${written[@]}" 2>/dev/null || true
+  echo "babysit-tick-watchdog: could not build the ${hook_event} notice — dedupe markers withdrawn so it retries" >&2
+  exit 0
+fi
+printf '%s\n' "$out"
 
 exit 0

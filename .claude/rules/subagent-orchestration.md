@@ -13,7 +13,7 @@ Use `.claude/agents/` definitions. Custom `subagent_type` agents automatically i
 4. Runtime context: PR/issue/branch, repo, handoff path, HEAD SHA, reviewer, optional pre-fetched findings.
 5. The verbatim `SAFETY:` block from `safety.md` — kept as a deliberate safety-critical restatement even though it is inherited.
 6. The verbatim `MINDSET:` block from `safety.md` — same rationale (try CLI/browser before handoff — see "Capability Discovery") — and `QUESTIONS:` from `human-queue.md`.
-7. Same step, but not part of the call: arm the silence ceiling — `bgwork-ceiling.sh --arm-command` → `Monitor` (`persistent: true`).
+7. Same step, but not part of the call: arm the silence ceiling (`scheduling-reliability.md`).
 
 See `.claude/agents/README.md` for the full placeholder reference and spawning examples.
 

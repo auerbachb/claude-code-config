@@ -191,6 +191,12 @@
 #   when missing, the on-PR comment scan alone provides idempotency.
 #   Optionally review-triggers-allowed.sh (sibling first; override
 #   PREFLIGHT_TRIGGERS_ALLOWED_SH), for the tier-aware path above.
+#   Optionally review-availability.sh (sibling first; override
+#   PREFLIGHT_REVIEW_AVAILABILITY_SH, a non-executable path turns it off): each
+#   successful CodeAnt or CodeRabbit post is logged with `record-request --reason
+#   pr_preflight` in the account-wide `.review_requests` log (issue #2276). Best
+#   effort: a failed or skipped log only warns (on stderr under --json);
+#   statuses and exit codes stay.
 #
 # PER-SHA TRIGGER DEDUPE (issue #576)
 #   After posting a trigger we record `.prs[N].preflight_trigger_head_sha` and
@@ -379,6 +385,27 @@ resolve_paid_grant() {
   return 1
 }
 PAID_GRANT_SH="$(resolve_paid_grant || true)"
+
+# --- resolve review-availability.sh (free-reviewer request log; env override for tests) ---
+# Same contract as resolve_triggers_allowed(): an explicit override is honored even when
+# non-executable, so a bogus path turns recording off instead of finding a real helper.
+resolve_review_availability() {
+  if [[ -n "${PREFLIGHT_REVIEW_AVAILABILITY_SH:-}" ]]; then
+    [[ -x "${PREFLIGHT_REVIEW_AVAILABILITY_SH}" ]] && { echo "$PREFLIGHT_REVIEW_AVAILABILITY_SH"; return 0; }
+    return 1
+  fi
+  local dir candidate
+  dir="$(cd "$(dirname "$0")" && pwd)"
+  for candidate in \
+    "$dir/review-availability.sh" \
+    "$HOME/.claude/skills-worktree/.claude/scripts/review-availability.sh" \
+    "$HOME/.claude/scripts/review-availability.sh" \
+    ".claude/scripts/review-availability.sh"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+REVIEW_AVAILABILITY_SH="$(resolve_review_availability || true)"
 
 # --- 1. read PR draft state + author + HEAD sha ---
 PR_VIEW_ERR="$(mktemp)"
@@ -844,6 +871,48 @@ cr_budget_allows() {
   return 0
 }
 
+# Logs one successful free-reviewer post in the account-wide `.review_requests` log, so
+# `review-availability.sh choose` ranks this request too (issue #2276). Called only after
+# `gh pr comment` succeeded, for codeant and coderabbit only (Cursor is paid, never logged).
+# Best effort and one attempt: a retry after a partial write could log the request twice.
+# Nothing here changes a status, a claim, the action count or the exit code; the repo is the
+# `gh` context the comment was posted through (never CLAUDE_SESSION_REPO or the origin).
+RECORD_REPO=""
+RECORD_REPO_RESOLVED=0
+# Warnings go through surface() in text mode and to stderr under --json, where surface() is
+# silent: stdout stays one JSON object and a lost log entry is still visible.
+record_warn() {
+  if (( JSON_OUT )); then echo "pr-preflight.sh: WARNING: $*" >&2; else surface "WARNING: $*"; fi
+}
+record_free_request() { # <reviewer key>
+  local key="$1" err=""
+  [[ "$key" == "codeant" || "$key" == "coderabbit" ]] || return 0
+  if [[ -z "$REVIEW_AVAILABILITY_SH" ]]; then
+    # An explicit override is the tests' way to turn recording off; stay quiet then.
+    [[ -n "${PREFLIGHT_REVIEW_AVAILABILITY_SH:-}" ]] \
+      || record_warn "review-availability.sh not found — the $key request is not in the free-reviewer request log (#2276)"
+    return 0
+  fi
+  if [[ -z "$HEAD_SHA" ]]; then
+    record_warn "no HEAD SHA — the $key request is not in the free-reviewer request log (#2276)"
+    return 0
+  fi
+  if (( ! RECORD_REPO_RESOLVED )); then
+    RECORD_REPO_RESOLVED=1
+    RECORD_REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || RECORD_REPO=""
+    [[ "$RECORD_REPO" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] || RECORD_REPO=""
+  fi
+  if [[ -z "$RECORD_REPO" ]]; then
+    record_warn "could not resolve the repo — the $key request is not in the free-reviewer request log (#2276)"
+    return 0
+  fi
+  if ! err="$("$REVIEW_AVAILABILITY_SH" record-request --repo "$RECORD_REPO" --pr "$PR" --head "$HEAD_SHA" \
+      --reviewer "$key" --reason pr_preflight 2>&1 >/dev/null)"; then
+    record_warn "posted the $key request but could not log it in the free-reviewer request log (#2276): ${err:-no detail}"
+  fi
+  return 0
+}
+
 post_trigger() {
   # $1 = reviewer key
   local key="$1" trigger
@@ -871,6 +940,8 @@ post_trigger() {
         fi
       fi
     fi
+    # The free-reviewer request log (issue #2276) — independent of the slot above.
+    record_free_request "$key"
   else
     set_status "$key" "trigger-failed"
     surface "WARNING: failed to post $key trigger ($trigger) — check gh auth/scopes"
