@@ -40,6 +40,16 @@ Every terminal outcome, blocker outcomes included, ends with the complete struct
 
 A Phase A report that is `blocked` before any push, or `exhaustion` before a PR exists, carries `PR_NUMBER: none`, `HEAD_SHA: none` and `HANDOFF_FILE: none`. Outcomes that claim a PR exists (`pushed_fixes`, `no_findings`, `fixes_pushed`, `clean`, `merge_ready`, `merged`) must carry an integer `PR_NUMBER` and non-blank `HEAD_SHA`, `REVIEWER` and `HANDOFF_FILE`; `exit-report-extract.sh` rejects anything else.
 
+## `OWNER_ACTION:` lines (Issue #2561)
+
+A step only the operator can do (the capability ladder walked and failed) is reported, never saved by the sub-agent and never asked: one line per task, in the prose directly **above** `EXIT_REPORT`, never inside it:
+
+```text
+OWNER_ACTION: secret-value: Fill in STRIPE_PUBLISHABLE in .env — only the operator holds the Stripe dashboard login
+```
+
+The reason comes first, from the list in `owner-tasks.md` §Why a person. Name the variable or account, never a secret value. The parent saves each line with `owner-task.sh add` (`--source` the PR or issue) and prints the receipt; the report's `OUTCOME` is unaffected, so a phase that otherwise finished still reports its normal outcome.
+
 The three `FIXPR_*` fields are required whenever the phase executed the `/fixpr` workflow (copy them from its `FIXPR_WAIT_SUMMARY` footer line); omit them otherwise.
 
 ## Valid OUTCOME Values

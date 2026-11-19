@@ -16,11 +16,11 @@ On a user turn matching `human-queue: D-<n> answered`, run `human-queue.sh get D
 
 ## Late answers
 
-Matches the default you acted on: nothing to do. Differs: apply it while the PR is open; after the PR merged, open a GitHub issue citing `D-<n>`, the PR, and the answer.
+One differing from your default applies while the PR is open; after merge, file an issue citing `D-<n>`, the PR, the answer.
 
 ## Unattended
 
-Armed only by the operator in chat (`unattended.sh on`). Then record each question (`unattended.sh record`), print `question U-<n> recorded for the operator's return`, default or park as above. Hooks enforce this and list the questions once on his return. No `start_session`; use sub-agents. **Pre-leave:** list linked sessions; confirm none waits on the user. Every spawned session or sub-agent brief carries, beside SAFETY/MINDSET:
+Armed only by the operator in chat (`unattended.sh on`). Then record each question (`unattended.sh record`), print `question U-<n> recorded for the operator's return`, default or park as above. Hooks enforce this and list them on his return. No `start_session`; use sub-agents. **Pre-leave:** list linked sessions; confirm none waits on the user. Every spawned session or sub-agent brief carries, beside SAFETY/MINDSET:
 
 ```text
 QUESTIONS: never use a question tool, never wait on the operator; send decisions to the parent by message, take the recommended option, keep working.
@@ -29,4 +29,8 @@ Park only a step whose recommended option is not reversible or needs confirmatio
 Full rules: .claude/rules/human-queue.md.
 ```
 
-**Past decisions:** read the full memory note, the task brief and the assigned issue (body, first comment) before asking; the task as written beats a remembered note — proceed, flag the doubt. Marking a note superseded rewrites its `MEMORY.md` line (`memory-audit.py --strict` flags misses). Detail: `.claude/reference/unattended-mode.md`.
+**Past decisions:** read the memory note, brief and issue before asking; the task beats memory (`.claude/reference/unattended-mode.md` §Past decisions).
+
+## Operator-only tasks
+
+When the capability ladder (`safety.md`) leaves an operator-only step, save it that turn, unasked: `owner-task.sh add` with a why-human reason; print the receipt. Name variables or accounts, never values. Exit 3: state it in chat, unsaved. Sub-agents report `OWNER_ACTION:`; the parent saves it. Mark done only with `--proof`. Detail: `.claude/reference/owner-tasks.md`.

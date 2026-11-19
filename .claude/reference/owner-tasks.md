@@ -8,7 +8,7 @@ Script: `.claude/scripts/owner-task.sh` (`--help` lists every flag and exit code
 
 ```bash
 owner-task.sh add --what "Fill in STRIPE_PUBLISHABLE in .env" \
-                  --why "only the operator holds the Stripe dashboard login" \
+                  --why "secret-value: only the operator holds the Stripe dashboard login" \
                   --source "https://github.com/<owner>/<repo>/pull/123"   # prints ht-xxxxxxxx
 owner-task.sh list                       # open tasks for this repo
 owner-task.sh list --all --json          # include done; machine-readable
@@ -19,6 +19,47 @@ owner-task.sh where                      # which location holds this repo's task
 ```
 
 `--repo OWNER/NAME` overrides the current checkout's repo on every command except `--all-repos`.
+
+## Handing the operator a task
+
+The rule is `human-queue.md` §Operator-only tasks (Issue #2561); this section is its mechanism. The operator decided it on 2026-11-19: every task a thread hands him is saved automatically, with no per-task confirmation, and each one records why a person was needed, because the long-term goal is to remove human steps.
+
+1. **Ladder first.** A task is saved only after the thread has walked the capability ladder (`safety.md` §Capability Discovery) and established it cannot do the step itself: no CLI, MCP tool, skill or browser path finishes it. "I could but it is a deployment step" is not a reason; run it.
+2. **Save in the same turn.** The turn that asks the operator to do it runs `owner-task.sh add`, then prints one receipt line:
+
+   ```text
+   human task ht-1a2b3c4d saved: Fill in STRIPE_PUBLISHABLE in .env (secret-value)
+   ```
+
+3. **Done straight away means marked done.** If he does it in the same conversation and the thread can check it, the thread marks it done with that check (below). Otherwise it simply waits on the list.
+4. **Not saved (exit 3, or any other non-zero exit).** A public repo with no private bucket in the pointer file exits 3 and writes nothing; this repo is one. The thread still states the task in chat and adds one line saying it was not saved and why, for example `not saved to the human-task list: this repo is public and no private bucket is set (owner-task.sh exit 3)`. Exit 5 means the text held a secret: rewrite it naming the variable, then retry.
+
+### Why a person: the reason list
+
+`--why` is `"<reason>: <free text>"`. The reason is one of a fixed list, so tasks can be grouped by what blocked automation; the free text says what exactly.
+
+| Reason | Use when |
+|--------|----------|
+| `sign-in` | An interactive login, 2FA prompt or OAuth consent only he can complete |
+| `legal-agreement` | Terms, a contract, a team invite or any consent given in his name |
+| `payment-detail` | A card, bank detail, purchase or plan change |
+| `secret-value` | A value only he holds, such as a `.env` entry or an API key from a dashboard |
+| `physical-device` | His phone, hardware key, a live test on his own machine or profiles |
+| `judgment-call` | A decision that is his to make, not a fact a thread can look up |
+
+`add` refuses (exit 2, nothing written) a blank `--why`, one with no `reason:` prefix, an unknown reason, and a reason with no free text after the colon. A new reason is added to `WHY_REASONS` in the script and to this table together.
+
+### Task text
+
+`--what` names the variable, account or page, never a secret value: `Fill in STRIPE_PUBLISHABLE in .env`, not the key. The secret check (below) refuses a value that slips through, but naming is the rule, not the check.
+
+### Sub-agents: `OWNER_ACTION:`
+
+A sub-agent has no operator and cannot save on his behalf from a brief it cannot verify, so it reports the step instead: one line per task, above its `EXIT_REPORT`, as `OWNER_ACTION: <reason>: <what> — <free text>` (`exit-report-format.md`). The parent saves each one with `owner-task.sh add`, `--source` naming the PR or issue, and prints the receipt. The guardrails file (`subagent-phase-guardrails.md`) says so for every phase.
+
+### Marking done
+
+When a later thread verifies the step was done (the `.env` key is now set, `railway whoami` prints the account), it runs `owner-task.sh done <id> --proof "<the check it ran>"`. An agent never marks a task done without a check it ran; only the operator's own completion uses `--by operator`.
 
 ## Storage format
 

@@ -4,6 +4,8 @@ Verbatim SAFETY/MINDSET/SKILLS/QUESTIONS/RESOLVE blocks for subagent spawn promp
 
 **Phase C (`phase-c-merger`)** carries only the SAFETY and QUESTIONS blocks — no MINDSET or SKILLS per `subagent-orchestration.md`. **QUESTIONS ships with every phase** (issue #2283): no sub-agent may block on the operator. **RESOLVE ships with all three phases**: every phase shells out to helper scripts, and a phase agent spawned against a repo with no `.claude/` directory fails the same way its parent would (issue #1189).
 
+**Operator-only steps (every phase, issue #2561):** a sub-agent that reaches a step only the operator can do, after the capability ladder has failed, reports it as an `OWNER_ACTION:` line above its exit report (`.claude/reference/exit-report-format.md`). The parent saves it with `owner-task.sh add` (`.claude/reference/owner-tasks.md`); the sub-agent neither saves it nor waits for him.
+
 ---
 
 ## RESOLVE (Portable Script Resolution)
