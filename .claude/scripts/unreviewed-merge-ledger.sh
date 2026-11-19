@@ -259,7 +259,7 @@ if [[ "$CMD" == snapshot || "$CMD" == merge || "$FROM_SNAPSHOT" == 1 ]]; then
       and has("no_review_override")
       and (.no_review_override == null
            or (.no_review_override | type == "object" and .applied == false))
-      and .path != "no-review-override")' "$SNAPSHOT_TMP" >/dev/null 2>&1; then
+      and (.path | type == "string") and .path != "no-review-override")' "$SNAPSHOT_TMP" >/dev/null 2>&1; then
       verify_snapshot_identity "$SNAPSHOT_TMP"
       NORMAL_HEAD="$(jq -er '.head_sha' "$SNAPSHOT_TMP")" || die 4 "cannot read gate HEAD"
       die 9 "gate JSON for $REPO PR #$PR is a normal (non-override) met gate; nothing merged. --gate-json accepts only no-review override evidence. Use the reviewed path: unreviewed-merge-ledger.sh merge --pr $PR --repo $REPO --sha $NORMAL_HEAD"

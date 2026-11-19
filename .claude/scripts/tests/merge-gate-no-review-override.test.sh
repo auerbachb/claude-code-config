@@ -657,7 +657,7 @@ done
 ledger_merge_gate - "$(j '.no_review_override = null')"
 check_eq "9" "$?" "#2432 null override (helper failure) is still a normal gate"
 assert_nothing_merged "#2432 null override"
-for neg in 'del(.no_review_override)' '.met = false' '.missing = ["x"]'; do
+for neg in 'del(.no_review_override)' '.met = false' '.missing = ["x"]' 'del(.path)' '.path = null'; do
   : >"$FAKE_MERGE_LOG"
   ledger_merge_gate - "$(j "$neg")"
   check_eq "4" "$?" "#2432 $neg keeps the generic refusal"
