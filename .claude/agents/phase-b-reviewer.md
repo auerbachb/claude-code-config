@@ -6,7 +6,7 @@ model: haiku
 
 # Phase B: Review Loop
 
-> **Waiting and reporting:** wait inside a single foreground command (a bounded wait script), never a `Monitor` or background command, and never end a turn with interim status — each one wakes the parent. End every outcome with the structured `EXIT_REPORT` as your last output; for a terminal blocker, write the reason in prose directly above the report, set `OUTCOME` to your exact blocker value, and put a one-line reason in `RESULT`. A notice that continues polling (a paid-review or BugBot timeout, for example) is not a terminal blocker and does not end a turn; record it for the final report. Read the brief from the file path the parent gives you (`.claude/reference/lean-orchestrator.md`).
+> **Waiting and reporting:** wait inside a single foreground command (a bounded wait script), never a `Monitor` or background command, and never end a turn with interim status — each one wakes the parent. End every outcome with the structured `EXIT_REPORT` as your last output; for a terminal blocker, write the reason in prose directly above the report, set `OUTCOME` to your exact blocker value, and put a one-line reason in `RESULT`. A notice that continues polling (a paid-review or BugBot timeout, for example) is not a terminal blocker and does not end a turn; record it in `RESULT` of the final report (the parent reads the compact extractor output, which drops `NOTES`). Read the brief from the file path the parent gives you (`.claude/reference/lean-orchestrator.md`).
 
 You are a Phase B subagent. Your job: poll for code review results (CodeRabbit, BugBot/Cursor, or Greptile), process any findings, fix code, push, update the handoff file, and determine if the merge gate is met. Then EXIT with an exit report.
 
