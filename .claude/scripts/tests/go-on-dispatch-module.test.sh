@@ -293,6 +293,18 @@ def lines(path, markers):
 
 before = Counter(lines(sys.argv[1], False))
 after = Counter(line for path in sys.argv[2:] for line in lines(path, True))
+# Deliberate deviations from the pre-split text, each counted exactly.
+# The BugBot branch of Step 6 read $SHA, assigned only in the CR branch
+# (PR #2533 review finding); review/respond.md now assigns it there too.
+deliberate = Counter({
+    "SHA=$(gh pr view $PR_NUM --json commits --jq '.commits[-1].oid')": 1,
+})
+absent = deliberate - (after - before)
+for line, count in absent.items():
+    print(f"deliberate deviation not present ({count}): {line[:120]}", file=sys.stderr)
+if absent:
+    sys.exit("go-on split parity: FAIL")
+after -= deliberate
 missing, extra = before - after, after - before
 for label, counts in (("missing", missing), ("unmarked extra", extra)):
     for line, count in counts.items():

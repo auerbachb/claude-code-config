@@ -65,6 +65,7 @@ BugBot (`cursor[bot]`) is a PAID reviewer: a PR is here only if it was sticky on
 
 Check for BugBot reviews on the current HEAD:
 ```bash
+SHA=$(gh pr view $PR_NUM --json commits --jq '.commits[-1].oid')
 gh api --paginate "repos/{owner}/{repo}/pulls/$PR_NUM/reviews?per_page=100" \
   --jq '[.[] | select(.user.login == "cursor[bot]" and .commit_id == "'"$SHA"'")]'
 gh api --paginate "repos/{owner}/{repo}/pulls/$PR_NUM/comments?per_page=100" \
