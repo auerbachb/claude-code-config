@@ -96,6 +96,7 @@ Resume and rank presentation resolve the cleanup and forgotten-PR modules at the
 | Available-capacity evaluation | `flow:refill` |
 | Config refresh of an existing file (cold start and resume) or whole-remainder `refresh config` (cold start only) | `shared:config` from the Step 1 gate, before Step 1A or 1B. Config bootstrap of a missing file stays cold-start only, at Step 1B.1. Resume mode (Step 1A.1) never bootstraps: a missing file is reported as config unavailable and the resume finishes without it. |
 | Handoff awareness | `flow:handoff` |
+| An operator-only item surfaced (a worker's `OWNER_ACTION:` line, an owner-action blocker, a Needs-you row), or a cold-start, resume or due progress report about to print | `shared:human-tasks` |
 | Epic scope: a typed `/pm epic #N`, a cold start that clears a stored epic, or a stored epic read on resume, tick or refill | `shared:epic` |
 
 Before an autonomous launch, apply the persisted pause and scope, credit budget, usage horizon, deadline, and author scope at their existing gates. Use Step 0a for author scope, Step 0b and the /subagent prelaunch checks for deadline, Step 3.4 for refill admission, and D2 for a day tick's horizon. Day-mode initial 1B.5 dispatch checks the credit budget in flow:launch before handing the batch to /subagent. A gate's missing or unreadable evidence keeps the affected launch held.
@@ -153,6 +154,7 @@ PM_REPORT_SH=$(resolve_script lib/pm-report.py || true)
 PM_STANDING_QUEUE_SH=$(resolve_script pm-standing-queue.sh || true)
 PM_RECEIPT_SH=$(resolve_script pm-run-receipt.sh || true)
 PRESENCE_SH=$(resolve_script presence.sh || true)
+PM_HUMAN_TASKS_SH=$(resolve_script pm-human-tasks.sh || true)
 ```
 
 
@@ -206,6 +208,7 @@ Read reference docs through the same order — `$HOME/.claude/skills-worktree/.c
 - `PRESENCE_SH` empty → **optional** (only needed when `AWAY_STR` or `AWAY_BARE` is set). Step 0c refuses the declaration in its one line, says presence could not be checked, and changes nothing (the same line when `presence.sh status --json` fails or does not report `away`): an away window stored earlier stays in force and unattended handling is untouched.
 - `PM_REPORT_SH` empty → **optional**. When scheduled reports are enabled, surface the report gate's missing-helper diagnostic once per PM run. Explicit `/board` remains available.
 - `PM_STANDING_QUEUE_SH` empty → **optional**. Surface one diagnostic and use the existing claimed queue and backlog refill without a standing plan.
+- `PM_HUMAN_TASKS_SH` empty → **optional, but say so**. Operator-only items are still stated in chat, each with a `not saved to the human-task list` line, and the report's human-task line reads `count unknown`, never zero (`shared:human-tasks`).
 - `TABLE_FRESHNESS_SH` empty → **optional**. Keep explicit and scheduled reports available. Preserve the diagnostic when a rendered table's freshness clock cannot be written.
 - `MAKESPAN_SH` / `ESTIMATE_RESOLVE_SH` empty → **optional** (needed only for window batch fitting and estimate display). **If a window is active (`WINDOW_STR` set) and either helper is unavailable, do NOT dispatch the full untrimmed batch — fail closed: print `DEGRADED: <helper> not found — dispatch paused; cannot verify batch fits the requested window` and skip dispatch for this run.** Without an active window, show estimates inline where available and continue normally.
 

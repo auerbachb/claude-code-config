@@ -141,6 +141,10 @@ those ticks. Evaluate once per turn after consolidating its outcomes. Keep the
 gate and delivery in this PM thread. Do not arm a reporting-only monitor or
 invoke a separate model to check for changes.
 
+<!-- pm-routing:begin -->
+**Human tasks.** Read `shared:human-tasks` when this turn holds an operator-only item (a worker's `OWNER_ACTION=` line, an owner-action blocker, a Needs-you row) and save each one before output, in every mode, unattended included. A due report also prints its human-task count line after the groups.
+<!-- pm-routing:end -->
+
 **Project page.** Refresh the same current-repo page on a verified dispatch,
 each observed merged or blocked outcome, and every due report, including
 D5 and the PM-owned inline monitor. Follow the
