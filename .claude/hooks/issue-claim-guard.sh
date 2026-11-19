@@ -110,8 +110,18 @@ def seg_holder(seg, i, exported):
     return found or "-"
 
 
+def norm_repo(v):
+    # [HOST/]OWNER/REPO, as gh accepts it, to OWNER/REPO; None when not literal.
+    if not v:
+        return None
+    parts = v.split("/")
+    if len(parts) == 3:
+        v = parts[1] + "/" + parts[2]
+    return v if REPO_OK.match(v) else None
+
+
 def repo_value(v):
-    return v if (v and REPO_OK.match(v)) else "-"
+    return norm_repo(v) or "-"
 
 
 def gh_repo_env(seg, i, exported):
@@ -122,12 +132,7 @@ def gh_repo_env(seg, i, exported):
     for tok in seg[:i]:
         if tok.startswith("GH_REPO="):
             found = tok[len("GH_REPO="):]
-    if not found:
-        return None
-    parts = found.split("/")
-    if len(parts) == 3:
-        found = parts[1] + "/" + parts[2]
-    return found if REPO_OK.match(found) else None
+    return norm_repo(found)
 
 
 def prep(cmd):

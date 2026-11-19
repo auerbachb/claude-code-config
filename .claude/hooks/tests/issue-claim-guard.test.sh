@@ -451,6 +451,8 @@ out="$(run_hook 'export GH_REPO=github.com/exp-owner/exp-repo && gh pr create --
 expect_deny "#2366 an exported HOST/OWNER/REPO GH_REPO is the target" "$out" "--claim --repo exp-owner/exp-repo"
 out="$(run_hook 'GH_REPO=env-owner/env-repo gh pr create -R flag-owner/flag-repo --head issue-208-x' "$TMP/pr-feature")"
 expect_deny "#2366 -R overrides GH_REPO" "$out" "--claim --repo flag-owner/flag-repo"
+out="$(run_hook 'gh pr create -R github.com/host-owner/host-repo --head issue-208-x' "$TMP/pr-feature")"
+expect_deny "#2366 -R HOST/OWNER/REPO is the target" "$out" "--claim --repo host-owner/host-repo"
 set_verdict 216 claimed
 out="$(run_hook 'X=$(a $(b)) gh pr create --head issue-216-n --title t' "$TMP/pr-feature")"
 expect_deny "#2366 a nested substitution prefix never hides gh" "$out" "claimed by another holder"
