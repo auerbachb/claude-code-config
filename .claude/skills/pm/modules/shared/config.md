@@ -22,7 +22,7 @@ CONFIG_RC=$?
 
 if [[ "$CONFIG_RC" -eq 0 || "$CONFIG_RC" -eq 1 ]]; then
   MODE="CONFIG_EXISTS"
-elif [[ "$CONFIG_RC" -eq 2 && ! -e "$CONFIG_FILE" ]]; then
+elif [[ "$CONFIG_RC" -eq 2 && ! -e "$CONFIG_FILE" && ! -L "$CONFIG_FILE" ]]; then
   MODE="BOOTSTRAP"
 else
   MODE="UNREADABLE"
@@ -35,7 +35,7 @@ contract), so both map to `CONFIG_EXISTS`. Anything else — rc=2 with the
 file present, a usage error (rc=3), or any other unexpected exit code — maps
 to `UNREADABLE` rather than being silently treated as a healthy config.
 
-- If `MODE == BOOTSTRAP` (file genuinely absent): a cold start creates the config from the repo scan (Step 2, via `rank:load` 1B.1). A resumed start never creates it: it reports the file as missing and continues without config. The start gate does nothing here.
+- If `MODE == BOOTSTRAP` (file genuinely absent — a dangling symlink is not absent): a cold start creates the config from the repo scan (Step 2, via `rank:load` 1B.1). A resumed start never creates it: it reports the file as missing and continues without config. The start gate does nothing here.
 - If `MODE == UNREADABLE` (file exists but `pm-config-get.sh` returned an error for it, or returned an exit code outside the documented contract): **STOP.** Tell the user: "`.claude/pm-config.md` exists but could not be read — check file permissions and encoding before continuing." Do NOT proceed to Step 2 — bootstrapping here would silently overwrite the existing file's content, including any user-customized Role/OKRs/Team/Notes sections and any non-canonical sections.
 - Otherwise (**CONFIG_EXISTS**): go to Step 3 in the mode the caller set. **Automatic** is the default at every start. **Explicit** applies when `CONFIG_REFRESH=true` (`/pm refresh config`). Step 3 is the same in both; they differ only at Steps 3e and 3g.
 
@@ -84,7 +84,17 @@ Record the directory layout and notable patterns. When that evidence identifies 
 
 ### 2d: Generate pm-config.md
 
-Write `.claude/pm-config.md` with this structure:
+Render the config below to a **stage file**, never directly to `.claude/pm-config.md`. The probe in Step 1 and the publish in 2e are separate steps, so another process can create the file in between; 2e publishes without replacing anything. First create the stage file beside the destination:
+
+```bash
+CONFIG_FILE=".claude/pm-config.md"
+mkdir -p "$(dirname "$CONFIG_FILE")" || exit 1
+BOOTSTRAP_STAGE=$(mktemp "$CONFIG_FILE.bootstrap.XXXXXX") || exit 1
+chmod 0644 "$BOOTSTRAP_STAGE" || { rm -f "$BOOTSTRAP_STAGE"; exit 1; }
+echo "BOOTSTRAP_STAGE=$BOOTSTRAP_STAGE"
+```
+
+Write the rendered template to the printed `BOOTSTRAP_STAGE` path only, using this structure:
 
 ```markdown
 # PM Config — {repo name}
@@ -167,7 +177,53 @@ always works.
 {Leave empty with placeholder: "Add repo-specific context the PM should always know."}
 ```
 
-Tell the user the config was bootstrapped and they should review/customize the Role, OKRs, Team, and Notes sections.
+### 2e: Publish without replacing
+
+Publish the stage file only if the destination is still absent. Pass the stage path printed by 2d as `BOOTSTRAP_STAGE`; shell state does not persist between blocks.
+
+<!-- test-anchor: pm-config-bootstrap-publish -->
+```bash
+CONFIG_FILE="${CONFIG_FILE:-.claude/pm-config.md}"
+stage="${BOOTSTRAP_STAGE:-}"
+fail() {
+  echo "BOOTSTRAP_PUBLISH=error"
+  echo "reason: $1" >&2
+  exit 1
+}
+if [[ -z "$stage" || ! -f "$stage" || -L "$stage" ]]; then
+  echo "BOOTSTRAP_PUBLISH=error"
+  echo "reason: BOOTSTRAP_STAGE is unset or not a regular file" >&2
+  exit 1
+fi
+trap 'rm -f "$stage"' EXIT
+command -v python3 >/dev/null 2>&1 || fail "python3 not found; no overwriting fallback is used"
+# os.link refuses any existing entry (file, directory, dangling symlink): exit 0
+# created, 10 destination exists, 11 any other OSError.
+LINK_ERR=$(python3 -c '
+import os, sys
+try:
+    os.link(sys.argv[1], sys.argv[2])
+except FileExistsError:
+    sys.exit(10)
+except OSError as e:
+    sys.stderr.write(str(e))
+    sys.exit(11)
+' "$stage" "$CONFIG_FILE" 2>&1)
+LINK_RC=$?
+case "$LINK_RC" in
+  0) echo "BOOTSTRAP_PUBLISH=created" ;;
+  10) echo "BOOTSTRAP_PUBLISH=existing" ;;
+  *) fail "${LINK_ERR:-link failed with status $LINK_RC}" ;;
+esac
+```
+
+The stage file name is removed in every outcome; the destination is never removed or changed. Branch on the single `BOOTSTRAP_PUBLISH=` line:
+
+- `created`: tell the user the config was bootstrapped and they should review/customize the Role, OKRs, Team, and Notes sections. Show this only for `created`.
+- `existing`: another process created the config after the Step 1 probe. Do not say it was bootstrapped, and do not write over it. Say the existing file is used unchanged and set `MODE=CONFIG_EXISTS`. Re-run the Step 1 probe on it: rc 0 or 1 continues to Step 3 only when the operator requested `refresh config` (Step 3 then applies its own confirmation and preservation rules to the winner); otherwise return with no write. Any other rc (a directory, a dangling symlink) is `UNREADABLE`: report the error and stop.
+- `error`: report the publication failure with its reason and stop. No success message, and do not continue to ranking with partial data.
+
+`shared:config` returns the **effective** file, which is either the one just created or the concurrent winner. The caller must load its sections from that file after this module returns.
 
 **Non-canonical sections (e.g. `Complexity triggers`).** Cold start reaches here (`MODE == BOOTSTRAP`) only when the config file is genuinely absent; the start gate never bootstraps — an existing-but-unreadable file instead stops with an error (`MODE == UNREADABLE`, see #606) rather than reaching this bootstrap. So this path never has parseable prior sections to work from, and there is nothing to preserve here. If this path is ever extended to regenerate over an existing, successfully-parsed config (rather than only creating a fresh one), it must apply the identical rule the config-refresh path uses in its Step 3f: Infrastructure and Architecture are always emitted (regenerated unconditionally); the other six canonical sections (Role, OKRs, Workflow Rules, Dependency Rules, Team, Notes) are emitted only if they were actually present in the original config — never fabricate an empty one; and any other section name is re-inserted verbatim, anchored immediately after the nearest canonical section that preceded it in the original file (or at the top if none did). Never silently drop a section absent from the canonical list — see Step 3f below for the full algorithm and worked example.
 

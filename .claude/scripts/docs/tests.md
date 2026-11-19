@@ -157,6 +157,7 @@ opt-in of issue #1544.
 | [pm-away-declare.test.sh](../tests/pm-away-declare.test.sh) | Proves /pm --away maps its value onto presence.sh set away through the existing parsers, and refuses unreadable values in one line |
 | [pm-backlog-new-issue.test.sh](../tests/pm-backlog-new-issue.test.sh) | Runs the real `/pm` Step 1B.2 `pm-1b2-new-issues` block against a stubbed gh and the real session-state.sh, proving a freshly filed issue lands in NEW_ISSUES on the next scan |
 | [pm-board-page.test.sh](../tests/pm-board-page.test.sh) | Verifies the PM project page, private publication and real session-state wiring. |
+| [pm-config-bootstrap.test.sh](../tests/pm-config-bootstrap.test.sh) | Verifies the /pm bootstrap publish never replaces a config that appears after the absence probe |
 | [pm-day-horizon.test.sh](../tests/pm-day-horizon.test.sh) | Tests `/pm` day mode's usage-horizon reflex against the real fenced bash in the skill |
 | [pm-dispatch-module.test.sh](../tests/pm-dispatch-module.test.sh) | Checks path-only PM module resolution and installed-first discovery. |
 | [pm-ownership-sweep-wiring.test.sh](../tests/pm-ownership-sweep-wiring.test.sh) | Executes the real `/pm` Step 1B.5 session-listing and ownership-sweep blocks against the real `candidate-ownership.sh`, proving the `owned_dead -> adopt` branch is reachable through `/pm`'s own wiring |
