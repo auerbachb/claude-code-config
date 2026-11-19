@@ -27,7 +27,9 @@ else
   BOUND_JSON=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].epic" 2>/dev/null) || BOUND_RC=$?
   case "$BOUND_RC" in
     0) if [ "$BOUND_JSON" != null ]; then
-         EPIC_BOUND=$(printf '%s' "$BOUND_JSON" | jq -er 'select(type == "object" and (.number|type) == "number")
+         EPIC_BOUND=$(printf '%s' "$BOUND_JSON" | jq -er 'select(type == "object" and (.number|type) == "number"
+             and .number > 0 and .number == (.number|floor)
+             and (.completed_at == null or (.completed_at|type) == "string"))
            | if .completed_at == null then (.number|tostring) else "" end' 2>/dev/null) || EPIC_BOUND=unreadable
        fi ;;
     3) ;;                       # no state file: nothing bound
@@ -37,11 +39,11 @@ fi
 printf 'EPIC_BOUND=%s\n' "${EPIC_BOUND:-none}"
 ```
 
-A finished epic (`completed_at` set) does not hold the slot. `unreadable` is never read as "free": it gets the bound-epic offer below, naming the read failure.
+A finished epic (`completed_at` a timestamp string) does not hold the slot. A malformed record (a non-positive or fractional number, a non-string `completed_at`) reads as `unreadable`, never as free. `unreadable` is never read as "free": it gets the bound-epic offer below, naming the read failure.
 
 ## 2. Cap, stamp, record
 
-Run Step 9c's repo-wide cap read as written. At `FREE == 0` (or an unreadable count) print Step 9c's deferral line and add one clause: `When work drains, start a new thread with /pm epic #<n> for the tracking parent.` Nothing is stamped, recorded or offered; no chip is suggested in its place.
+With no receipt yet (`EPIC_OFFER=`), first run Step 9c's decline block: it clears only this session's tokens, so stamps an earlier failed attempt left behind are not counted against this offer, while other sessions' tokens stay counted. Then run Step 9c's repo-wide cap read as written. At `FREE == 0` (or an unreadable count) print Step 9c's deferral line; only with `EPIC_BOUND=none` add the clause `When work drains, start a new thread with /pm epic #<n> for the tracking parent.` (a bound or unreadable epic gets the deferral line alone). Nothing is stamped, recorded or offered; no chip is suggested in its place.
 
 Otherwise run Step 9c's offer-stamp block unchanged (it stamps every `runnable` row, exactly as an ordinary offer does), then record the offer in the same session — this receipt is what recovery reads:
 
@@ -59,14 +61,17 @@ set_log "$MINE_DEF"'if .epic_offer != null and (.epic_offer.repository == $repo 
   --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" || exit 1
 ```
 
-A failed write stops before the question; the stamps it followed are ordinary offer tokens and the gate re-offers on resume. An answered (`inline` or `declined`) receipt from another repository in a shared log is replaced; an unanswered or `thread` one blocks until reconciled there.
+A failed write stops before the question; the stamps it followed are ordinary offer tokens, cleared by the decline block above when the gate re-offers on resume. An answered (`inline` or `declined`) receipt from another repository in a shared log is replaced; an unanswered or `thread` one blocks until reconciled there.
 
-**Refresh before an answer.** When more issues are filed while the offer is still `offered`, stamp the new `runnable` rows with the recorded token and name them in the re-asked question; the receipt itself is not replaced:
+**Refresh before an answer.** When more issues are filed while the offer is still `offered`, or on recovery, re-run section 1 first, then stamp the new `runnable` rows with the recorded token and name them in the re-asked question. The refresh also replaces the recorded `bound_epic` with that fresh read, so a finished epic frees the thread option and a newly bound or unreadable one withholds it; the receipt itself is not replaced:
 
 <!-- test-anchor: issue-maker-epic-offer-refresh -->
 ```bash
+[ "${EPIC_BOUND+set}" = set ] || { echo "HOLD: re-run section 1's bound-epic read before the refresh" >&2; exit 1; }
 set_log "$MINE_DEF"'if .epic_offer == null or .epic_offer.repository != $repo or .epic_offer.state != "offered" then error("no open epic offer to refresh")
-  else .epic_offer.offer_token as $tok | (.issues[] | runnable | select(.chip_task_id == null) | .chip_task_id) = $tok end' --arg repo "$REPO" || exit 1
+  else .epic_offer.bound_epic = (if $bound == "" or $bound == "none" then null else $bound end)
+    | .epic_offer.offer_token as $tok | (.issues[] | runnable | select(.chip_task_id == null) | .chip_task_id) = $tok end' \
+  --arg repo "$REPO" --arg bound "$EPIC_BOUND" || exit 1
 ```
 
 ## 3. Ask
@@ -82,7 +87,7 @@ Rapid-fire, one line, keeping Step 9b's step-up warning: `Epic #{N} plans {P} ch
 
 ## 4. Record the answer
 
-Set `EPIC_ANSWER` only from the user's actual choice: `thread`, `inline`, or `declined`. The write re-checks the parent under the session-log lock, so a parent retracted since the question, an answer for another parent, a repeated answer, or a thread answer while an epic was bound all fail with nothing changed. One switch is allowed: `thread` → `inline` while no handoff receipt exists yet (for example, the handoff's bound-epic re-check stopped it), so the inline choice survives without a second reservation.
+Set `EPIC_ANSWER` only from the user's actual choice: `thread`, `inline`, or `declined`. The write re-checks the parent under the session-log lock, so a parent retracted since the question, an answer for another parent, a repeated answer, or a thread answer while an epic was bound all fail with nothing changed. One switch is allowed: `thread` → `inline` while no handoff receipt exists yet (for example, the handoff's bound-epic re-check stopped it), so the inline choice survives without a second reservation. That switch skips the parent re-check, because the inline run covers the session's runnable rows rather than the parent.
 
 <!-- test-anchor: issue-maker-epic-answer -->
 ```bash
@@ -95,7 +100,7 @@ set_log "$MINE_DEF"'if .epic_offer == null or .epic_offer.repository != $repo or
     or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved"
     then error("reconcile existing execution receipt")
   elif $a == "thread" and .epic_offer.bound_epic != null then error("an epic is already bound in this repo; no second thread")
-  elif $a == "thread" and ([.issues[] | epic_parent | select(.number == ($p|tonumber))] | length) != 1
+  elif .epic_offer.state == "offered" and ([.issues[] | epic_parent | select(.number == ($p|tonumber))] | length) != 1
     then error("tracking parent no longer qualifies")
   else .epic_offer.state = $a | .epic_offer.answered_at = $ts
     | if $a == "inline" then . else (.issues[] | mine | .chip_task_id) = null end end' \
@@ -114,7 +119,7 @@ The gate prints `EPIC_OFFER_STATE=<state> PARENT=<n>` while a receipt exists. Ne
 
 | State | Next step |
 |-------|-----------|
-| `offered` | Ask section 3's question again from the recorded parent and `bound_epic` (no new record; only the refresh block stamps rows filed since). A parent retracted meanwhile was already dropped by the gate, and the ordinary offer runs. |
+| `offered` | Re-run section 1, then the refresh block (it stores the fresh `bound_epic` and stamps rows filed since; no new record), then ask section 3's question again from the recorded parent and the refreshed binding. A failed refresh stops before the question. A parent retracted meanwhile was already dropped by the gate, and the ordinary offer runs. |
 | `inline` | `.inline_checkpoint` set → Step 9c reconciliation only. `offer_accepted` → done. Neither → run the acceptance block from the recorded answer. |
 | `thread` | `.handoff_checkpoint` set → `offer:handoff` reconciliation only, never a second reservation. None → load `offer:handoff` fresh with `HANDOFF_EPIC_PARENT`, or, when it stopped on a bound epic or the user now picks inline, record `EPIC_ANSWER=inline` and continue as `inline`. |
 | `declined` | Nothing to run. A chip later is the on-request path. |

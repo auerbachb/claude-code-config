@@ -42,7 +42,7 @@ If this thread has no `## Active Work` table, bootstrap one (`/pm` Step 3.2's sc
 
 The merge-authority bullet is the shared contract from `chip-launching.md` "Merge-authority line" — reproduce it **verbatim**, never softened into an approval request. The claim bullet is **Form A** of that file's "Claim line" — the launched handoff runs the read-only checks, then `/subagent` Step 6.0 acquires each eligible claim. Both are written out here as literal text rather than cited, for the same reason that file gives: a generated hand-off may land in a repo where `chip-launching.md` does not resolve, and a rule that lives only in prose never reaches the prompt. The only local addition is the **nested sub-bullet** scoping the claim to each issue in the list — kept off the canonical line on purpose, because `skill-portability-lint.sh` compares that whole line byte-for-byte and an appended clause fails it.
 
-**Epic variant payload.** Same block, byte for byte, except two sections. Keep the `**Model:**`/`**Effort:**` lines (the epic set's maximum tier), the verbatim model-guard preamble, and the whole `## Constraints` list unchanged — one template, never a second copy. Before rendering, re-run `create:epic-offer` section 1: an epic bound in this repo since the question stops here with that message, before any reservation; the user can still pick inline, recorded as `create:epic-offer`'s `thread` → `inline` switch. Replace the opening sentence and `## Task` with the parent and its filed children, and `## Workflow` with:
+**Epic variant payload.** Same block, byte for byte, except two sections. Keep the `**Model:**`/`**Effort:**` lines (the epic set's maximum tier), the verbatim model-guard preamble, and the whole `## Constraints` list unchanged — one template, never a second copy. Before rendering, re-run `create:epic-offer` section 1: an epic bound in this repo since the question stops here with that message, before any reservation. The claim below re-checks that `EPIC_BOUND` under the session-log lock and refuses anything but `none` (an unset value included); a bind landing after that read is stopped by the payload's own one-thread-per-repo line. the user can still pick inline, recorded as `create:epic-offer`'s `thread` → `inline` switch. Replace the opening sentence and `## Task` with the parent and its filed children, and `## Workflow` with:
 
 ```text
 ## Task
@@ -217,6 +217,7 @@ if ! set_log "$MINE_DEF"'if .target_repo != $repo or (.reg_tid // "") != "" or .
        if ($par|length) != 1 or .epic_offer == null or .epic_offer.repository != $repo
           or .epic_offer.parent != ($epic|tonumber) or .epic_offer.state != "thread"
        then error("epic handoff needs a thread answer for this session-filed parent")
+       elif $bound != "" and $bound != "none" then error("an epic is bound in this repo, or the read failed; no second thread")
        else [$root.issues[] | runnable | select(.chain.chain_id == $par[0].chain.chain_id) | .number] end end) as $covered |
     if ($covered|length) == 0 or $covered != $rendered then error("handoff issue snapshot changed") else
     .handoff_replays = ((.handoff_replays // {}) + {($attempt):{attempt_id:$attempt,repository:$repo,
@@ -226,7 +227,8 @@ if ! set_log "$MINE_DEF"'if .target_repo != $repo or (.reg_tid // "") != "" or .
       repository:$repo,task_id:null,offer_token:null,issues:$covered,reservation_complete:false,
       epic_parent:(if $epic == "" then null else ($epic|tonumber) end)} end end' \
     --arg reg "$REG_TID" --arg repo "$REPO" --arg attempt "$HANDOFF_ATTEMPT_ID" \
-    --argjson rendered "$HANDOFF_ISSUES_JSON" --argjson payload "$PAYLOAD_RECEIPT" --arg epic "${HANDOFF_EPIC_PARENT:-}"; then
+    --argjson rendered "$HANDOFF_ISSUES_JSON" --argjson payload "$PAYLOAD_RECEIPT" --arg epic "${HANDOFF_EPIC_PARENT:-}" \
+    --arg bound "${EPIC_BOUND-unset}"; then
   echo "ERROR: handoff claim failed; no reservation, stamp, or spawn attempted" >&2
   exit 1
 fi
