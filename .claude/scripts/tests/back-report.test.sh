@@ -30,11 +30,21 @@ cat >"$tmp/bin/gh" <<'GH'
 printf '%s\n' "$*" >>"$GH_LOG"
 [ "${GH_FAIL:-0}" = 1 ] && exit 1
 case "$1 $2" in
-  "pr list") case "$*" in *"--state merged"*) printf '[{"number":7,"title":"Merged one","url":"u7","mergedAt":"2026-11-19T03:00:00Z"}]\n' ;;
+  "pr list") case "$*" in *"--state open"*) [ "${GH_OPEN_FAIL:-0}" = 1 ] && exit 1; printf '[{"number":8,"headRefName":"b"},{"number":11,"headRefName":"c"}]\n' ;;
+             *"--state merged"*) printf '[{"number":7,"title":"Merged one","url":"u7","mergedAt":"2026-11-19T03:00:00Z"}]\n' ;;
              *) printf '[{"number":8,"title":"Opened one","url":"u8","createdAt":"2026-11-19T04:00:00Z","state":"OPEN"}]\n' ;; esac ;;
   "search prs") case "$*" in *--merged-at*) printf '[{"number":7,"title":"Merged one","url":"u7","repository":{"nameWithOwner":"acme/widgets"},"closedAt":"x"}]\n' ;;
                *) printf '[{"number":9,"title":"Gadget PR","url":"u9","repository":{"nameWithOwner":"acme/gadgets"},"createdAt":"x","state":"OPEN"}]\n' ;; esac ;;
-  "run list") printf '[{"databaseId":1,"name":"ci","displayTitle":"broke","url":"r1","headBranch":"b","createdAt":"2026-11-18T22:50:00Z","updatedAt":"2026-11-19T02:00:00Z"},{"databaseId":2,"name":"ci","displayTitle":"failed before he left","url":"r2","headBranch":"b","createdAt":"2026-11-18T20:00:00Z","updatedAt":"2026-11-18T20:10:00Z"}]\n' ;;
+  "run list") printf '%s\n' '[
+    {"databaseId":1,"workflowName":"ci","workflowDatabaseId":10,"displayTitle":"broke","url":"r1","headBranch":"b","status":"completed","conclusion":"failure","createdAt":"2026-11-19T01:30:00Z","updatedAt":"2026-11-19T02:00:00Z"},
+    {"databaseId":2,"workflowName":"ci","workflowDatabaseId":10,"displayTitle":"failed before he left","url":"r2","headBranch":"b","status":"completed","conclusion":"failure","createdAt":"2026-11-18T20:00:00Z","updatedAt":"2026-11-18T20:10:00Z"},
+    {"databaseId":3,"workflowName":"ci","workflowDatabaseId":10,"displayTitle":"superseded","url":"r3","headBranch":"b","status":"completed","conclusion":"failure","createdAt":"2026-11-19T00:00:00Z","updatedAt":"2026-11-19T00:10:00Z"},
+    {"databaseId":4,"workflowName":"lint","workflowDatabaseId":20,"displayTitle":"merged PR branch","url":"r4","headBranch":"old","status":"completed","conclusion":"failure","createdAt":"2026-11-19T03:00:00Z","updatedAt":"2026-11-19T03:10:00Z"},
+    {"databaseId":5,"workflowName":".github/workflows/lint.yml","workflowDatabaseId":20,"displayTitle":"main broke","url":"r5","headBranch":"main","status":"completed","conclusion":"failure","createdAt":"2026-11-19T04:00:00Z","updatedAt":"2026-11-19T04:10:00Z"},
+    {"databaseId":6,"workflowName":"lint","workflowDatabaseId":20,"displayTitle":"fixed later","url":"r6","headBranch":"c","status":"completed","conclusion":"failure","createdAt":"2026-11-19T05:00:00Z","updatedAt":"2026-11-19T05:10:00Z"},
+    {"databaseId":7,"workflowName":"lint","workflowDatabaseId":20,"displayTitle":"the fix","url":"r7","headBranch":"c","status":"completed","conclusion":"success","createdAt":"2026-11-19T06:00:00Z","updatedAt":"2026-11-19T06:10:00Z"}]' ;;
+  "pr view") [ "$3" = 8 ] || exit 1; printf '{"title":"Opened one","state":"OPEN","url":"u8"}\n' ;;
+  "issue view") [ "$3" = 9 ] || exit 1; printf '{"title":"A PR named as an issue","state":"MERGED","url":"https://github.com/acme/widgets/pull/9"}\n' ;;
   *) exit 1 ;;
 esac
 GH
@@ -65,7 +75,7 @@ cat >"$tmp/hq.sh" <<'HQ'
 #!/usr/bin/env bash
 [ "${HQ_MODE:-ok}" = down ] && { echo "human-queue.sh: database unreachable" >&2; exit 7; }
 case "$1" in
-  list) printf '[{"id":"D-4","kind":"decision","repo":"acme/widgets","session_id":"sess-a","question":"Ship the beta?","options":["Yes","No"],"default_option":"Yes","created_at":"2026-11-19T01:00:00Z","context":["did: held the release"]},{"id":"D-5","kind":"decision","repo":"acme/gadgets","session_id":"sess-b","question":"Gadget colour?","options":["Red","Blue"],"default_option":"Red","created_at":"2026-11-19T01:30:00Z","context":[]}]\n' ;;
+  list) printf '[{"id":"D-4","kind":"decision","repo":"acme/widgets","session_id":"sess-a","question":"Ship the beta?","options":["Yes","No"],"default_option":"Yes","created_at":"2026-11-19T01:00:00Z","context":["did: held the release of PR #8 (Issue #12, Issue #9)"]},{"id":"D-5","kind":"decision","repo":"acme/gadgets","session_id":"sess-b","question":"Gadget colour?","options":["Red","Blue"],"default_option":"Red","created_at":"2026-11-19T01:30:00Z","context":[]}]\n' ;;
   stoppage) printf '[{"id":1,"stopped_at":"2026-11-19T05:00:00Z","thread":"sess-a","repo":"acme/widgets","ref":"pr#8","cause":"usage_limit","corrected_cause":null,"idle_seconds":600},{"id":2,"stopped_at":"2026-11-10T05:00:00Z","thread":"sess-a","repo":"acme/widgets","ref":null,"cause":"crash","corrected_cause":null,"idle_seconds":60}]\n' ;;
   *) exit 4 ;;
 esac
@@ -120,10 +130,28 @@ check "open tasks only, with the why-human reason and source" "$(f '[.tasks[] | 
 check "owner-task.sh asked for this repo's list" "$(tail -1 "$OT_LOG")" "list --json"
 check "merged PRs" "$(f '.activity.merged[0].number')" 7
 check "opened PRs" "$(f '.activity.opened[0].number')" 8
-check "failed while away, though started before he left; an earlier failure is cut" "$(f '[.activity.failed[].displayTitle] | join(",")')" broke
+check "failures that still matter: latest run per workflow and branch, open PR or main" "$(f '[.activity.failed[] | "\(.title):\(.pr)"] | join(",")')" "broke:8,main broke:null"
+check "superseded, fixed-later and closed-PR failures are only counted" "$(f .activity.failed_not_listed)" 3
+check "a failure names its workflow and branch" "$(f '.activity.failed[0] | "\(.workflow)/\(.branch)"')" ci/b
+check "a run named by its workflow file path shows the bare workflow name" "$(f '.activity.failed[1].workflow')" lint
+check "a Decision's refs: the PR read with title and state" "$(f '.decisions[0].refs[] | select(.kind == "pr") | "\(.number):\(.title):\(.state)"')" "8:Opened one:OPEN"
+check "a failed lookup degrades to could not read, the Decision kept" "$(f '.decisions[0].refs[] | select(.number == 12) | "\(.number):\(.error)"'):$(f '.decisions | length')" "12:could not read:1"
+check "a ref read as what GitHub says it is" "$(f '.decisions[0].refs[] | select(.kind == "pr") | .is')" pr
+check "a failed lookup has no resolved kind" "$(f '.decisions[0].refs[] | select(.number == 12) | .is')" null
+check "an Issue reference that is really a PR is read as a PR" "$(f '.decisions[0].refs[] | select(.number == 9) | "\(.kind):\(.is):\(.state)"')" "issue:pr:MERGED"
+check "a question naming nothing has no refs" "$(f '.questions[0].refs')" "[]"
+check "elsewhere split: other threads in this repo" "$(f .other_threads_open_this_repo)" 1
+check "elsewhere split: other repos" "$(f .other_threads_open_other_repos)" 3
 check "stoppages since the declaration only" "$(f '[.stoppages[].id] | join(",")')" 1
 check "nothing unreadable" "$(f '.unreadable | length')" 0
 check "local-only sources are named" "$(f '.local_sources | index("handoffs") != null')" true
+
+GH_OPEN_FAIL=1 R --session sess-a --now "$NOW"
+check "open PRs unreadable: latest failures kept, not hidden" "$(f '[.activity.failed[].title] | join(",")')" "broke,main broke,merged PR branch"
+check "open PRs unreadable: named" "$(f '[.unreadable[].source] | join(",")')" "GitHub open PRs (acme/widgets)"
+BACK_REPORT_PR_LIMIT=2 R --session sess-a --now "$NOW"
+check "open PR list full: latest failures kept, PR numbers still matched" "$(f '[.activity.failed[] | "\(.title):\(.pr)"] | join(",")')" "broke:8,main broke:null,merged PR branch:null"
+check "open PR list full: named as incomplete" "$(f '.unreadable[] | select(.source == "GitHub open PRs (acme/widgets)") | .reason | startswith("incomplete")')" true
 
 printf '== /back all: every thread and repo\n'
 R --all --session sess-a --now "$NOW"

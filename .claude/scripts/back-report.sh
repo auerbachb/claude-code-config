@@ -40,15 +40,24 @@
 #   away_seconds     now - since; digest_level: short (< 2 h) | medium (< 12 h) | long
 #   presence         presence.sh status --json, or null
 #   questions        open unattended questions in scope, oldest first: {id, repo, question, options,
-#                    recommended, did, session, at}; null when unreadable
+#                    recommended, did, session, at, refs}; null when unreadable
 #   decisions        open Desk Decisions in scope: {id, repo, question, options, default_option,
-#                    session_id, created_at, context}; null when unreadable
-#   other_threads_open  open questions and Decisions outside a thread scope (0 for --all)
+#                    session_id, created_at, context, refs}; null when unreadable
+#     refs           each `PR #N` / `Issue #N` named in the question, its did or context (at most 4),
+#                    read in the item's repo: {repo, kind, number, is, title, state, url, error}; kind is
+#                    as written, is what GitHub says it is (pr | issue); a failed lookup has
+#                    is/title/state/url null and error "could not read"
+#   other_threads_open  open questions and Decisions outside a thread scope (0 for --all), split into
+#                    other_threads_open_this_repo and other_threads_open_other_repos
 #   tasks            open human tasks (owner-task.sh list --json, Issue #2538 contract); null when the
 #                    helper is missing or failed: the list is unavailable, never empty
-#   activity         {merged, opened, failed}: PRs merged and opened by you, and failed workflow runs,
-#                    since `since` (runs created more than 3 days before it are not read); each null when
-#                    unreadable, and a list that fills its page limit is named in `unreadable` as incomplete
+#   activity         {merged, opened, failed, failed_not_listed}: PRs merged and opened by you since
+#                    `since`; failed = failures that still matter: the latest run of a workflow on a
+#                    branch failed while he was away and the branch is main/master or an open PR's
+#                    ({repo, workflow, branch, pr, title, url, updatedAt}); failed_not_listed counts the
+#                    other failures meanwhile (superseded, or on a merged or closed PR). Runs created more
+#                    than 3 days before `since` are not read; each null when unreadable, and a list that
+#                    fills its page limit is named in `unreadable` as incomplete
 #   stoppages        Desk stoppage entries since `since` (this session's in thread scope); null when unreadable
 #   running          pipeline agents still recorded as running (this session's in thread scope)
 #   handoffs         per-PR handoff files in scope: {repo, pr, phase_completed, head_sha}
@@ -257,10 +266,11 @@ if [ -n "$Q" ] && printf '%s' "$Q" | "$JQ" -e 'type == "array"' >/dev/null 2>&1;
     [.[] | select(.status == "open")] as $open
     | {in: [$open[] | select($scope == "all" or mine($repo; $sid; .session))
              | {id, repo, question, options, recommended, did, session, at}] | sort_by(.at),
-       total: ($open | length)}' >"$WORK/q.json" 2>/dev/null || {
-    printf '{"in":null,"total":0}\n' >"$WORK/q.json"; unreadable "unattended questions" "the question records could not be read"; }
+       total: ($open | length),
+       here: ([$open[] | select(((.repo // "") | ascii_downcase) == ($repo | ascii_downcase))] | length)}' >"$WORK/q.json" 2>/dev/null || {
+    printf '{"in":null,"total":0,"here":0}\n' >"$WORK/q.json"; unreadable "unattended questions" "the question records could not be read"; }
 else
-  printf '{"in":null,"total":0}\n' >"$WORK/q.json"
+  printf '{"in":null,"total":0,"here":0}\n' >"$WORK/q.json"
   unreadable "unattended questions" "unattended.sh list --all --json failed"
 fi
 
@@ -280,10 +290,11 @@ if [ "$drc" -eq 0 ] && printf '%s' "$D" | "$JQ" -e 'type == "array"' >/dev/null 
   printf '%s' "$D" | "$JQ" -c --arg scope "$SCOPE" --arg repo "$REPO" --arg sid "$SID" "$SCOPE_JQ"'
     {in: [.[] | select($scope == "all" or mine($repo; $sid; .session_id))
            | {id, repo, question, options, default_option, session_id, created_at, context}],
-     total: length}' >"$WORK/d.json" 2>/dev/null || {
-    printf '{"in":null,"total":0}\n' >"$WORK/d.json"; unreadable "Desk Decisions" "the Decision records could not be read"; }
+     total: length,
+     here: ([.[] | select(((.repo // "") | ascii_downcase) == ($repo | ascii_downcase))] | length)}' >"$WORK/d.json" 2>/dev/null || {
+    printf '{"in":null,"total":0,"here":0}\n' >"$WORK/d.json"; unreadable "Desk Decisions" "the Decision records could not be read"; }
 else
-  printf '{"in":null,"total":0}\n' >"$WORK/d.json"
+  printf '{"in":null,"total":0,"here":0}\n' >"$WORK/d.json"
   case "$drc" in
     127) unreadable "Desk Decisions" "human-queue.sh not found (checked the skills worktree and this repo's desk/bin)" ;;
     7) unreadable "Desk Decisions" "the desk database is unset or unreachable" ;;
@@ -311,14 +322,59 @@ else
 fi
 
 # --- GitHub activity -------------------------------------------------------------------------
-# Failed runs are listed from 3 days before `since` and cut on their last update, so a run that started
-# shortly before he left and failed while he was away is included. A run created earlier still (one held
-# days for an approval) is not listed: a deeper read is slow and runs into the page limit on busy repos.
+# Runs are listed from 3 days before `since`, so a run that started shortly before he left and failed
+# while he was away is seen. A run created earlier still (one held days for an approval) is not: a deeper
+# read is slow and runs into the page limit on busy repos.
+# Only failures that still matter are listed (issue #2541 live run: "Failed: 90 workflow runs" was
+# noise): the latest run of a workflow on a branch failed, it finished while he was away, and the
+# branch is main/master or the head of a PR that is still open. Everything else failed meanwhile
+# (superseded by a later run, or on a merged or closed PR's branch) is only counted.
 RUNS_FROM=$(iso "$(( SINCE - 3 * 86400 ))")
-RUNS_CUT='[.[] | select((.updatedAt // .createdAt // "") >= $since)]'
-RUN_FIELDS=databaseId,name,displayTitle,url,headBranch,createdAt,updatedAt
+RUN_FIELDS=databaseId,name,workflowName,workflowDatabaseId,displayTitle,url,headBranch,status,conclusion,createdAt,updatedAt
 GH_LIMIT=100
-RUN_LIMIT=300   # failed runs span the absence plus 3 days, so they get a deeper read
+RUN_LIMIT=300   # runs span the absence plus 3 days, so they get a deeper read
+PR_LIMIT=${BACK_REPORT_PR_LIMIT:-300}   # open PRs read to tell a live branch from a closed one (tests lower it)
+case "$PR_LIMIT" in ''|0|*[!0-9]*) PR_LIMIT=300 ;; esac
+FAILED_DROPPED=0
+# failing_runs REPO [SOURCE]: append REPO's still-failing runs to failed.json and add the rest to FAILED_DROPPED.
+# Returns 1 (source named unreadable) when the runs could not be read.
+failing_runs() {
+  local r="$1" src="${2:-GitHub failed runs ($1)}" runs prs rc=0 prc=0 res
+  runs=$(gh run list --repo "$r" --created ">=$RUNS_FROM" --json "$RUN_FIELDS" --limit "$RUN_LIMIT" 2>/dev/null) || rc=$?
+  if [ "$rc" -ne 0 ] || ! printf '%s' "$runs" | "$JQ" -e 'type == "array"' >/dev/null 2>&1; then
+    unreadable "$src" "gh run list exited $rc"; return 1
+  fi
+  note_full "$src" "$runs" "$RUN_LIMIT"
+  prs=$(gh pr list --repo "$r" --state open --json number,headRefName --limit "$PR_LIMIT" 2>/dev/null) || prc=$?
+  if [ "$prc" -ne 0 ] || ! printf '%s' "$prs" | "$JQ" -e 'type == "array"' >/dev/null 2>&1; then
+    unreadable "GitHub open PRs ($r)" "gh pr list exited $prc; failures were not filtered by PR state"; prs=null
+  elif [ "$(printf '%s' "$prs" | "$JQ" 'length')" -ge "$PR_LIMIT" ]; then
+    # A full page may leave open PRs out: keep every latest failure rather than drop one as closed.
+    unreadable "GitHub open PRs ($r)" "incomplete: only the first $PR_LIMIT open PRs were read; failures were not filtered by PR state"
+    prs=$(printf '%s' "$prs" | "$JQ" -c '. + [null]')   # the null marks the list as incomplete
+  fi
+  # Through files, not arguments: a 300-run response can pass the per-argument size limit on Linux.
+  printf '%s\n' "$runs" >"$WORK/runs.json"; printf '%s\n' "$prs" >"$WORK/prs.json"
+  res=$("$JQ" -c -n --slurpfile runs "$WORK/runs.json" --slurpfile prs "$WORK/prs.json" --arg r "$r" --arg since "$SINCE_ISO" '
+    def failed: (.conclusion // "") | IN("failure", "timed_out", "startup_failure");
+    def recent: (.updatedAt // .createdAt // "") >= $since;
+    $runs[0] as $runs | $prs[0] as $prs
+    | ($prs != null and ($prs | any(.[]; . == null) | not)) as $complete | ($prs // [] | map(select(. != null))) as $prs
+    | ($runs | map(select(failed and recent)) | length) as $all
+    | [$runs | group_by([((.workflowDatabaseId // .workflowName // .name // "") | tostring), (.headBranch // "")])[]
+       | max_by(.createdAt // "") | select(failed and recent)
+       | . as $run | ($prs | map(select(.headRefName == $run.headBranch)) | .[0].number) as $pr
+       | select((($run.headBranch // "") | IN("main", "master")) or ($complete | not) or $pr != null)
+       # Some runs carry the workflow file path as their name: show it as the bare workflow name.
+       | {repo: $r, workflow: ((.workflowName // .name // "") | sub("^\\.github/workflows/"; "") | sub("\\.ya?ml$"; "")),
+          branch: .headBranch, pr: $pr,
+          title: .displayTitle, url, updatedAt}] as $still
+    | {still: $still, dropped: ($all - ($still | length))}' 2>/dev/null) || res=""
+  if [ -z "$res" ]; then unreadable "$src" "the run records could not be read"; return 1; fi
+  printf '%s\n' "$res" >"$WORK/res.json"
+  "$JQ" -c --slurpfile add "$WORK/res.json" '. + $add[0].still' "$WORK/failed.json" >"$WORK/f.tmp" && mv "$WORK/f.tmp" "$WORK/failed.json"
+  FAILED_DROPPED=$(( FAILED_DROPPED + $(printf '%s' "$res" | "$JQ" -r '.dropped') ))
+}
 # A result that fills its limit may have more: say so, rather than present it as complete.
 note_full() { # SOURCE JSON [LIMIT]
   local n lim="${3:-$GH_LIMIT}"
@@ -357,16 +413,8 @@ elif [ "$ALL" -eq 1 ]; then
   printf '[]\n' >"$WORK/failed.json"
   tried=0 readok=0
   for r in $repos; do
-    tried=$((tried + 1)); out=""; rc=0
-    out=$(gh run list --repo "$r" --status failure --created ">=$RUNS_FROM" \
-      --json "$RUN_FIELDS" --limit "$RUN_LIMIT" 2>/dev/null) || rc=$?
-    if [ "$rc" -ne 0 ] || ! printf '%s' "$out" | "$JQ" -e 'type == "array"' >/dev/null 2>&1; then
-      unreadable "GitHub failed runs ($r)" "gh run list exited $rc"; continue
-    fi
-    note_full "GitHub failed runs ($r)" "$out" "$RUN_LIMIT"
-    "$JQ" -c --arg r "$r" --arg since "$SINCE_ISO" --argjson add "$out" \
-      '. + [$add | '"$RUNS_CUT"' | .[] | . + {repo: $r}]' "$WORK/failed.json" >"$WORK/f.tmp" &&
-      mv "$WORK/f.tmp" "$WORK/failed.json" && readok=$((readok + 1))
+    tried=$((tried + 1))
+    failing_runs "$r" && readok=$((readok + 1))
   done
   if [ "$tried" -eq 0 ]; then
     null_section failed; unreadable "GitHub failed runs" "no repo was known to check"
@@ -381,11 +429,51 @@ else
     --search "author:@me merged:>=$SINCE_ISO" --json number,title,url,mergedAt --limit "$GH_LIMIT"
   gh_section opened "GitHub opened PRs" gh pr list --repo "$REPO" --state all \
     --search "author:@me created:>=$SINCE_ISO" --json number,title,url,createdAt,state --limit "$GH_LIMIT"
-  if NOTE_LIMIT=$RUN_LIMIT gh_section failed "GitHub failed runs" gh run list --repo "$REPO" --status failure --created ">=$RUNS_FROM" \
-      --json "$RUN_FIELDS" --limit "$RUN_LIMIT"; then
-    put failed "GitHub failed runs" "$("$JQ" -c --arg since "$SINCE_ISO" "$RUNS_CUT" "$WORK/failed.json" 2>/dev/null)" array
-  fi
+  printf '[]\n' >"$WORK/failed.json"
+  failing_runs "$REPO" "GitHub failed runs" || null_section failed
 fi
+
+# --- what each question names (issue #2541 live run: menus showed a bare question with no context) ---
+# Every `PR #N` / `Issue #N` in a question, its meanwhile note or a Decision's context gets the title and
+# state, read in the question's repo, so /back can say what the item is without improvising. A lookup
+# that fails gives {error: "could not read"}; the question itself is never dropped.
+REFS_DEF='def refs: [(.question // ""), (.did // ""), ((.context // []) | if type == "array" then .[] else . end)]
+  | map(tostring) | join(" ") | [scan("(?i)\\b(PR|Issue)\\s*#([0-9]+)")]
+  | map({kind: (.[0] | ascii_downcase), number: (.[1] | tonumber)}) | unique_by([.kind, .number]) | .[:4];'
+REF_CAP=30
+REFS="$WORK/refs.jsonl"; : >"$REFS"
+"$JQ" -r "$REFS_DEF"'.in // [] | .[] | (.repo // "") as $r | refs[] | [$r, .kind, (.number | tostring)] | @tsv' \
+  "$WORK/q.json" "$WORK/d.json" 2>/dev/null | awk '!seen[tolower($0)]++' >"$WORK/refs.tsv" || : >"$WORK/refs.tsv"
+looked=0
+while IFS="$(printf '\t')" read -r rr rk rn; do
+  [ -n "$rn" ] || continue
+  looked=$((looked + 1)); got="" found=""
+  if [ "$looked" -le "$REF_CAP" ] && command -v gh >/dev/null 2>&1 &&
+     grep -qE '^[^/[:space:]_][^/[:space:]]*/[^/[:space:]]+$' <<<"$rr"; then
+    # An "Issue #N" may be a PR and the other way round: try the named kind, then the other.
+    if [ "$rk" = pr ]; then kinds="pr issue"; else kinds="issue pr"; fi
+    for k in $kinds; do
+      got=$(gh "$k" view "$rn" --repo "$rr" --json title,state,url 2>/dev/null) || got=""
+      printf '%s' "$got" | "$JQ" -e 'type == "object" and has("title")' >/dev/null 2>&1 && { found="$k"; break; }
+      got=""
+    done
+  fi
+  if [ -n "$got" ]; then
+    "$JQ" -c --arg r "$rr" --arg k "$rk" --argjson n "$rn" --arg is "$found" '{repo: $r, kind: $k, number: $n,
+      # `gh issue view` also answers for a PR: the URL says which it is.
+      is: (if (.url // "") | test("/pull/[0-9]+") then "pr" elif (.url // "") | test("/issues/[0-9]+") then "issue" else $is end),
+      title, state, url, error: null}' <<<"$got" >>"$REFS"
+  else
+    "$JQ" -cn --arg r "$rr" --arg k "$rk" --argjson n "$rn" '{repo: $r, kind: $k, number: $n, is: null, title: null, state: null, url: null, error: "could not read"}' >>"$REFS"
+  fi
+done <"$WORK/refs.tsv"
+for qd in q d; do
+  "$JQ" -c --slurpfile refs "$REFS" "$REFS_DEF"'
+    if (.in | type) == "array" then .in |= map((.repo // "") as $r | . + {refs: [refs[] as $x
+      | ($refs | map(select((.repo | ascii_downcase) == ($r | ascii_downcase) and .kind == $x.kind and .number == $x.number)) | .[0])
+        // ($x + {repo: $r, is: null, title: null, state: null, url: null, error: "could not read"})]}) else . end' \
+    "$WORK/$qd.json" >"$WORK/$qd.tmp" 2>/dev/null && mv "$WORK/$qd.tmp" "$WORK/$qd.json"
+done
 
 # --- stoppages (Desk database) ---------------------------------------------------------------------
 if [ -z "$HQ" ]; then
@@ -450,7 +538,7 @@ fi
 "$JQ" -n -c \
   --arg scope "$SCOPE" --arg repo "$REPO" --arg sid "$SID" \
   --argjson now "$NOW" --argjson since "$SINCE" --arg since_source "$SINCE_SOURCE" \
-  --argjson away "$AWAY" --arg level "$LEVEL" \
+  --argjson away "$AWAY" --arg level "$LEVEL" --argjson dropped "$FAILED_DROPPED" \
   --slurpfile presence "$WORK/presence.json" --slurpfile q "$WORK/q.json" --slurpfile d "$WORK/d.json" \
   --slurpfile tasks "$WORK/tasks.json" --slurpfile merged "$WORK/merged.json" \
   --slurpfile opened "$WORK/opened.json" --slurpfile failed "$WORK/failed.json" \
@@ -461,8 +549,13 @@ fi
    questions: $q[0].in, decisions: $d[0].in,
    other_threads_open: (if $scope == "all" then 0
      else (($q[0].total - ($q[0].in // [] | length)) + ($d[0].total - ($d[0].in // [] | length))) end),
+   other_threads_open_this_repo: (if $scope == "all" then 0
+     else (($q[0].here - ($q[0].in // [] | length)) + ($d[0].here - ($d[0].in // [] | length))) end),
+   other_threads_open_other_repos: (if $scope == "all" then 0
+     else (($q[0].total - $q[0].here) + ($d[0].total - $d[0].here)) end),
    tasks: $tasks[0],
-   activity: {merged: $merged[0], opened: $opened[0], failed: $failed[0]},
+   activity: {merged: $merged[0], opened: $opened[0], failed: $failed[0],
+              failed_not_listed: (if $failed[0] == null then null else $dropped end)},
    stoppages: $stoppages[0], running: $running[0], handoffs: $handoffs[0],
    local_sources: ["presence", "unattended questions", "running agents", "handoffs"],
    unreadable: [$unread | split("\n")[] | select(length > 0) | fromjson]}'

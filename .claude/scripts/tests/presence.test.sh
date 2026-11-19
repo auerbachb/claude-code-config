@@ -435,6 +435,8 @@ printf '== return --early (issue #2541, /back): a live away window ends when he 
 P $owner1 set away --by operator-message --for 2h; check "early: away set" "$rc" 0
 P $owner1 return; check "plain return inside a live window: nothing to return from" "$rc" 1
 P $owner2 status --json; check "plain return left him away" "$(field .state)" away
+check "early: the away window is still open before /back" "$(jq -r '(.presence.until_epoch // 0) > now' "$HOME/.claude/session-state.json")" true
+P $owner1 return --bogus; check "return: an unknown flag exits 2 naming it (what /back reads as older installed scripts)" "$rc:$(grep -c 'unknown argument to return: --bogus' "$tmp/err" | tr -d ' ')" "2:1"
 P $owner1 return --early --no-dialog; check "return --early: returned" "$rc" 0
 P $owner2 status --json; check "after return --early: no longer away" "$(field .away)" false
 P $owner2 is-away; check "after return --early: is-away false" "$rc" 1
