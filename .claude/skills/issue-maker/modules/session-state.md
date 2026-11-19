@@ -56,7 +56,7 @@ DELIVERY_MODE=inline
 # attributable url matches NOTHING here: the readers over-count an
 # unattributable row (safe for a cap), while a writer must under-reach (safe
 # for someone else's data).
-MINE_DEF='def same_repo: (($repo | length) > 0 and (((.url // "") | (try capture("^https?://[^/]+/(?<r>[^/]+/[^/]+)/issues/") catch {r:""}) // {r:""} | .r | ascii_downcase) == ($repo | ascii_downcase))); def session_filed: (.origin == "create" or (.origin == null and .created_at != null and (.edited_at == null or .tier != null or .delivers != null or .est_bound != null or .chain != null))); def mine: select(.status == "open" and same_repo and session_filed); '
+MINE_DEF='def same_repo: (($repo | length) > 0 and (((.url // "") | (try capture("^https?://[^/]+/(?<r>[^/]+/[^/]+)/issues/") catch {r:""}) // {r:""} | .r | ascii_downcase) == ($repo | ascii_downcase))); def session_filed: (.origin == "create" or (.origin == null and .created_at != null and (.edited_at == null or .tier != null or .delivers != null or .est_bound != null or .chain != null))); def mine: select(.status == "open" and same_repo and session_filed); def runnable: mine | select((.chain.role // "") != "parent"); '
 ```
 
 **If `$LOG` exists (compaction recovery / re-invocation):** read it and lead with a recap before accepting new input — this is the first action after a compaction.

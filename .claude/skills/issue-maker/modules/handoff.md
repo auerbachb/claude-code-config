@@ -3,7 +3,7 @@
 > Load only for: explicit request for a chip, handoff block, or replay of a prior handoff
 > Prerequisites: session state loaded; session-filed issue list exists; explicit request recorded
 
-Use only `mine` rows for the issue list and maximum tier. For first emission, resolve/read `create:postfile` only if its shared Step 9b tier and Step 9c active-work cap procedure are not already in context; perform the same cap check before reserving or spawning. Replays use the saved emitted payload and do not re-infer or re-launch. Do not file issues in this operation.
+Use only `runnable` rows (`mine` minus a tracking parent) for the issue list and maximum tier. For first emission, resolve/read `create:postfile` only if its shared Step 9b tier and Step 9c active-work cap procedure are not already in context; perform the same cap check before reserving or spawning. Replays use the saved emitted payload and do not re-infer or re-launch. Do not file issues in this operation.
 
 **On-request hand-off (chip or fallback block).** When the user explicitly requests a chip or printed block — `"give me the chip"`, `"print the hand-off"`, `"I want to run this in a new thread"` — emit the block below. This is no longer the default session ending; it is an on-request fallback. Its content is unchanged and required verbatim for lint compliance.
 
@@ -200,7 +200,7 @@ if ! set_log "$MINE_DEF"'if .target_repo != $repo or (.reg_tid // "") != "" or .
     or .inline_checkpoint != null or .offer_accepted == true
     or (.delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved")
     then error("reconcile existing execution receipt before a fresh handoff") else
-    [.issues[] | mine | .number] as $covered | if $covered != $rendered then error("handoff issue snapshot changed") else
+    [.issues[] | runnable | .number] as $covered | if $covered != $rendered then error("handoff issue snapshot changed") else
     .handoff_replays = ((.handoff_replays // {}) + {($attempt):{attempt_id:$attempt,repository:$repo,
       path:$payload.path,sha256:$payload.sha256,issues:$covered}}) |
     .reg_tid = (if $reg == "" then null else $reg end) | .delivery_mode = "chip-reserved" |
