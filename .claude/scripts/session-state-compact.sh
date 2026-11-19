@@ -417,7 +417,25 @@ fi
 
 # Archive only after the candidate validated, and still BEFORE the commit, so
 # a failed validation leaves no archive behind.
-COMPACTION_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM}"
+# Microseconds after the seconds keep same-second runs in creation order, so
+# retention's name sort is age order (pid order is not).
+# Seconds and microseconds come from ONE clock read, so a second boundary
+# between two reads cannot misorder the stamp.
+_rt=""
+if [[ -n "${EPOCHREALTIME:-}" ]]; then
+  _rt="${EPOCHREALTIME/,/.}"
+elif command -v perl >/dev/null 2>&1; then
+  _rt="$(perl -MTime::HiRes=time -e 'my $t = time; printf "%d.%06d", int $t, ($t - int $t) * 1e6' 2>/dev/null)"
+fi
+_sec="${_rt%%.*}" _usec="${_rt#*.}"
+if [[ "$_sec" =~ ^[0-9]+$ && "$_usec" =~ ^[0-9]{6}$ ]] \
+   && _stamp="$(date -u -r "$_sec" +%Y%m%dT%H%M%S 2>/dev/null || date -u -d "@$_sec" +%Y%m%dT%H%M%S 2>/dev/null)" \
+   && [[ -n "$_stamp" ]]; then
+  :
+else
+  _stamp="$(date -u +%Y%m%dT%H%M%S)" _usec="000000"
+fi
+COMPACTION_ID="${_stamp}.${_usec}Z-$$-${RANDOM}"
 if ! (umask 077 && mkdir -p "$ARCHIVE_DIR") || ! chmod 700 "$ARCHIVE_DIR"; then
   rm -f "$CAND"
   echo "session-state-compact.sh: could not create archive dir $ARCHIVE_DIR" >&2
@@ -451,11 +469,15 @@ state_lock_release
 : > "$STAMP" 2>/dev/null || true
 
 # Bounded archive retention: newest ARCHIVE_KEEP files. Names embed a UTC
-# timestamp right after the prefix, so a C-locale glob (sorted by name) is
-# oldest first — no newline-delimited listing to parse.
+# timestamp (to the microsecond) right after the prefix, so a C-locale glob
+# (sorted by name) is oldest first — no newline-delimited listing to parse.
 if [[ "$ARCHIVE_KEEP" -gt 0 ]]; then
+  # The path checksum is only 32 bits: an archive counts as this state file's
+  # only when its own `state_file` field names this exact path.
   _archives=()
-  while IFS= read -r -d '' _a; do _archives+=("$_a"); done < <(
+  while IFS= read -r -d '' _a; do
+    [[ "$(jq -r '.state_file // empty' "$_a" 2>/dev/null)" == "$STATE_FILE" ]] && _archives+=("$_a")
+  done < <(
     LC_ALL=C; shopt -s nullglob
     for _a in "$ARCHIVE_DIR/$ARCHIVE_PREFIX"*.json; do printf '%s\0' "$_a"; done)
   _drop=$(( ${#_archives[@]} - ARCHIVE_KEEP ))

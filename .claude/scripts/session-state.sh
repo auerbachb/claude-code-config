@@ -1788,8 +1788,12 @@ maybe_trigger_compaction() {
   # A run guard younger than 10 minutes means a compactor is (or just was)
   # running. An older one is left for the compactor's own recovery to reclaim,
   # so an abandoned guard cannot disable this trigger forever.
+  # A published owner pid that is dead marks an abandoned guard at any age.
+  local gpid
+  gpid="$(cat "$STATE_FILE.compact.run/pid" 2>/dev/null || true)"
   if [[ -d "$STATE_FILE.compact.run" ]] && m="$(_state_lock_file_mtime "$STATE_FILE.compact.run")" \
-     && (( now - m < 600 )); then
+     && (( now - m < 600 )) \
+     && ! { [[ "$gpid" =~ ^[0-9]+$ ]] && ! kill -0 "$gpid" 2>/dev/null; }; then
     return 0
   fi
   if m="$(_state_lock_file_mtime "$STATE_FILE.compact.stamp")" && (( now - m < min_interval )); then

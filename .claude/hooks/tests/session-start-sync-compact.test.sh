@@ -100,4 +100,20 @@ printf '{"source":"startup"}' | CLAUDE_STATE_COMPACT_BIN="$STUB" bash "$HOOK" >/
 wait_for "$HOME/.claude/stub-ran" || fail "an abandoned (old) run guard blocked the spawn forever"
 ok "a fresh run guard suppresses the spawn; an abandoned one does not"
 
+# --- 6. a fresh guard whose published owner pid is dead does not block ------
+rm -f "$HOME/.claude/stub-ran" "$HOME/.claude/session-state.json.compact.stamp"
+rm -rf "$HOME/.claude/session-state.json.compact.run"
+mkdir -p "$HOME/.claude/session-state.json.compact.run"
+( : ) & _dead=$!; wait "$_dead"
+printf '%s\n' "$_dead" > "$HOME/.claude/session-state.json.compact.run/pid"
+printf '{"source":"startup"}' | CLAUDE_STATE_COMPACT_BIN="$STUB" bash "$HOOK" >/dev/null 2>&1
+wait_for "$HOME/.claude/stub-ran" || fail "a fresh guard with a dead owner pid blocked the spawn"
+# Control: the same fresh guard owned by a live pid still suppresses it.
+rm -f "$HOME/.claude/stub-ran"
+printf '%s\n' "$$" > "$HOME/.claude/session-state.json.compact.run/pid"
+printf '{"source":"startup"}' | CLAUDE_STATE_COMPACT_BIN="$STUB" bash "$HOOK" >/dev/null 2>&1
+sleep 1
+[[ ! -e "$HOME/.claude/stub-ran" ]] || fail "a fresh guard with a live owner did not gate the spawn"
+ok "a dead owner pid frees the guard; a live owner still gates the spawn"
+
 echo "OK: session-start compaction trigger tests passed"

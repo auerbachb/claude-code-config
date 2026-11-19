@@ -329,6 +329,21 @@ build_state
 bash "$COMPACT" --apply --keep-archives 1 >/dev/null 2>&1
 check_eq "(control) rotation still trims this file's own archives" "2" \
   "$(find "$ARCHIVE_DIR" -name 'compact-session-state.json-*.json' | wc -l | tr -d ' ')"
+# A checksum collision: same prefix, older name, but another state_file.
+PFX="compact-session-state.json-$(printf '%s' "$STATE" | cksum | awk '{print $1}')-"
+printf '{"state_file":"/elsewhere/colliding/session-state.json","items":[]}\n' \
+  > "$ARCHIVE_DIR/${PFX}20000101T000000.000000Z-1-1.json"
+build_state
+bash "$COMPACT" --apply --keep-archives 1 >/dev/null 2>&1
+check_eq "a colliding-prefix archive of another state file survives rotation" "1" \
+  "$([[ -f "$ARCHIVE_DIR/${PFX}20000101T000000.000000Z-1-1.json" ]] && echo 1 || echo 0)"
+# Back-to-back runs (same second is likely): the newest archive is the one kept.
+build_state; bash "$COMPACT" --apply --keep-archives 1 >/dev/null 2>&1
+build_state
+LAST="$(bash "$COMPACT" --apply --keep-archives 1 2>/dev/null | sed -n 's/.* to \(.*\.json\)$/\1/p' | head -n 1)"
+check_eq "back-to-back runs keep the newest archive" "1" "$([[ -n "$LAST" && -f "$LAST" ]] && echo 1 || echo 0)"
+check_eq "back-to-back runs keep exactly one own archive" "1" \
+  "$(find "$ARCHIVE_DIR" -name "${PFX}*.json" ! -name '*20000101T*' | wc -l | tr -d ' ')"
 
 echo
 echo "== Run guard: ownerless fresh guard is in progress; dead owner is reclaimed =="

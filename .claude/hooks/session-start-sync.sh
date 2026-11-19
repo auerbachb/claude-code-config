@@ -1067,14 +1067,21 @@ _compact_state="${HOME:-}/.claude/session-state.json"
 _compact_cadence="${CLAUDE_STATE_COMPACT_CADENCE_SECS:-86400}"
 case "$_compact_cadence" in ''|*[!0-9]*) _compact_cadence=86400 ;; esac
 # A run guard younger than 10 minutes means a compactor is (or just was)
-# running. An older one — left by a killed compactor — must not block the
-# spawn: the compactor itself is the only code that reclaims it.
+# running. An older one, or one whose published owner pid is dead — left by a
+# killed compactor — must not block the spawn: the compactor itself is the
+# only code that reclaims it (same rules as its own reclaim).
 _compact_guard_busy=0
 if [[ -d "$_compact_state.compact.run" ]]; then
   _compact_g="$(stat -c %Y "$_compact_state.compact.run" 2>/dev/null)"
   [[ "$_compact_g" =~ ^[0-9]+$ ]] || _compact_g="$(stat -f %m "$_compact_state.compact.run" 2>/dev/null)"
   if [[ ! "$_compact_g" =~ ^[0-9]+$ ]] || (( $(date +%s) - _compact_g < 600 )); then
     _compact_guard_busy=1
+  fi
+  # A published owner pid that is gone means the compactor died: not busy,
+  # whatever the guard's age (the compactor reclaims a dead owner's guard).
+  _compact_gpid="$(cat "$_compact_state.compact.run/pid" 2>/dev/null || true)"
+  if [[ "$_compact_gpid" =~ ^[0-9]+$ ]] && ! kill -0 "$_compact_gpid" 2>/dev/null; then
+    _compact_guard_busy=0
   fi
 fi
 if [[ -n "${HOME:-}" && -x "$_compact_bin" && -f "$_compact_state" \
