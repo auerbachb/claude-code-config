@@ -194,6 +194,18 @@ if [[ "$COMMAND" == *bgwork-ceiling.sh* ]]; then
     echo '{}'
     exit 0
   fi
+  # A tick loop pinned to ANOTHER session id (typically `default`, from a bare
+  # --arm-command run where no id resolved) runs but never counts for this
+  # session. Say so instead of rejecting it silently (Issue #2201).
+  # Only the generated loop shape counts — a grep or doc edit that merely
+  # mentions `--tick --session X` must not draw this advisory.
+  if [[ -n "$EXPECTED_ARM" && "$COMMAND" =~ while\ true\;\ do\ [^\;]*bgwork-ceiling\.sh\ --tick\ --session\ ([^[:space:]\;]+)\;\ sleep ]]; then
+    WATCH_SID="${BASH_REMATCH[1]}"
+    if [[ "$WATCH_SID" != "${SESSION_ID//[^[:alnum:]_.-]/_}" ]]; then
+      emit_context "BACKGROUND WORK CEILING SESSION MISMATCH: the watch you just started targets session ${WATCH_SID}; this session is ${SESSION_ID}, so it does not count as armed. Stop that task, then arm this exact command instead: ${EXPECTED_ARM}"
+      exit "$REGISTRY_FAILURE_UNRECORDED"
+    fi
+  fi
 fi
 
 # --- 2. Did this call start background work the thread will wait on? --------
@@ -212,9 +224,23 @@ if (( started == 1 )); then
 fi
 
 # --- 3. Advise arming while in flight and unarmed ----------------------------
-if "$CEILING_SH" --check --session "$SESSION_ID"; then
+# Exit 3 (armed, but the watch stopped ticking) is the Stop guard's to report,
+# once per lapse: the background-work marker is append-only, so advising here
+# would nag on every tool call long after the work ended.
+# The one exception: a call that STARTS new background work after a lapse. The
+# lapse notice may already have been spent (and the thread rightly declined to
+# re-arm because nothing was running then), so this new work would otherwise
+# get neither advice nor a Stop notice. Advise on that call, and withdraw the
+# spent lapse notice so the Stop guard can report the lapse once more.
+CHECK_RC=0
+"$CEILING_SH" --check --session "$SESSION_ID" || CHECK_RC=$?
+if (( CHECK_RC == 0 )) || (( CHECK_RC == 3 && started == 0 )); then
   echo '{}'
   exit 0
+fi
+if (( CHECK_RC == 3 )); then
+  _lapse_sid="${SESSION_ID//[^[:alnum:]_.-]/_}"
+  rm -f "${CLAUDE_BGWORK_MARKER_DIR:-/tmp}/claude-bgceiling-lapsenotice-${_lapse_sid:-default}" 2>/dev/null || true
 fi
 
 ARM_COMMAND=$("$CEILING_SH" --arm-command --session "$SESSION_ID" 2>/dev/null)
@@ -264,6 +290,6 @@ if (( started == 0 )) && [[ -z "$UNGUARDED_NOTE" ]] && [[ -f "$ADVISED_FILE" ]];
 fi
 touch "$ADVISED_FILE" 2>/dev/null || true
 
-emit_context "BACKGROUND WORK CEILING NOT ARMED. ${UNGUARDED_NOTE}This thread has background work in flight, so it can end its turn and go silent with no tool call left to warn it. Arm the ceiling in THIS step, before ending the turn: call the Monitor tool with persistent: true, description \"background-work silence ceiling\", and command: ${ARM_COMMAND} — the watch stays silent unless the thread actually goes quiet, so a thread sending normal heartbeats will never see a message from it. Do not announce the arming to the user; it is bookkeeping, not status."
+emit_context "BACKGROUND WORK CEILING NOT ARMED. ${UNGUARDED_NOTE}This thread has background work in flight, so it can end its turn and go silent with no tool call left to warn it. Arm the ceiling in THIS step, before ending the turn: call the Monitor tool with description \"background-work silence ceiling\", timeout_ms at the runtime maximum (1800000 where capped; pass persistent: true only if the tool schema lists it), and command: ${ARM_COMMAND} — re-arm it the same way on every expiry notice while background work runs (.claude/reference/monitor-expiry.md). The watch stays silent unless the thread actually goes quiet, so a thread sending normal heartbeats will never see a message from it. Do not announce the arming to the user; it is bookkeeping, not status."
 
 exit "$REGISTRY_FAILURE_UNRECORDED"
