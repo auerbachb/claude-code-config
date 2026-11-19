@@ -18,6 +18,7 @@ cd "$tmp"
 stub="$tmp/presence.sh"
 cat > "$stub" <<'STUB'
 #!/usr/bin/env bash
+if [ "${1:-}" = is-away ]; then [ "${PRESENCE_AWAY:-0}" = 1 ]; exit; fi
 printf '%s\n' "$*" > "$PRESENCE_CALLS"
 [ "${PRESENCE_FAIL:-0}" = 1 ] && exit 1
 printf 'presence: away, until later\n'
@@ -60,6 +61,8 @@ run 'closing the laptop at 7'; expect_refusal 'laptop wording redirected' '/leav
 run 6h '';                expect_refusal 'missing presence.sh refused' 'presence.sh not found'
 run 'until 8:00 AM' "$stub" ''; expect_refusal 'missing window-plan.sh refused' 'window-plan.sh not found'
 PRESENCE_FAIL=1 run 6h;   if [[ "$out" == 'Away not set — presence.sh refused it (rc=1); continuing attended.' ]]; then ok 'presence refusal is one line'; else bad "presence refusal: '$out'"; fi
+PRESENCE_FAIL=1 PRESENCE_AWAY=1 run 6h; if [[ "$out" == 'Away not changed — presence.sh refused it (rc=1); the earlier away window stays in force.' ]]; then ok 'refusal under an active window keeps it'; else bad "refusal while away: '$out'"; fi
+PRESENCE_AWAY=1 run 'whenever'; if [[ -z "$calls" && "$out" == 'Away not changed — '*'is not a return time I can read'*'stays in force.' ]]; then ok 'unreadable value under an active window keeps it'; else bad "unreadable while away: '$out'"; fi
 
 run '';                   if [[ -z "$out" && -z "$calls" ]]; then ok 'no --away: nothing printed, presence untouched'; else bad "empty value: out='$out' calls='$calls'"; fi
 
