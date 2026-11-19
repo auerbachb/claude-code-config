@@ -110,7 +110,7 @@ Before entering a day phase, use the [day module routing table](#day-module-rout
 
 **Day mode's one-chip bound applies from the arming turn, not from the first tick.** When `DAY_MODE=true`, Step 3.1's thread-prompt path offers **at most one chip per turn** — including the arming turn, where Step 1's own dispatch runs. Treat that turn as tick 0. Without this the mode's first turn would be the one that emits a wall of chips, which is precisely the failure it exists to end (2D.3 D2).
 
-**On an arming invocation, ownership is settled before any work.** When `DAY_MODE=true` and `DAY_TICK` is not set, run **Step 2D.1 immediately after Step 0a and before Step 1** — out of numeric order, deliberately. Step 1 claims issues, resolves cleanup gates, and dispatches pipelines; running it first and only then discovering that a `/pr-monitor-and-manage` fleet already owns this repo would leave claimed issues and live pipelines under two dispatching owners, which is the single failure the exclusion exists to prevent. Refusing costs a turn; refusing after dispatch costs a double merge. Steps 1 and 2 then run normally, and 2D.2 picks up from there.
+**On an arming invocation, ownership is settled before any work.** When `DAY_MODE=true` and `DAY_TICK` is not set, run **Step 2D.1 right after Step 0c and before Steps 0b, 0d and 1** — out of numeric order, deliberately. Step 0c runs first because it only stores the operator's away window, which holds whether or not this thread wins ownership: a refused `/pm day --away …` still records it. Step 0b's window and Step 0d's epic work run after 2D.1: a refused ownership check persists no window, files no child and edits no parent. Step 1 claims issues, resolves cleanup gates, and dispatches pipelines; running it first and only then discovering that a `/pr-monitor-and-manage` fleet already owns this repo would leave claimed issues and live pipelines under two dispatching owners, which is the single failure the exclusion exists to prevent. Refusing costs a turn; refusing after dispatch costs a double merge. Steps 1 and 2 then run normally, and 2D.2 picks up from there.
 
 ---
 
@@ -269,7 +269,7 @@ Mark `0a ran` with `repo-wide fallback` when GitHub identity was unavailable.
 
 ## Step 0b: Window planning (when --window is set)
 
-Runs immediately after Step 0a, only when `WINDOW_STR` is non-empty. Skipped on `--tick` turns (window persists from the arming turn).
+Runs immediately after Step 0a (on a `/pm day` arming invocation, after 0c and 2D.1), only when `WINDOW_STR` is non-empty. Skipped on `--tick` turns (window persists from the arming turn).
 
 ```bash
 # Parse the window string into machine values
@@ -334,7 +334,7 @@ with the parse or persistence failure.
 
 ## Step 0c: Away declaration (when --away is set)
 
-Runs right after Step 0b on a user invocation, before 2D.1 and Step 1, only when `AWAY_STR` is non-empty or `AWAY_BARE` is true; never on `--tick` or `--probe-wake`. It gives `/pm` the existing presence switch and nothing else: the declaration is stored only through `presence.sh set away --by operator-message` (`.claude/skills/presence/SKILL.md`, `.claude/reference/presence-windows.md`), which also arms unattended mode for the same window. The value is read by the parsers that already exist: `presence.sh` for `overnight` (`--rest-of-day`, ends 08:00 local), `open-ended` and `<N>h`/`<N>m`, and `window-plan.sh` for clock times and spelled-out durations (`until 8:00 AM`, `back at 10`, `6 hours`); a clock time already past today means its next occurrence, tomorrow. Closing the laptop is `/leave-by`, not this flag.
+Runs right after Step 0b on a user invocation (on a `/pm day` arming invocation, right after Step 0a and before 2D.1 and 0b, so a refused ownership check still stores the away window), before 2D.1 and Step 1, only when `AWAY_STR` is non-empty or `AWAY_BARE` is true; never on `--tick` or `--probe-wake`. It gives `/pm` the existing presence switch and nothing else: the declaration is stored only through `presence.sh set away --by operator-message` (`.claude/skills/presence/SKILL.md`, `.claude/reference/presence-windows.md`), which also arms unattended mode for the same window. The value is read by the parsers that already exist: `presence.sh` for `overnight` (`--rest-of-day`, ends 08:00 local), `open-ended` and `<N>h`/`<N>m`, and `window-plan.sh` for clock times and spelled-out durations (`until 8:00 AM`, `back at 10`, `6 hours`); a clock time already past today means its next occurrence, tomorrow. Closing the laptop is `/leave-by`, not this flag.
 
 <!-- test-anchor: pm-away-declare -->
 ```bash
@@ -430,7 +430,7 @@ On `AWAY_SET=true`, follow the lines `presence.sh` printed exactly as the presen
 ## Step 0d: Epic scope
 
 <!-- pm-routing:begin -->
-Runs on a user invocation after Step 0c, before 2D.1 and the Step 1 gate. When `EPIC_ARG=true`, read `shared:epic` and run its Bind block: a missing, closed or childless issue, or an unreadable child list, is its one line and the end of the invocation, with nothing launched. When `EPIC_ARG=false` on a cold start, read `shared:epic` only to clear a stored epic. Resume, ticks and refill restore a stored epic through the same module at their candidate gates (`rank:load`, `resume:load`, `flow:refill`).
+Runs on a user invocation after Step 0c and before the Step 1 gate — and, on a `/pm day` arming invocation, after 2D.1, so a refused ownership check files nothing and edits no parent. When `EPIC_ARG=true`, read `shared:epic` and run its Bind block: a missing or closed issue, or an unreadable child list, is its one line and the end of the invocation, with nothing launched. A childless epic, or one whose children leave scope uncovered, is split there in waves of at most five (its §Waves). When `EPIC_ARG=false` on a cold start, read `shared:epic` only to clear a stored epic. Resume, ticks and refill restore a stored epic through the same module at their candidate gates (`rank:load`, `resume:load`, `flow:refill`).
 <!-- pm-routing:end -->
 
 ---

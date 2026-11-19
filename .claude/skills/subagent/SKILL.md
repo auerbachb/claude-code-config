@@ -362,7 +362,7 @@ esac
 
 6. **The parent is tracking-only.** It is never claimed (Step 6.0 claims each child individually), never spawned against, and never counted as a pipeline. It stays open until the last child merges, at which point Phase C Completion closes it.
 
-7. **Re-check every child against Step 4, then queue the chain.** A child that is itself criterion 1 or 2 routes to a thread on its own line; the rest are inline-eligible and enter Step 6.0b as one chain. **Decomposition never recurses:** a child that still fires criterion 3 means the split was wrong — do not decompose it again. Fix the boundaries, or route the parent out per sub-step 1.
+7. **Re-check every child against Step 4, then queue the chain.** A child that is itself criterion 1 or 2 routes to a thread on its own line; the rest are inline-eligible and enter Step 6.0b as one chain. **Decomposition never recurses:** a child that still fires criterion 3 means the split was wrong — do not decompose it again. Fix the boundaries, or route the parent out per sub-step 1. (Epic-wave mode below cuts later waves from the *parent's* remaining scope; it never splits a child either.)
 
 8. **Report one line per child**, plus the split rationale once on the head (`/issue-maker` Step 9a shape) — the count and *why* one pipeline could not land it:
 
@@ -375,6 +375,14 @@ esac
    ```
 
    The user re-cuts a wrong boundary with `/update #N` or by closing a child — issues are cheap to change. Retracting a chain member has a strand hazard: `/issue-maker` Step 12 owns that procedure.
+
+**Epic-wave mode (`/pm epic #N` only, issue #2546).** When `/pm`'s `shared:epic` §Waves calls this step for the epic the operator named, the steps above run with these differences and no others. It is the only caller allowed to split a parent more than once: a plain pick-time split stays one level and one time, and no wave ever decomposes a child.
+
+- **Items come from the parent's `## Epic scope` record**, not a fresh split: sub-step 1 cut them when the record was written, and a remaining scope with no clean seam is recorded with `pm-epic.sh stop`, not routed to a thread — the operator asked for this epic here.
+- **Sub-step 2's cap is per wave**: at most 5 children, then the next wave comes from what remains (`pm-epic.sh wave-due`).
+- **Sub-step 3's exclusions add every child already in the record or the checklist**, from every wave; a strong match carrying `- Parent: #{PARENT}` is recorded for its item instead of filed again.
+- **Sub-step 5 is replaced by `pm-epic.sh record`** right after each create. It adds the box to `## Increment chain` without stripping earlier waves' boxes or the `## Epic scope` section above it; the strip-and-rewrite above would lose both.
+- **Sub-step 8's report is one message per wave** naming the children; it never waits for approval.
 
 ## Step 6: Pre-Spawn Setup
 
@@ -2158,7 +2166,9 @@ fi
    ```
 
    Then:
-   - Tick that child's box in the parent's `## Increment chain` checklist (`gh issue edit --body`, fetch-then-edit as in Step 5.1).
+   - **If the parent body cannot be read (a failed read or an empty answer), stop this step.** Leave the parent open, report the read failure once, and skip every bullet below, the close included: an unread body cannot show whether the parent is an epic, so it never takes the no-marker branch.
+   - **A parent whose body carries the `<!-- pm-epic-scope v1 -->` marker or a `## Epic scope` heading (either one; a damaged record still counts) is an epic split in waves: do not edit or close it here.** Run only `pm-epic.sh close-if-done {owner}/{repo} {PARENT}`. It keeps the parent open while scope remains and fails closed on an unreadable or malformed record (`scope malformed`: report it, leave the parent open). A fetch-then-edit tick here could overwrite a concurrent `pm-epic.sh record` and lose a recorded child; the issue states, not the box, are the fact. **That call is the whole of this step for an epic parent: skip every bullet below**, including the close — `close-if-done` alone decides it, so a parent whose children are all closed but whose scope still has remaining items stays open for its next wave.
+   - Otherwise (no marker), tick that child's box in the parent's `## Increment chain` checklist (`gh issue edit --body`, fetch-then-edit as in Step 5.1).
    - **Then re-read the parent's children from GitHub**, don't trust the checklist you just wrote: close the parent only when every child issue is actually `CLOSED`. A child can be closed by hand, or its box ticked while its PR later reverts — the issue states are the fact, the checklist is the display.
    - When the last one closes, `gh issue close` the parent with a comment naming the merged children, and emit one line: `closed parent #N — all {n} increments merged`. Report the closure; never close silently.
    - A child that ends `blocked` leaves the parent open with its box unticked. That is the correct resting state — the parent is what makes the unfinished slice findable.
