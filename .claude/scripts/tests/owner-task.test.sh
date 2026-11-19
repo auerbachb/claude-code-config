@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for owner-task.sh (issue #2538 — one list per repo of human tasks).
-# catalog: tests — Tests for `owner-task.sh` against a stateful `gh` stub: add/list/done, the pinned `list --json` shape, two concurrent adds losing nothing, the done-without-proof refusal, the public-repo redirect to a private bucket, the missing-pointer and public-bucket refusals, the secret refusal and missing checker, and exit 4 on an unreadable source
+# catalog: tests — Tests for `owner-task.sh` against a stateful `gh` stub: add/list/done, the pinned `list --json` shape, two concurrent adds losing nothing, the why-human reason refusals (empty, unknown, no free text), the done-without-proof refusal, the public-repo redirect to a private bucket, the missing-pointer and public-bucket refusals, the secret refusal and missing checker, and exit 4 on an unreadable source
 # covers: .claude/scripts/owner-task.sh desk/bin/lib/secrets.sh .claude/reference/owner-tasks.md
 #
 # `gh` is a Python stub holding repos, issues and comments in a JSON file under
@@ -75,7 +75,7 @@ run list --json
 check_eq "empty list --json exits 0" 0 "$RC"
 check_eq "empty list --json prints []" "[]" "$OUT"
 
-run add --what "Fill in STRIPE_PUBLISHABLE in .env" --why "only the operator holds the dashboard login" --source "https://github.com/me/private-app/pull/7"
+run add --what "Fill in STRIPE_PUBLISHABLE in .env" --why "sign-in: only the operator holds the dashboard login" --source "https://github.com/me/private-app/pull/7"
 check_eq "add exits 0" 0 "$RC"
 ID1="$OUT"
 if [[ "$ID1" =~ ^ht-[0-9a-f]{8}$ ]]; then ok "add prints a task id"; else bad "add prints a task id (got '$ID1')"; fi
@@ -85,7 +85,7 @@ check_eq "tracker carries the human-tasks label" '["human-tasks"]' "$(db ".issue
 check_absent "tracker body has no /issue-maker footer" "Captured via /issue-maker" "$(db ".issues[\"$PRIV\"][0].body")"
 check_eq "one comment per task" 1 "$(db ".comments[\"$PRIV#101\"] | length")"
 
-run add --what "Accept the Vercel team invite --> then reply" --why "needs his email inbox" --source "thread 407c"
+run add --what "Accept the Vercel team invite --> then reply" --why "legal-agreement: needs his email inbox" --source "thread 407c"
 ID2="$OUT"
 check_eq "second add reuses the tracker" 1 "$(db ".issues[\"$PRIV\"] | length")"
 check_eq "second add is a second comment" 2 "$(db ".comments[\"$PRIV#101\"] | length")"
@@ -99,7 +99,7 @@ check_eq "list --json element keys are the pinned contract" \
 check_eq "open task: state open, done_at and proof null" '["open",null,null]' \
   "$(jq -c --arg id "$ID1" '.[] | select(.id == $id) | [.state, .done_at, .proof]' <<<"$OUT")"
 check_eq "task records repo, what, why, source" \
-  "[\"$PRIV\",\"Fill in STRIPE_PUBLISHABLE in .env\",\"only the operator holds the dashboard login\",\"https://github.com/me/private-app/pull/7\"]" \
+  "[\"$PRIV\",\"Fill in STRIPE_PUBLISHABLE in .env\",\"sign-in: only the operator holds the dashboard login\",\"https://github.com/me/private-app/pull/7\"]" \
   "$(jq -c --arg id "$ID1" '.[] | select(.id == $id) | [.repo, .what, .why, .source]' <<<"$OUT")"
 if jq -e 'all(.[]; .created_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))' <<<"$OUT" >/dev/null; then
   ok "created_at is ISO-8601 UTC"; else bad "created_at is ISO-8601 UTC ($OUT)"; fi
@@ -108,7 +108,7 @@ check_eq "'-->' in task text round-trips" "Accept the Vercel team invite --> the
 
 run list
 check_contains "human list shows the task" "Fill in STRIPE_PUBLISHABLE" "$OUT"
-check_contains "human list shows the why" "only the operator holds the dashboard login" "$OUT"
+check_contains "human list shows the why" "sign-in: only the operator holds the dashboard login" "$OUT"
 
 run where
 check_eq "where exits 0 on a private repo" 0 "$RC"
@@ -147,9 +147,9 @@ check_eq "done on an unknown id exits 1" 1 "$RC"
 
 # ---- repo names are case-insensitive ------------------------------------------------------
 reset_db
-run add --repo ME/Private-App --what "Case task" --why "w" --source "s"
+run add --repo ME/Private-App --what "Case task" --why "sign-in: w" --source "s"
 CID="$OUT"
-run add --repo me/private-app --what "Case task two" --why "w" --source "s"
+run add --repo me/private-app --what "Case task two" --why "sign-in: w" --source "s"
 check_eq "two spellings share one tracker" 1 "$(db ".issues[\"$PRIV\"] | length")"
 run list --json --repo ME/PRIVATE-APP
 check_eq "list with another spelling finds both tasks" 2 "$(jq length <<<"$OUT")"
@@ -159,7 +159,7 @@ check_eq "done with another spelling finds the task" 0 "$RC"
 # ---- a tracker GitHub created without its label -----------------------------------------
 reset_db
 export FAKE_DROP_LABELS=1
-run add --what "Unlabelled" --why "w" --source "s"
+run add --what "Unlabelled" --why "sign-in: w" --source "s"
 unset FAKE_DROP_LABELS
 check_eq "a silently dropped label fails the add (exit 1)" 1 "$RC"
 check_contains "the failure names the created issue" "$PRIV#101" "$ERR"
@@ -170,7 +170,7 @@ reset_db
 jq --arg r "$PRIV" '.issues[$r] = [{number: 7, title: "Human tasks", body: "hand-made", state: "open",
                                     labels: [{name: "human-tasks"}]}]' \
   "$FAKE_STATE/db.json" > "$TMP/db" && mv "$TMP/db" "$FAKE_STATE/db.json"
-run add --what "Into the hand-made tracker" --why "w" --source "s"
+run add --what "Into the hand-made tracker" --why "sign-in: w" --source "s"
 check_eq "add reuses a title-only tracker" 1 "$(db ".issues[\"$PRIV\"] | length")"
 check_eq "the task lands on the title-only tracker" 1 "$(db ".comments[\"$PRIV#7\"] | length")"
 run list --json
@@ -180,7 +180,7 @@ check_eq "list reads a title-only tracker" '["Into the hand-made tracker"]' "$(j
 # 150 done tasks of ~2 KB each (~300 KB) exceed Linux's 128 KiB per-argument
 # limit; the records must travel on stdin.
 reset_db
-run add --what "Seed" --why "w" --source "s"
+run add --what "Seed" --why "sign-in: w" --source "s"
 jq --arg r "$PRIV" '
   ("x" * 2000) as $long
   | .comments["\($r)#101"] += [range(0; 150) as $k
@@ -196,9 +196,9 @@ check_eq "a list past the argument limit returns every task" 151 "$(jq length <<
 # ---- concurrency ----------------------------------------------------------------------
 reset_db
 export FAKE_SLOW=0.3
-"$SCRIPT" add --what "task A" --why "w" --source "s" >"$TMP/a.out" 2>"$TMP/a.err" &
+"$SCRIPT" add --what "task A" --why "sign-in: w" --source "s" >"$TMP/a.out" 2>"$TMP/a.err" &
 PA=$!
-"$SCRIPT" add --what "task B" --why "w" --source "s" >"$TMP/b.out" 2>"$TMP/b.err" &
+"$SCRIPT" add --what "task B" --why "sign-in: w" --source "s" >"$TMP/b.out" 2>"$TMP/b.err" &
 PB=$!
 wait "$PA"; RA=$?
 wait "$PB"; RB=$?
@@ -212,7 +212,7 @@ check_eq "concurrent first-use adds leave one open tracker" 1 \
 # ---- public repo ----------------------------------------------------------------------
 reset_db
 export FAKE_CURRENT_REPO="$PUB"
-run add --what "Sign in to Railway" --why "interactive login" --source "PR #9"
+run add --what "Sign in to Railway" --why "sign-in: interactive login" --source "PR #9"
 check_eq "public repo with no pointer: add exits 3" 3 "$RC"
 check_contains "missing pointer gives a one-line instruction" "$OWNER_TASK_POINTER_FILE" "$ERR"
 check_eq "missing pointer: one line on stderr" 1 "$(printf '%s\n' "$ERR" | wc -l | tr -d ' ')"
@@ -221,12 +221,12 @@ run where
 check_eq "where on a public repo with no pointer exits 3" 3 "$RC"
 
 jq -n --arg pub "$PUB" --arg b "$OPENB" '{repos: {($pub): $b}}' > "$OWNER_TASK_POINTER_FILE"
-run add --what "Sign in to Railway" --why "interactive login" --source "PR #9"
+run add --what "Sign in to Railway" --why "sign-in: interactive login" --source "PR #9"
 check_eq "a public bucket is refused (exit 3)" 3 "$RC"
 check_eq "public bucket: nothing written" "" "$(writes)"
 
 jq -n --arg pub "$PUB" --arg b "$BUCKET" '{repos: {($pub): $b}}' > "$OWNER_TASK_POINTER_FILE"
-run add --what "Sign in to Railway" --why "interactive login" --source "PR #9"
+run add --what "Sign in to Railway" --why "sign-in: interactive login" --source "PR #9"
 check_eq "public repo with a pointer: add exits 0" 0 "$RC"
 PUBID="$OUT"
 check_eq "nothing is written to the public repo" "" "$(grep "repos/$PUB" "$FAKE_STATE/writes.log" || true)"
@@ -250,8 +250,8 @@ jq --arg p "$PUB" '.repos[$p] = "public"' "$FAKE_STATE/db.json" > "$TMP/db" && m
 
 # ---- --all-repos ----------------------------------------------------------------------
 export FAKE_CURRENT_REPO="$PRIV"
-run add --what "Private task" --why "w" --source "s"
-"$SCRIPT" add --repo me/other-private --what "Other task" --why "w" --source "s" >/dev/null 2>&1
+run add --what "Private task" --why "sign-in: w" --source "s"
+"$SCRIPT" add --repo me/other-private --what "Other task" --why "sign-in: w" --source "s" >/dev/null 2>&1
 run list --json --all-repos --all
 check_eq "--all-repos covers repo trackers and bucket trackers" \
   "[\"me/other-private\",\"$PRIV\",\"$PUB\"]" "$(jq -c 'map(.repo) | sort' <<<"$OUT")"
@@ -261,18 +261,18 @@ check_eq "--all-repos with --repo is a usage error" 2 "$RC"
 # Pagination: a second source repo's tracker in the same bucket sits on page 2.
 jq -n --arg pub "$PUB" --arg b "$BUCKET" '{repos: {($pub): $b, "me/public-two": $b}}' > "$OWNER_TASK_POINTER_FILE"
 jq '.repos["me/public-two"] = "public"' "$FAKE_STATE/db.json" > "$TMP/db" && mv "$TMP/db" "$FAKE_STATE/db.json"
-"$SCRIPT" add --repo me/public-two --what "Page two task" --why "w" --source "s" >/dev/null 2>&1
+"$SCRIPT" add --repo me/public-two --what "Page two task" --why "sign-in: w" --source "s" >/dev/null 2>&1
 export FAKE_PAGE_SIZE=1
 run list --json --repo me/public-two
 check_eq "a tracker past the first page is still read" '["Page two task"]' "$(jq -c 'map(.what)' <<<"$OUT")"
-run add --repo me/public-two --what "Second page-two task" --why "w" --source "s"
+run add --repo me/public-two --what "Second page-two task" --why "sign-in: w" --source "s"
 check_eq "add past the first page reuses the tracker" 2 "$(db ".issues[\"$BUCKET\"] | map(select(.state == \"open\")) | length")"
 run list --json --all-repos
 check_contains "--all-repos reads every page" "Second page-two task" "$OUT"
 unset FAKE_PAGE_SIZE
 
 # A bucket that turned public after a task was written: done refuses to write.
-run add --what "Bucket task" --why "w" --source "s" --repo "$PUB"
+run add --what "Bucket task" --why "sign-in: w" --source "s" --repo "$PUB"
 BID="$OUT"
 jq --arg b "$BUCKET" '.repos[$b] = "public"' "$FAKE_STATE/db.json" > "$TMP/db" && mv "$TMP/db" "$FAKE_STATE/db.json"
 : > "$FAKE_STATE/writes.log"
@@ -323,15 +323,15 @@ check_eq "empty pointer: nothing on stdout" "" "$OUT"
 # ---- secret refusal -----------------------------------------------------------------------
 reset_db
 TOKEN="ghp_$(printf 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4')"
-run add --what "Set GH token $TOKEN in CI" --why "w" --source "s"
+run add --what "Set GH token $TOKEN in CI" --why "sign-in: w" --source "s"
 check_eq "token-shaped text: add exits 5" 5 "$RC"
 check_absent "secret refusal never echoes the value" "$TOKEN" "$ERR"
 check_eq "secret refusal writes nothing" "" "$(writes)"
 check_eq "secret refusal creates no tracker" 0 "$(db ".issues[\"$PRIV\"] // [] | length")"
-run add --what "rotate" --why "w" --source "password=Hunter2abc9"
+run add --what "rotate" --why "sign-in: w" --source "password=Hunter2abc9"
 check_eq "a labeled credential in --source is refused" 5 "$RC"
 
-run add --what "real task" --why "w" --source "s"
+run add --what "real task" --why "sign-in: w" --source "s"
 SID="$OUT"
 : > "$FAKE_STATE/writes.log"
 run "done" "$SID" --proof "used token $TOKEN"
@@ -343,13 +343,41 @@ check_eq "refused proof writes nothing" "" "$(writes)"
 mkdir -p "$TMP/lone"
 cp "$SCRIPT" "$TMP/lone/owner-task.sh"
 : > "$FAKE_STATE/writes.log"
-OUT="$("$TMP/lone/owner-task.sh" add --what "x" --why "w" --source "s" 2>"$TMP/err")"; RC=$?
+OUT="$("$TMP/lone/owner-task.sh" add --what "x" --why "sign-in: w" --source "s" 2>"$TMP/err")"; RC=$?
 check_eq "missing secret checker refuses the write (exit 7)" 7 "$RC"
 check_contains "missing checker says so" "secret checker" "$(cat "$TMP/err")"
 check_eq "missing checker writes nothing" "" "$(writes)"
 OUT="$("$TMP/lone/owner-task.sh" "done" "$SID" --by operator 2>"$TMP/err")"; RC=$?
 check_eq "missing checker also refuses an operator done (exit 7)" 7 "$RC"
 check_eq "operator done without a checker writes nothing" "" "$(writes)"
+
+# ---- why-human reason (issue #2561) ---------------------------------------------------
+reset_db
+: > "$FAKE_STATE/writes.log"
+COMMENTS_BEFORE="$(db ".comments[\"$PRIV#101\"] | length")"
+run add --repo "$PRIV" --what "Empty reason" --why "" --source "s"
+check_eq "add with an empty --why exits 2" 2 "$RC"
+check_contains "empty-why refusal lists the reasons" "sign-in legal-agreement payment-detail secret-value physical-device judgment-call" "$ERR"
+run add --repo "$PRIV" --what "Blank reason" --why "   " --source "s"
+check_eq "add with a whitespace-only --why exits 2" 2 "$RC"
+run add --repo "$PRIV" --what "No reason kind" --why "he has the login" --source "s"
+check_eq "add with --why lacking a reason kind exits 2" 2 "$RC"
+run add --repo "$PRIV" --what "Unknown kind" --why "vibes: he wants to" --source "s"
+check_eq "add with an unknown --why reason exits 2" 2 "$RC"
+check_contains "unknown-reason refusal names the reason" "'vibes'" "$ERR"
+run add --repo "$PRIV" --what "Kind only" --why "sign-in:  " --source "s"
+check_eq "add with a reason but no free text exits 2" 2 "$RC"
+check_eq "refused adds write nothing" "" "$(writes)"
+check_eq "refused adds add no comment" "$COMMENTS_BEFORE" "$(db ".comments[\"$PRIV#101\"] | length")"
+run --help
+check_contains "--help lists the why reasons" "judgment-call" "$OUT"
+for KIND in sign-in legal-agreement payment-detail secret-value physical-device judgment-call; do
+  run add --repo "$PRIV" --what "Task for $KIND" --why "$KIND: free text" --source "s"
+  check_eq "add accepts reason $KIND" 0 "$RC"
+done
+run list --json --repo "$PRIV"
+check_eq "accepted reasons stored as given" "physical-device: free text" \
+  "$(jq -r '.[] | select(.what == "Task for physical-device") | .why' <<<"$OUT")"
 
 echo
 echo "owner-task.test.sh: $PASS passed, $FAIL failed"
