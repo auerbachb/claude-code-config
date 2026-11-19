@@ -276,4 +276,71 @@ a=$(IDLE_REASON='paused (horizon unknown)' DAY_TICK_ACTED=false drec); [[ "$a" =
 a=$(IDLE_REASON='nothing eligible' drec); [[ "$a" == *"--quiet-ok false"* ]] || fail "unbound DAY_TICK_ACTED must default to loud: $a"
 pass "skill contracts allow quiet only for no-op repeats (wait, held dispatch, idle board)"
 
+# 13. The contract carries the tick-START digest (Graphite review on PR #2491): an event that lands
+#     while the model tick runs is outside the recorded digest, so the next Monitor tick emits for it.
+mkgate "6 minutes left" "x"
+QT() { PATH="$TMP/path:$PATH" "$BIN/monitor-quiet-tick.sh" "$@"; }
+seed_babysit 1 5 0 false null 2 "del($P.babysit.quiet)"
+set +e; QT --record --kind babysit --pr 7 --repo "$REPO" --quiet-ok true --freeze-at none 2>"$TMP/err"; rc=$?; set -e
+[[ $rc -eq 1 && "$(bget "$B.babysit.quiet.quiet_ok")" == false ]] ||
+  fail "record without a tick-start digest must store quiet_ok=false and exit 1 (rc=$rc: $(cat "$TMP/err"))"
+start=$(dig)
+mkgate "6 minutes left" "need 1 explicit CodeRabbit or CodeAnt APPROVED review"   # event lands mid-tick
+QT --record --kind babysit --pr 7 --repo "$REPO" --quiet-ok true --freeze-at none --tick-start-digest "$start" 2>/dev/null ||
+  fail "record with a tick-start digest should succeed"
+[[ "$(bget "$B.babysit.quiet.input_digest")" == "$start" ]] || fail "babysit must store the tick-start digest as is"
+set +e; OUT=$(QT --kind babysit --pr 7 --repo "$REPO" --generation g1 2>"$TMP/err"); RC=$?; set -e
+[[ $RC -eq 0 && -z "$OUT" ]] || fail "a mid-tick event must make the next Monitor tick emit (rc=$RC)"
+grep -q "input digest changed" "$TMP/err" || fail "mid-tick event emit reason missing: $(cat "$TMP/err")"
+seed_babysit 1 5 0 false null 2 "del($P.babysit.quiet)"
+start=$(dig)
+QT --record --kind babysit --pr 7 --repo "$REPO" --quiet-ok true --freeze-at none --tick-start-digest "$start" 2>/dev/null
+set +e; QT --kind babysit --pr 7 --repo "$REPO" --generation g1 2>"$TMP/err"; RC=$?; set -e
+[[ $RC -eq 10 ]] || fail "no event since tick start should allow a quiet tick (rc=$RC: $(cat "$TMP/err"))"
+set +e; QT --record --kind babysit --pr 7 --repo "$REPO" --quiet-ok true --tick-start-digest bogus 2>/dev/null; rc=$?; set -e
+[[ $rc -eq 2 ]] || fail "a malformed tick-start digest should be a usage error (rc=$rc)"
+# pm day: the external part is pinned at tick start; the repo-state part (the tick's own writes) is read at record.
+cat > "$TMP/path/gh" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1 $2" == "repo view" ]]; then echo "${CWD_REPO:-Acme/Widgets}"; exit 0; fi
+if [[ "$1 $2" == "pr list" ]]; then cat "$PRS_FIXTURE"; exit 0; fi
+if [[ "$1 $2" == "issue list" ]]; then echo '[{"number":3,"updatedAt":"2026-01-01T00:00:00Z"}]'; exit 0; fi
+echo "2026-01-01T00:00:00Z"
+EOF
+chmod +x "$TMP/path/gh"
+export PRS_FIXTURE="$TMP/prs.json"
+echo '[{"number":9,"headRefOid":"a1","updatedAt":"2026-01-01T00:00:00Z"}]' > "$PRS_FIXTURE"
+seed_day 0 5 3; jq '.active_agents = []' "$STATE" > "$TMP/s" && mv "$TMP/s" "$STATE"
+dstart=$(QT --print-digest --kind pm-day --repo "$REPO" 2>/dev/null)
+[[ "$dstart" =~ ^sha256:[0-9a-f]{64}\.[0-9a-f]{64}$ ]] || fail "pm day digest form wrong: $dstart"
+jq --arg r "$REPO" '.repos[$r].day.slots_free = 0' "$STATE" > "$TMP/s" && mv "$TMP/s" "$STATE"   # the tick's own write
+QT --record --kind pm-day --repo "$REPO" --quiet-ok true --tick-start-digest "$dstart" 2>/dev/null || fail "pm day record should succeed"
+rec_d=$(bget "$D.quiet.input_digest")
+[[ "${rec_d%%.*}" == "${dstart%%.*}" && "$rec_d" != "$dstart" ]] || fail "pm day must pin the external part and re-read repo state ($rec_d)"
+set +e; QT --kind pm-day --repo "$REPO" --generation d1 2>"$TMP/err"; RC=$?; set -e
+[[ $RC -eq 10 ]] || fail "pm day: the tick's own state write must not defeat quiet (rc=$RC: $(cat "$TMP/err"))"
+seed_day 0 5 3; jq '.active_agents = []' "$STATE" > "$TMP/s" && mv "$TMP/s" "$STATE"
+dstart=$(QT --print-digest --kind pm-day --repo "$REPO" 2>/dev/null)
+echo '[{"number":9,"headRefOid":"b2","updatedAt":"2026-01-01T00:09:00Z"}]' > "$PRS_FIXTURE"   # PR pushed mid-tick
+QT --record --kind pm-day --repo "$REPO" --quiet-ok true --tick-start-digest "$dstart" 2>/dev/null
+set +e; QT --kind pm-day --repo "$REPO" --generation d1 2>"$TMP/err"; RC=$?; set -e
+[[ $RC -eq 0 ]] || fail "pm day: a PR event during the tick must make the next Monitor tick emit (rc=$RC)"
+pass "contracts carry the tick-start digest: mid-tick events emit, missing digests fail closed, pm day own writes stay quiet"
+
+# 14. A hung digest read is bounded: the tick emits (and disarms) instead of holding the Monitor loop silent.
+cat > "$BIN/merge-gate.sh" <<'EOF'
+#!/usr/bin/env bash
+sleep "${GATE_SLEEP:-0}"; cat "$GATE_FIXTURE"; exit "${GATE_RC:-1}"
+EOF
+chmod +x "$BIN/merge-gate.sh"
+seed_babysit 1 5 0 false null 2 "del($P.babysit.quiet)"
+start=$(dig)
+QT --record --kind babysit --pr 7 --repo "$REPO" --quiet-ok true --freeze-at none --tick-start-digest "$start" 2>/dev/null
+t0=$(date +%s)
+set +e; GATE_SLEEP=30 MONITOR_QUIET_DIGEST_TIMEOUT_S=2 QT --kind babysit --pr 7 --repo "$REPO" --generation g1 2>"$TMP/err"; RC=$?; set -e
+elapsed=$(( $(date +%s) - t0 ))
+[[ $RC -eq 0 && $elapsed -lt 15 ]] || fail "a hung read must emit within the bound (rc=$RC, ${elapsed}s)"
+[[ "$(bget "$B.babysit.quiet.quiet_ok")" == false ]] || fail "a timed-out read must disarm the contract"
+pass "a hung digest read emits within MONITOR_QUIET_DIGEST_TIMEOUT_S"
+
 echo "ALL $PASS PASSED"

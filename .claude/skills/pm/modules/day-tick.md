@@ -23,6 +23,17 @@ if [[ -n "$SWEEP_SH" ]]; then
 fi
 ```
 
+Then take the quiet-tick digest (issue #2459) before anything this tick reads or classifies. D5 records it, so an agent, PR or issue event that lands while the tick runs is outside the contract and the next Monitor tick emits for it. An empty digest only costs quietness:
+
+<!-- test-anchor: pm-day-tick-start-digest -->
+```bash
+DAY_TICK_START_DIGEST=""
+QUIET_SH=$(resolve_script monitor-quiet-tick.sh || true)
+if [ -n "$QUIET_SH" ]; then
+  DAY_TICK_START_DIGEST=$("$QUIET_SH" --print-digest --kind pm-day --repo "$REPO_KEY" 2>/dev/null) || DAY_TICK_START_DIGEST=""
+fi
+```
+
 **D1 — Reconcile and transition.** Run items 1–3 of `monitor-mode.md`'s per-cycle checklist verbatim: process completed subagents and parse exit reports, execute phase transitions per `phase-protocols.md` (including any stalled in `session-state.json`), and run the reviewer-escalation gate for every session PR still on `reviewer == cr`. That checklist owns each step's exact invocation; day mode adds nothing here — this is the same in-turn loop the on-demand path already runs.
 
 Then update the failure streak from this tick's terminal outcomes, in completion order: `merged` resets `failure_streak` to `0`; `blocked` increments it. Only terminal outcomes count — a pipeline still in Phase B is neither.
@@ -209,7 +220,8 @@ case "$IDLE_REASON" in
 esac
 QUIET_SH=$(resolve_script monitor-quiet-tick.sh || true)
 if [ -n "$QUIET_SH" ]; then
-  "$QUIET_SH" --record --kind pm-day --repo "$REPO_KEY" --quiet-ok "$DAY_QUIET_OK" --freeze-at 9 >/dev/null ||
+  "$QUIET_SH" --record --kind pm-day --repo "$REPO_KEY" --quiet-ok "$DAY_QUIET_OK" --freeze-at 9 \
+    --tick-start-digest "${DAY_TICK_START_DIGEST:-}" >/dev/null ||
     echo "pm day: quiet-tick contract not stored — the next Monitor tick wakes the model as before" >&2
 fi
 ```

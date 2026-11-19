@@ -570,10 +570,14 @@ elif [[ -z "$PREFLIGHT_SH" && -z "${SKIP_STATE_READ:-}" ]]; then
 fi
 ```
 
-Re-fetch `GATE_JSON` and `BUNDLE` after pre-flight so that any reviewer or draft-state change made by pre-flight is captured before T3 classifies. Guard the same way as T1 — skip the tick on tooling error:
+Re-fetch `GATE_JSON` and `BUNDLE` after pre-flight so that any reviewer or draft-state change made by pre-flight is captured before T3 classifies. Guard the same way as T1 — skip the tick on tooling error. The quiet-tick digest (issue #2459) is taken first, before the reads this tick classifies on. An event that lands later is then outside it, and the next Monitor tick emits for it instead of staying quiet. An empty digest only costs quietness (T6a):
 
 ```bash
+TICK_START_DIGEST=""
 if [[ -z "${SKIP_STATE_READ:-}" ]]; then
+  if [[ -n "${QUIET_SH:-}" ]]; then
+    TICK_START_DIGEST=$("$QUIET_SH" --print-digest --kind babysit --pr "$PR" 2>/dev/null) || TICK_START_DIGEST=""
+  fi
   GATE_JSON=$("$MERGE_GATE_SH" "$PR"); GATE_EXIT=$?
   if [[ "$GATE_EXIT" != "0" && "$GATE_EXIT" != "1" ]]; then
     TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
@@ -1190,13 +1194,16 @@ FREEZE_AT=9
 if [[ "$CLASS" == waiting-on-bots ]]; then FREEZE_AT=none; fi
 if [[ -n "${QUIET_SH:-}" ]]; then
   "$QUIET_SH" --record --kind babysit --pr "$PR" --quiet-ok "$QUIET_OK" \
-    --blocker-counting "$BLOCKER_COUNTING" --freeze-at "$FREEZE_AT" >/dev/null ||
+    --blocker-counting "$BLOCKER_COUNTING" --freeze-at "$FREEZE_AT" \
+    --tick-start-digest "${TICK_START_DIGEST:-}" >/dev/null ||
     echo "[babysit] quiet-tick contract not stored — the next Monitor tick wakes this skill as before" >&2
 fi
 ```
 
 A failed or missing contract only costs quietness: the shell emits every tick it cannot prove
-unchanged against a current contract (its `tick_count` must match the watcher's).
+unchanged against a current contract (its `tick_count` must match the watcher's). The contract
+stores the digest T1b took before classifying, never a fresh read: a fresh read would absorb an
+event that arrived while this tick ran, and the next ticks would stay quiet over it.
 
 ### T7. Notification decision
 

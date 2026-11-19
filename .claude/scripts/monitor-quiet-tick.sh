@@ -12,23 +12,30 @@
 # (blocker-tick-cap) exactly as before.
 #
 # The model writes the contract at the end of each tick it runs (--record):
-# whether the next unchanged tick may be quiet, plus the input digest this
-# script computes from the same reads the tick classifies on. Without a
-# current contract every tick emits, as before this script existed.
+# whether the next unchanged tick may be quiet, plus the input digest. The
+# tick takes that digest with --print-digest BEFORE it classifies and passes it
+# back as --tick-start-digest, so an event that lands while the tick runs is
+# outside the recorded digest and the next Monitor tick emits for it. Without
+# a current contract every tick emits, as before this script existed.
 #
 # USAGE
 #   monitor-quiet-tick.sh --kind babysit --pr N --generation G [--repo owner/name] [--input-digest D]
 #   monitor-quiet-tick.sh --kind pm-day --repo owner/name --generation G [--input-digest D]
 #   monitor-quiet-tick.sh --record --kind babysit --pr N [--repo owner/name] --quiet-ok true|false
-#       [--blocker-counting true|false] [--widen-at N] [--freeze-at N|none] [--input-digest D]
+#       [--blocker-counting true|false] [--widen-at N] [--freeze-at N|none]
+#       [--tick-start-digest D | --input-digest D]
 #   monitor-quiet-tick.sh --record --kind pm-day --repo owner/name --quiet-ok true|false
-#       [--widen-at N] [--freeze-at N|none] [--input-digest D]
+#       [--widen-at N] [--freeze-at N|none] [--tick-start-digest D | --input-digest D]
 #   monitor-quiet-tick.sh --print-digest --kind babysit|pm-day (--pr N | --repo owner/name)
 #   monitor-quiet-tick.sh --help
 #
-#   --input-digest replaces the shell read with a supplied value. It is for tests
-#   and for a caller that just computed the digest itself; a Monitor loop never
-#   passes it, because a stale value would let a changed tick pass as unchanged.
+#   --tick-start-digest (record only) is the --print-digest value the tick took
+#   before classifying. babysit stores it as is. pm day keeps its external part
+#   and re-reads only the repo-state part, which is mostly this tick's own writes.
+#   An empty value (the tick-start read failed) stores quiet_ok=false.
+#   --input-digest replaces the shell read with a supplied value verbatim. It is
+#   for tests; a Monitor loop never passes it, because a stale value would let a
+#   changed tick pass as unchanged.
 #   For babysit, reads resolve the PR from the working directory's repository, as
 #   the skill's own tick does; --repo scopes session state and must name that same
 #   repository, or the read fails and the tick emits.
@@ -43,7 +50,8 @@
 #   max_blocker_ticks; the freshly computed input digest equals the recorded
 #   one; and the counter write wins its compare-and-set.
 #   Anything else exits 0 (emit): a changed digest, a threshold crossing, a
-#   stale or missing contract, unreadable state, a failed read, a lost write.
+#   stale or missing contract, unreadable state, a failed read, a read slower
+#   than MONITOR_QUIET_DIGEST_TIMEOUT_S seconds (default 120), a lost write.
 #   An emit from a quiet-eligible contract (change, threshold, digest read
 #   failure) also disarms it (quiet_ok=false), so every tick emits until the
 #   model's next tick records a fresh contract — no counter moves while the
@@ -53,19 +61,22 @@
 # RECORD MODE — the model's end-of-tick call.
 #   Stores {input_digest, quiet_ok, tick_count, widen_at, freeze_at,
 #   blocker_counting, recorded_at, quiet_ticks:0} at .prs[N].babysit.quiet or
-#   .repos[R].day.quiet. A failed digest read stores quiet_ok=false and exits 1.
+#   .repos[R].day.quiet. --quiet-ok true with neither --tick-start-digest nor
+#   --input-digest, or a failed repo-state read, stores quiet_ok=false and exits 1.
 #   Defaults: --widen-at 3, --freeze-at 9, --blocker-counting false.
 #
 # INPUT DIGEST (sha256 of a canonical projection, no clock-derived text)
+#   Forms: babysit sha256:<hex>; pm day sha256:<external hex>.<repo-state hex>.
 #   babysit: merge-gate.sh (head, met, merge state, mergeable, human changes
 #     requested, CI counts and blocking conclusions, stale bot changes,
 #     missing[], no-review-override reason, cancelled retry, CodeAnt run),
 #     pr-state.sh --stdout (unresolved threads, new findings, bot states,
 #     check-runs), cr-review-hourly.sh / greptile-budget.sh --check exits,
 #     usage-horizon.sh --check status.
-#   pm-day: .repos[R] and .active_agents with tick bookkeeping stripped, open
-#     PRs by @me (head, updatedAt, merge state, review decision), open issues
-#     (number, updatedAt), credit-budget.sh --check exit, horizon status.
+#   pm-day external: .active_agents with tick bookkeeping stripped, open PRs by
+#     @me (head, updatedAt, merge state, review decision), open issues (number,
+#     updatedAt), credit-budget.sh --check exit, horizon status.
+#   pm-day repo state: .repos[R] with tick bookkeeping stripped.
 #
 # EXIT STATUS
 #   tick:   10 quiet; 0 emit; 2 usage (caller emits — any non-10 means emit)
@@ -77,7 +88,7 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_HELPER="${MONITOR_QUIET_STATE_HELPER:-$SCRIPT_DIR/session-state.sh}"
 
-MODE=tick KIND="" PR="" REPO="" GENERATION="" INPUT_DIGEST=""
+MODE=tick KIND="" PR="" REPO="" GENERATION="" INPUT_DIGEST="" TICK_START_DIGEST=""
 QUIET_OK="" BLOCKER_COUNTING=false WIDEN_AT=3 FREEZE_AT=9
 
 usage() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; }
@@ -89,11 +100,11 @@ while [[ $# -gt 0 ]]; do
     --help|-h) usage; exit 0 ;;
     --record) MODE=record; shift ;;
     --print-digest) MODE=print; shift ;;
-    --kind|--pr|--repo|--generation|--input-digest|--quiet-ok|--blocker-counting|--widen-at|--freeze-at)
+    --kind|--pr|--repo|--generation|--input-digest|--tick-start-digest|--quiet-ok|--blocker-counting|--widen-at|--freeze-at)
       [[ $# -ge 2 ]] || usage_fail "$1 needs a value"
       case "$1" in
         --kind) KIND="$2" ;; --pr) PR="$2" ;; --repo) REPO="$2" ;; --generation) GENERATION="$2" ;;
-        --input-digest) INPUT_DIGEST="$2" ;; --quiet-ok) QUIET_OK="$2" ;;
+        --input-digest) INPUT_DIGEST="$2" ;; --tick-start-digest) TICK_START_DIGEST="$2" ;; --quiet-ok) QUIET_OK="$2" ;;
         --blocker-counting) BLOCKER_COUNTING="$2" ;; --widen-at) WIDEN_AT="$2" ;; --freeze-at) FREEZE_AT="$2" ;;
       esac
       shift 2 ;;
@@ -119,6 +130,15 @@ if [[ "$MODE" == record ]]; then
   [[ "$WIDEN_AT" =~ ^[1-9][0-9]*$ ]] || usage_fail "--widen-at must be a positive integer"
   [[ "$FREEZE_AT" == none || "$FREEZE_AT" =~ ^[1-9][0-9]*$ ]] || usage_fail "--freeze-at must be a positive integer or none"
   [[ "$KIND" == babysit || "$BLOCKER_COUNTING" == false ]] || usage_fail "--blocker-counting applies to --kind babysit only"
+fi
+# An empty --tick-start-digest (the tick-start read failed) is accepted and fails closed in record mode.
+if [[ -n "$TICK_START_DIGEST" ]]; then
+  [[ "$MODE" == record ]] || usage_fail "--tick-start-digest applies to --record only"
+  if [[ "$KIND" == babysit ]]; then
+    [[ "$TICK_START_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || usage_fail "--tick-start-digest must be a babysit --print-digest value"
+  else
+    [[ "$TICK_START_DIGEST" =~ ^sha256:[0-9a-f]{64}\.[0-9a-f]{64}$ ]] || usage_fail "--tick-start-digest must be a pm-day --print-digest value"
+  fi
 fi
 
 state() { if [[ -n "$REPO" ]]; then "$STATE_HELPER" --repo "$REPO" "$@"; else "$STATE_HELPER" "$@"; fi; }
@@ -152,7 +172,7 @@ TMPD=""
 tmpdir() {
   [[ -n "$TMPD" ]] && return 0
   TMPD=$(mktemp -d "${TMPDIR:-/tmp}/monitor-quiet-tick.XXXXXX") || return 1
-  trap 'rm -f "$TMPD"/*.json; rmdir "$TMPD" 2>/dev/null' EXIT
+  trap 'rm -f "$TMPD"/*.json "$TMPD"/digest.out; rmdir "$TMPD" 2>/dev/null' EXIT
 }
 
 # babysit reads, like the skill's own tick, resolve the PR from the working directory's
@@ -200,44 +220,84 @@ babysit_projection() {
       cr_budget: $cr, greptile_budget: $gr, horizon: $hz}'
 }
 
-pm_day_projection() {
+JQ_STRIP='def strip: walk(if type == "object"
+  then del(.last_tick_at, .tick_count, .digest, .digest_streak, .blocker_streak, .quiet, .last_tick_parse_failures)
+  else . end);'
+
+# pm day digest has two parts. The external part (agents, GitHub, budget, horizon) is what a
+# model tick classifies on, so the contract pins it from the tick's start. The repo-state
+# part is mostly the tick's own writes, so the contract reads it at record time (issue #2459).
+pm_day_external_projection() {
   local hz
   tmpdir || return 1
   hz=$(horizon_status) || return 1
-  state --get-json ".repos[\"$REPO\"]" > "$TMPD/repo.json" 2>/dev/null || return 1
   state --get-json '.active_agents' > "$TMPD/agents.json" 2>/dev/null || return 1
   gh pr list --repo "$REPO" --author "@me" --state open --limit 200 \
     --json number,headRefOid,updatedAt,mergeStateStatus,reviewDecision > "$TMPD/prs.json" 2>/dev/null || return 1
   gh issue list --repo "$REPO" --state open --limit 300 --json number,updatedAt > "$TMPD/issues.json" 2>/dev/null || return 1
-  jq -cnS --slurpfile ss "$TMPD/repo.json" --slurpfile ags "$TMPD/agents.json" \
-    --slurpfile ps "$TMPD/prs.json" --slurpfile iss "$TMPD/issues.json" \
-    --arg budget "$(check_rc credit-budget.sh --check)" --arg hz "$hz" '
-    def strip: walk(if type == "object"
-      then del(.last_tick_at, .tick_count, .digest, .digest_streak, .blocker_streak, .quiet, .last_tick_parse_failures)
-      else . end);
-    if ([$ss, $ags, $ps, $iss] | any(length != 1)) or ($ss[0] | type) != "object"
-       or ($ps[0] | type) != "array" or ($iss[0] | type) != "array"
+  jq -cnS --slurpfile ags "$TMPD/agents.json" --slurpfile ps "$TMPD/prs.json" --slurpfile iss "$TMPD/issues.json" \
+    --arg budget "$(check_rc credit-budget.sh --check)" --arg hz "$hz" "$JQ_STRIP"'
+    if ([$ags, $ps, $iss] | any(length != 1)) or ($ps[0] | type) != "array" or ($iss[0] | type) != "array"
     then error("degenerate state or GitHub read") else . end |
-    $ss[0] as $s | $ags[0] as $a | $ps[0] as $p | $iss[0] as $i |
-    {repo: ($s | strip), agents: ($a | strip), prs: ($p | sort_by(.number)), issues: ($i | sort_by(.number)),
+    {agents: ($ags[0] | strip), prs: ($ps[0] | sort_by(.number)), issues: ($iss[0] | sort_by(.number)),
      budget: $budget, horizon: $hz}'
 }
 
+pm_day_state_projection() {
+  tmpdir || return 1
+  state --get-json ".repos[\"$REPO\"]" > "$TMPD/repo.json" 2>/dev/null || return 1
+  jq -cnS --slurpfile ss "$TMPD/repo.json" "$JQ_STRIP"'
+    if ($ss | length) != 1 or ($ss[0] | type) != "object" then error("degenerate state read") else . end |
+    {repo: ($ss[0] | strip)}'
+}
+
+# hex_of PROJECTION — sha256 hex of a projection; fails on an empty one.
+hex_of() {
+  local d
+  [[ -n "$1" ]] || return 1
+  d=$(printf '%s' "$1" | sha256) || return 1
+  [[ "$d" =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s' "$d"
+}
+state_hex() { local p; p=$(pm_day_state_projection) || return 1; hex_of "$p"; }
+
+# Digest forms: babysit sha256:<hex>; pm day sha256:<external hex>.<state hex>.
 compute_digest() {
-  local proj d
-  if [[ "$KIND" == babysit ]]; then proj=$(babysit_projection) || return 1
-  else proj=$(pm_day_projection) || return 1; fi
-  [[ -n "$proj" ]] || return 1
-  d=$(printf '%s' "$proj" | sha256) || return 1
-  [[ -n "$d" ]] || return 1
-  printf 'sha256:%s\n' "$d"
+  local p e s
+  if [[ "$KIND" == babysit ]]; then
+    p=$(babysit_projection) || return 1
+    e=$(hex_of "$p") || return 1
+    printf 'sha256:%s\n' "$e"
+  else
+    p=$(pm_day_external_projection) || return 1
+    e=$(hex_of "$p") || return 1
+    s=$(state_hex) || return 1
+    printf 'sha256:%s.%s\n' "$e" "$s"
+  fi
+}
+
+# bounded_digest — compute_digest with a wall-clock bound. A hung GitHub read must not
+# hold the Monitor loop before it prints: past the bound the read counts as failed, so
+# the tick emits. MONITOR_QUIET_DIGEST_TIMEOUT_S overrides the bound (default 120).
+bounded_digest() {
+  local limit="${MONITOR_QUIET_DIGEST_TIMEOUT_S:-120}" pid wd rc=0
+  [[ "$limit" =~ ^[1-9][0-9]*$ ]] || limit=120
+  tmpdir || return 1
+  compute_digest > "$TMPD/digest.out" & pid=$!
+  ( i=0; while (( i < limit )); do kill -0 "$pid" 2>/dev/null || exit 0; sleep 1; i=$((i + 1)); done
+    kill -KILL "$pid" 2>/dev/null ) & wd=$!   # TERM waits for the subshell's running $(...) to return
+  wait "$pid" || rc=$?
+  kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+  (( rc == 0 )) || return 1
+  [[ -s "$TMPD/digest.out" ]] || return 1
+  cat "$TMPD/digest.out"
 }
 
 # W selects the watcher object inside OBJ: .babysit for a PR, the day object itself for pm day.
 JQ_W='def W: if $kind == "babysit" then .babysit else . end;'
 
 if [[ "$MODE" == print ]]; then
-  compute_digest || { echo "monitor-quiet-tick.sh: input digest unavailable" >&2; exit 1; }
+  bounded_digest || { echo "monitor-quiet-tick.sh: input digest unavailable" >&2; exit 1; }
   exit 0
 fi
 
@@ -248,7 +308,19 @@ if [[ "$MODE" == record ]]; then
   RC=0
   DIGEST="$INPUT_DIGEST"
   if [[ "$QUIET_OK" == true && -z "$DIGEST" ]]; then
-    DIGEST=$(compute_digest) || { DIGEST=""; QUIET_OK=false; RC=1; echo "monitor-quiet-tick.sh: input digest unavailable; storing quiet_ok=false" >&2; }
+    if [[ -z "$TICK_START_DIGEST" ]]; then
+      # A digest read now would absorb any event that arrived after the tick classified,
+      # and the next ticks would stay quiet over it. Without the tick-start digest, fail closed.
+      QUIET_OK=false; RC=1
+      echo "monitor-quiet-tick.sh: no --tick-start-digest supplied; storing quiet_ok=false" >&2
+    elif [[ "$KIND" == babysit ]]; then
+      DIGEST="$TICK_START_DIGEST"
+    elif STATE_HEX=$(state_hex); then
+      DIGEST="${TICK_START_DIGEST%%.*}.$STATE_HEX"
+    else
+      QUIET_OK=false; RC=1
+      echo "monitor-quiet-tick.sh: repo state unreadable; storing quiet_ok=false" >&2
+    fi
   fi
   NOW=$(date -u +%FT%TZ)
   NEW=$(jq -c --arg kind "$KIND" --arg d "$DIGEST" --argjson ok "$QUIET_OK" --argjson bc "$BLOCKER_COUNTING" \
@@ -314,7 +386,7 @@ case "$PRE" in
 esac
 
 DIGEST="$INPUT_DIGEST"
-if [[ -z "$DIGEST" ]]; then DIGEST=$(compute_digest) || disarm "input digest unavailable"; fi
+if [[ -z "$DIGEST" ]]; then DIGEST=$(bounded_digest) || disarm "input digest unavailable"; fi
 RECORDED=$(jq -r --arg kind "$KIND" "$JQ_W"' W.quiet.input_digest' <<<"$OBJ") || emit "recorded digest unreadable"
 [[ "$DIGEST" == "$RECORDED" ]] || disarm "input digest changed"
 
