@@ -123,6 +123,7 @@ CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh)   || true   # optional; degra
 GREPTILE_SH=$(resolve_script greptile-budget.sh)     || true   # optional; degrade gracefully
 PREFLIGHT_SH=$(resolve_script pr-preflight.sh)       || true   # optional; degrade gracefully (#493)
 USAGE_HORIZON_SH=$(resolve_script usage-horizon.sh)  || true   # optional; unresolved holds the `unknown` verdict (#1444)
+QUIET_SH=$(resolve_script monitor-quiet-tick.sh)     || true   # optional; unresolved = every tick emits, as before (#2459)
 PR_AUTHORSHIP_SH=$(resolve_script pr-authorship.sh) || { echo "ERROR: pr-authorship.sh not found (checked all three paths) — babysit authorship gate unavailable" >&2; exit 1; }
 ADMIN_MERGE_SH=$(resolve_script admin-merge.sh)     || { echo "ERROR: admin-merge.sh not found (checked all three paths) — clean-BEHIND recovery unavailable" >&2; exit 1; }
 
@@ -309,7 +310,13 @@ for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/lib/gh-rate-budg
          "${HOME:+$HOME/.claude/scripts/lib/gh-rate-budget.sh}" ".claude/scripts/lib/gh-rate-budget.sh"; do
   if [[ -n "$c" && -x "$c" ]]; then RATE_SH="$c"; break; fi
 done
+QUIET_SH=""
+for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/monitor-quiet-tick.sh}" \
+         "${HOME:+$HOME/.claude/scripts/monitor-quiet-tick.sh}" ".claude/scripts/monitor-quiet-tick.sh"; do
+  if [[ -n "$c" && -x "$c" ]]; then QUIET_SH="$c"; break; fi
+done
 while true; do
+  deadline_tick=false
   delay=$(( MONITOR_CADENCE * 60 ))
   if [[ -n "$RATE_SH" ]]; then
     # Low GitHub allowance (REST or GraphQL, as GitHub reports it) stretches the wait; any
@@ -323,15 +330,34 @@ while true; do
       delay=$(( MONITOR_REVIEW_DEADLINE - now ))
       if (( delay < 0 )); then delay=0; fi
       MONITOR_REVIEW_DEADLINE=0
+      deadline_tick=true
     fi
   fi
   sleep "$delay" || break
+  # Quiet unchanged tick (issue #2459): exit 10 means the digest is unchanged and no
+  # threshold is crossed; the helper advanced the counters, so print nothing. Any other
+  # exit, a missing helper, or the review-deadline tick prints the line as before. The
+  # deadline tick disarms the contract first, so no later tick goes quiet while it is handled.
+  if [[ -n "$QUIET_SH" && "$deadline_tick" != true ]]; then
+    quiet_rc=0
+    "$QUIET_SH" --kind babysit --pr "$PR" --generation "$MONITOR_GENERATION" >/dev/null 2>&1 || quiet_rc=$?
+    if (( quiet_rc == 10 )); then continue; fi
+  elif [[ -n "$QUIET_SH" ]]; then
+    "$QUIET_SH" --disarm --kind babysit --pr "$PR" >/dev/null 2>&1 || true
+  fi
   printf '%s\n' "/babysit-pr $PR --tick --monitor-generation $MONITOR_GENERATION --cadence ${MONITOR_CADENCE}m"
 done
 ```
 
 Each stdout line becomes an out-of-turn chat event. `sleep` comes first because arm mode runs one
-tick immediately. Pass `persistent: true`, capture the returned task ID, and persist it as
+tick immediately. **An unchanged tick prints nothing** (issue #2459): `monitor-quiet-tick.sh`
+recomputes the input digest in the shell and, only against the contract the last model tick
+recorded (T6a), advances `digest_streak`, `blocker_streak`, `tick_count` and `last_tick_at`
+itself. The tick that would widen the cadence, reach `stable-frozen` or reach `--max-iter` is
+always emitted, with the counter left for the model, so backoff and termination fire on the same
+tick as before; a missing contract, a changed digest or any read/write failure emits too. The
+review-deadline tick skips the gate and runs `--disarm` before printing, so no later tick goes
+quiet while that one is being handled. Pass `persistent: true`, capture the returned task ID, and persist it as
 `.prs["$PR"].babysit.monitor_task_id`. The watcher stays session-scoped by design — one that
 outlived its session would be auto-dispatching `/wrap` merges into an empty room.
 
@@ -549,10 +575,14 @@ elif [[ -z "$PREFLIGHT_SH" && -z "${SKIP_STATE_READ:-}" ]]; then
 fi
 ```
 
-Re-fetch `GATE_JSON` and `BUNDLE` after pre-flight so that any reviewer or draft-state change made by pre-flight is captured before T3 classifies. Guard the same way as T1 — skip the tick on tooling error:
+Re-fetch `GATE_JSON` and `BUNDLE` after pre-flight so that any reviewer or draft-state change made by pre-flight is captured before T3 classifies. Guard the same way as T1 — skip the tick on tooling error. The quiet-tick digest (issue #2459) is taken first, before the reads this tick classifies on. An event that lands later is then outside it, and the next Monitor tick emits for it instead of staying quiet. An empty digest only costs quietness (T6a):
 
 ```bash
+TICK_START_DIGEST=""
 if [[ -z "${SKIP_STATE_READ:-}" ]]; then
+  if [[ -n "${QUIET_SH:-}" ]]; then
+    TICK_START_DIGEST=$("$QUIET_SH" --print-digest --kind babysit --pr "$PR" 2>/dev/null) || TICK_START_DIGEST=""
+  fi
   GATE_JSON=$("$MERGE_GATE_SH" "$PR"); GATE_EXIT=$?
   if [[ "$GATE_EXIT" != "0" && "$GATE_EXIT" != "1" ]]; then
     TS=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
@@ -1146,6 +1176,39 @@ fi
 ```
 
 If `BACKOFF_STOP_REASON` is set, pass it to T-END. Otherwise finish T5’s cadence/deadline check. The next Monitor event re-enters tick mode.
+
+### T6a. Quiet-tick contract (issue #2459)
+
+Last step of a tick that continues — after T5's persist and cadence/deadline check, never on a
+T-END path. It tells the Monitor shell whether the next *unchanged* tick can stay quiet. Quiet
+is allowed only where this tick did nothing a repeat would redo: a `waiting-on-bots` wait, or a
+dispatch T4 held under the horizon gate. Never with a dispatch in flight, a `critical` horizon or
+a stop reason. `FREEZE_AT` mirrors T6, which never stops a pending wait at streak 9.
+
+<!-- test-anchor: babysit-pr-t6a-quiet-record -->
+
+```bash
+QUIET_OK=false
+if [[ -z "$BACKOFF_STOP_REASON" && "${DISPATCH_BLOCKING:-0}" != 1 && "${HORIZON_STATUS:-unknown}" != critical ]] &&
+   [[ "$CLASS" == waiting-on-bots || "${DISPATCH_SUPPRESSED:-false}" == true ]]; then
+  QUIET_OK=true
+fi
+BLOCKER_COUNTING=false
+if [[ "$CLASS" == has-recoverable-blockers || "${DISPATCH_SUPPRESSED:-false}" == true ]]; then BLOCKER_COUNTING=true; fi
+FREEZE_AT=9
+if [[ "$CLASS" == waiting-on-bots ]]; then FREEZE_AT=none; fi
+if [[ -n "${QUIET_SH:-}" ]]; then
+  "$QUIET_SH" --record --kind babysit --pr "$PR" --quiet-ok "$QUIET_OK" \
+    --blocker-counting "$BLOCKER_COUNTING" --freeze-at "$FREEZE_AT" \
+    --tick-start-digest "${TICK_START_DIGEST:-}" >/dev/null ||
+    echo "[babysit] quiet-tick contract not stored — the next Monitor tick wakes this skill as before" >&2
+fi
+```
+
+A failed or missing contract only costs quietness: the shell emits every tick it cannot prove
+unchanged against a current contract (its `tick_count` must match the watcher's). The contract
+stores the digest T1b took before classifying, never a fresh read: a fresh read would absorb an
+event that arrived while this tick ran, and the next ticks would stay quiet over it.
 
 ### T7. Notification decision
 

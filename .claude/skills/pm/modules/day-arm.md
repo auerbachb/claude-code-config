@@ -94,11 +94,24 @@ Use the goal in `DAY_JSON` for the first heartbeat, and say when it was carried 
 
 Then arm the `Monitor` with `persistent: true` and description `PM day mode`, sleep-first so the loop's own first tick is the one run inline below:
 
+<!-- test-anchor: pm-day-monitor-loop -->
 ```bash
+QUIET_SH=""
+for c in "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/monitor-quiet-tick.sh}" \
+         "${HOME:+$HOME/.claude/scripts/monitor-quiet-tick.sh}" ".claude/scripts/monitor-quiet-tick.sh"; do
+  if [[ -n "$c" && -x "$c" ]]; then QUIET_SH="$c"; break; fi
+done
 while sleep "$(( DAY_CADENCE_MIN * 60 ))"; do
+  if [[ -n "$QUIET_SH" ]]; then
+    quiet_rc=0
+    "$QUIET_SH" --kind pm-day --repo "$REPO_KEY" --generation "$DAY_GENERATION" >/dev/null 2>&1 || quiet_rc=$?
+    if (( quiet_rc == 10 )); then continue; fi
+  fi
   printf '%s\n' "/pm day --tick --day-generation $DAY_GENERATION --cadence ${DAY_CADENCE_MIN}m"
 done
 ```
+
+**An unchanged tick prints nothing** (issue #2459). `monitor-quiet-tick.sh` exits `10` only when the shell-computed input digest matches the contract D5 recorded and the next streak stays inside the current cadence tier and below `stable-frozen`. It then advances `digest_streak`, `tick_count` and `last_tick_at` itself. Every other case prints the line as before: a changed digest, the tick that would widen the cadence or reach streak 9, a stale or missing contract, a park or stop, or any read/write failure.
 
 Backoff (issue #2445): `.claude/scripts/lib/gh-rate-budget.sh --interval <seconds>` prints the seconds to sleep, the same number unless GitHub reports the allowance low; the tick may use it for the effective cadence and keeps the bare value when it prints nothing numeric (`.claude/reference/gh-rate-budget.md`).
 
