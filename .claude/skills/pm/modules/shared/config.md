@@ -1,5 +1,5 @@
 <!-- pm-routing:begin -->
-Route `shared:config`. Create `.claude/pm-config.md` when a cold start finds it absent. Refresh its auto-generated sections when the start gate of a cold or resumed `/pm` finds it present (automatic mode), or when the operator asks in chat (`/pm refresh config`, explicit mode with confirmation; it triggers only when the phrase is the whole argument after mode tokens). Resolve `PM_CONFIG_GET` from `/pm` Step 0; if it is empty, stop with `ERROR: pm-config-get.sh not found (checked all three paths) — PM config unavailable`.
+Route `shared:config`. Create `.claude/pm-config.md` when a cold start finds it absent. Refresh its auto-generated sections when the start gate of a cold or resumed `/pm` finds it present (automatic mode), or when the operator asks in chat (`/pm refresh config`, explicit mode with confirmation; it triggers only when the phrase is the whole argument after the day, cleanup, window and run-mode tokens (so `/pm speed refresh config` is an explicit refresh)). Resolve `PM_CONFIG_GET` from `/pm` Step 0; if it is empty, stop with `ERROR: pm-config-get.sh not found (checked all three paths) — PM config unavailable`.
 <!-- pm-routing:end -->
 
 ### Config procedure (shared:config)
