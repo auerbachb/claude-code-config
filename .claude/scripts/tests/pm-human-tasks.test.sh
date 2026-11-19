@@ -76,6 +76,8 @@ case "\$verb" in
     if [ "\$rc" -ne 0 ]; then
       case "\$rc" in
         3) echo "owner-task: acme/w is public and no private bucket is set; nothing written" >&2 ;;
+        2) echo "owner-task: --why must be REASON: free text, with REASON one of: sign-in legal-agreement payment-detail secret-value physical-device judgment-call" >&2 ;;
+        5) echo "owner-task: secret refused: what looks like \$what" >&2 ;;
         *) echo "owner-task: could not write the task to acme/w#9" >&2 ;;
       esac
       exit "\$rc"
@@ -182,6 +184,46 @@ check_eq "not saved: owner-task.sh exit carried" 3 "$rc"
 check_contains "not saved: result" "RESULT=not_saved EXIT=3" "$out"
 check_contains "not saved: line names the item" "LINE=not saved to the human-task list: Accept the Vercel team invite" "$out"
 check_contains "not saved: line names why" "no private bucket is set" "$out"
+
+# A reason token outside the six: owner-task.sh add refuses it (exit 2) and the
+# result is "not saved" with its reason, never a crash.
+reset; echo 2 > "$TMP/add-rc"
+out="$("$SCRIPT" save --owner-action "OWNER_ACTION: fill: Fill in X in the config — only he has it" --source "#4")"; rc=$?
+check_eq "unknown reason: exit 2" 2 "$rc"
+check_contains "unknown reason: not saved" "RESULT=not_saved EXIT=2" "$out"
+check_contains "unknown reason: line names owner-task's reason" "REASON one of" "$out"
+
+# Secrets: a token-shaped value is refused before anything runs, and appears
+# nowhere in stdout or stderr (built at runtime so no token sits in the file).
+TOK="ghp_$(printf 'a1B2c3D4e5F6%.0s' 1 2 3)"
+for form in what owner-action source; do
+  reset
+  case "$form" in
+    what) args=(--what "Set GITHUB_TOKEN to $TOK" --why "secret-value: x" --source "#7") ;;
+    owner-action) args=(--owner-action "OWNER_ACTION: secret-value: Set GITHUB_TOKEN to $TOK — only he has it" --source "#7") ;;
+    source) args=(--what "Set GITHUB_TOKEN" --why "secret-value: x" --source "$TOK") ;;
+  esac
+  rc=0; all="$("$SCRIPT" save "${args[@]}" 2>&1)" || rc=$?
+  check_eq "secret ($form): exit 5" 5 "$rc"
+  check_contains "secret ($form): not saved" "RESULT=not_saved EXIT=5" "$all"
+  check_absent "secret ($form): token nowhere in stdout or stderr" "$TOK" "$all"
+  check_absent "secret ($form): token body nowhere either" "a1B2c3D4" "$all"
+  check_eq "secret ($form): owner-task.sh never called" "" "$(cat "$TMP/calls.log" 2>/dev/null)"
+done
+# owner-task.sh's own checker refuses (exit 5): neither the text nor its error
+# message is echoed.
+reset; echo 5 > "$TMP/add-rc"
+rc=0; all="$("$SCRIPT" save --what "Plain-looking SENTINELTEXT" --why "secret-value: OTHERSENTINEL" --source "#7" 2>&1)" || rc=$?
+check_eq "owner-task exit 5: exit carried" 5 "$rc"
+check_absent "owner-task exit 5: what never echoed" "SENTINELTEXT" "$all"
+check_absent "owner-task exit 5: why never echoed" "OTHERSENTINEL" "$all"
+check_contains "owner-task exit 5: names the reason" "secret refused" "$all"
+# Without the screening library, task text is withheld from not-saved lines.
+reset; echo 3 > "$TMP/add-rc"
+mkdir -p "$TMP/lone"; cp "$SCRIPT" "$TMP/lone/pm-ht.sh"
+out="$(HOME="$TMP/nohome" "$TMP/lone/pm-ht.sh" save --what "UNSCREENEDTEXT" --why "sign-in: x" --source "#8")"
+check_absent "no checker: text withheld" "UNSCREENEDTEXT" "$out"
+check_contains "no checker: says why" "not screened for secrets" "$out"
 
 # Not saved: the duplicate check could not read the list; nothing is added.
 reset; echo 4 > "$TMP/list-rc"

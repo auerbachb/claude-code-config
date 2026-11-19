@@ -33,7 +33,7 @@ printf '%s\n' "$PM_HT_LINE"
 unset PM_HT_ACTION PM_HT_WHAT PM_HT_WHY PM_HT_OUT   # the next item binds its own
 ```
 
-Print each `LINE=` as is, beside the item in the report: `RESULT=saved` is the receipt (`human task ht-… saved: … (<reason>)`), `RESULT=skipped` says it is already on the list (same what and source, done ones included), `RESULT=not_saved` names why it was not saved (exit 3: this repo is public and no private bucket is set), and `RESULT=unconfirmed` means a write may have landed but could not be checked, so it is never saved again blindly. The item itself is still stated in chat whatever the result; a failed save never stops ranking, dispatch or monitoring.
+Print each `LINE=` as is, beside the item in the report: `RESULT=saved` is the receipt (`human task ht-… saved: … (<reason>)`), `RESULT=skipped` says it is already on the list (same what and source, done ones included), `RESULT=not_saved` names why it was not saved (exit 3: this repo is public and no private bucket is set; exit 5: a field looked like a secret, and the line names the field, never the text), and `RESULT=unconfirmed` means a write may have landed but could not be checked, so it is never saved again blindly. The item itself is still stated in chat whatever the result; a failed save never stops ranking, dispatch or monitoring.
 
 **Count before the report.** Run once per report: the cold-start presentation (1B.5), the resume presentation (1A.4) and a due progress report (3.3a). Print `PM_HT_COUNT_LINE` as one line in that report, after any saves this turn so the count includes them.
 

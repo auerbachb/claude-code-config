@@ -35,7 +35,12 @@
 #                                       the duplicate check could not read the
 #                                       list, 7 when owner-task.sh is missing,
 #                                       2 when an --owner-action line names no
-#                                       reason: nothing written, none guessed)
+#                                       reason: nothing written, none guessed;
+#                                       5 when any field looks like a secret,
+#                                       here or in owner-task.sh: the LINE then
+#                                       names the field, never the text)
+#          Task text appears in a LINE only after every field passed the
+#          desk/bin/lib/secrets.sh screen; without that library it is withheld.
 #          then LINE=<the receipt or not-saved line /pm prints as is>.
 #          An add that exits 1 (ambiguous write) is followed by one more list:
 #          when the task is now there it is reported as saved, never re-added;
@@ -102,7 +107,7 @@ cmd_count() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo) [ $# -ge 2 ] || die_usage "--repo needs a value"; repo="$2"; shift 2 ;;
-      *) die_usage "count: unknown argument '$1'" ;;
+      *) die_usage "count: unknown argument $(arg_name "$1")" ;;
     esac
   done
   where="${repo:-this repo}"
@@ -123,9 +128,48 @@ cmd_count() {
   printf 'LINE=Human tasks: %s open for %s\n' "$n" "$where"
 }
 
+# Name an unknown argument only when it is a flag: a stray value may be task
+# text, and task text is never echoed before it is screened.
+arg_name() { case "$1" in -*) printf "'%s'" "$(one_line "$1" | cut -c1-40)" ;; *) printf '(a value)' ;; esac; }
+
+# ---- secret screen --------------------------------------------------------------
+# The same checker owner-task.sh uses (desk/bin/lib/secrets.sh). Task text is
+# printed in a LINE only after every field passed it: a refused or unscreened
+# value never reaches /pm's report, chat or logs.
+SECRETS_STATE=""  # "" not tried, ok, missing
+load_secret_checker() {
+  [ -n "$SECRETS_STATE" ] && { [ "$SECRETS_STATE" = ok ]; return; }
+  local self dir cand
+  self="${BASH_SOURCE[0]}"
+  while [ -L "$self" ]; do
+    dir="$(cd "$(dirname "$self")" && pwd)"
+    self="$(readlink "$self")"
+    case "$self" in /*) ;; *) self="$dir/$self" ;; esac
+  done
+  dir="$(cd "$(dirname "$self")" && pwd)"
+  for cand in "${PM_HT_SECRETS_LIB:-}" "$dir/../../desk/bin/lib/secrets.sh" \
+              "${HOME:+$HOME/.claude/skills-worktree/desk/bin/lib/secrets.sh}"; do
+    if [ -n "$cand" ] && [ -r "$cand" ]; then
+      # shellcheck source=/dev/null
+      . "$cand"
+      SECRETS_STATE=ok
+      return 0
+    fi
+  done
+  SECRETS_STATE=missing
+  return 1
+}
+
+# looks_secret VALUE -> 0 when VALUE looks like a credential.
+looks_secret() { ( hq__secret_class "$1" ) >/dev/null 2>&1; }
+
+SHOW_TEXT=0  # 1 once what/why/source passed the screen
+WITHHELD="not screened for secrets"
+shown() { if [ "$SHOW_TEXT" -eq 1 ]; then one_line "$1"; else printf '(task text withheld: %s)' "$WITHHELD"; fi; }
+
 not_saved() { # CODE WHAT REASON
   printf 'RESULT=not_saved EXIT=%s\n' "$1"
-  printf 'LINE=not saved to the human-task list: %s — %s\n' "$(one_line "$2")" "$(one_line "$3")"
+  printf 'LINE=not saved to the human-task list: %s — %s\n' "$(shown "$2")" "$(one_line "$3")"
   return "$1"
 }
 
@@ -138,11 +182,27 @@ cmd_save() {
       --source) [ $# -ge 2 ] || die_usage "--source needs a value"; source="$2"; shift 2 ;;
       --owner-action) [ $# -ge 2 ] || die_usage "--owner-action needs a value"; action="$2"; shift 2 ;;
       --repo) [ $# -ge 2 ] || die_usage "--repo needs a value"; repo="$2"; shift 2 ;;
-      *) die_usage "save: unknown argument '$1'" ;;
+      *) die_usage "save: unknown argument $(arg_name "$1")" ;;
     esac
   done
+  [ -z "$action" ] || [ -z "$what$why" ] || die_usage "save: --owner-action replaces --what and --why"
+  # Screen every field before any of it can be printed or sent anywhere.
+  if load_secret_checker; then
+    local field
+    for field in owner-action what why source; do
+      case "$field" in
+        owner-action) rest="$action" ;; what) rest="$what" ;; why) rest="$why" ;; source) rest="$source" ;;
+      esac
+      if [ -n "$rest" ] && looks_secret "$rest"; then
+        WITHHELD="refused as a secret"
+        not_saved 5 "" "secret refused: --$field looks like a credential; nothing written (name the variable or account, never its value)"
+        return $?
+      fi
+    done
+    SHOW_TEXT=1
+  fi
+  rest=""
   if [ -n "$action" ]; then
-    [ -z "$what" ] && [ -z "$why" ] || die_usage "save: --owner-action replaces --what and --why"
     action="$(printf '%s' "$action" | sed -E 's/^[[:space:]]*OWNER_ACTION[:=][[:space:]]*//')"
     reason="$(printf '%s' "$action" | sed -nE 's/^([a-z-]+):[[:space:]]*.*$/\1/p')"
     if [ -z "$reason" ]; then
@@ -196,6 +256,12 @@ cmd_save() {
       printf 'LINE=human task %s saved: %s (%s)\n' "$id" "$(one_line "$what")" "${why%%:*}"
       return 0
     fi
+  fi
+  if [ "$rc" -eq 5 ]; then
+    # owner-task.sh's own checker refused it: never echo the text or its error.
+    SHOW_TEXT=0; WITHHELD="refused as a secret"
+    not_saved 5 "" "secret refused by owner-task.sh; nothing written (name the variable or account, never its value)"
+    return $?
   fi
   err="$(one_line "${err#owner-task: }")"
   not_saved "$rc" "$what" "${err:-owner-task.sh add failed} (owner-task.sh exit $rc)"
