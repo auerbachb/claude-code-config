@@ -50,7 +50,11 @@ python3 -I .claude/skills/infra-cost-audit/audit.py \
 ```
 
 Pass the last reviewed snapshot with `--baseline`. A cost share is compared
-only when the provider scope and the mapped project are unchanged. A snapshot is private and
+only when the provider scope and the mapped project are unchanged and the
+billing periods are alike: both complete, or both partial with elapsed lengths
+within one day. Each snapshot records its per-provider periods; Railway's
+calendar month stands in for its billing period. The report is printed before
+the snapshot is written. A snapshot is private and
 cannot overwrite an existing file. `--month YYYY-MM` selects a GitHub and
 Railway month; Vercel currently reports its active billing window, so a run
 for an earlier month reports Vercel usage and preview volume unavailable. Run
@@ -70,7 +74,9 @@ from PATH. A missing row does not prove zero usage.
   The billed amounts shown by the CLI are not invoice totals. The
   [project API](https://vercel.com/docs/rest-api/projects/find-a-project-by-id-or-name)
   verifies the pinned ID, name and repository link before reporting the build
-  machine and whether the dashboard ignore command is configured.
+  machine and whether the dashboard ignore command is configured. Only the
+  tier names `standard`, `enhanced` and `turbo` classify; any other reported
+  value is kept as `machine_reported` with the tier unknown.
 - **Preview volume:** the [deployment list](https://vercel.com/docs/rest-api/deployments/list-deployments)
   supplies preview deployments; GitHub supplies the default-branch merge count
   for the same interval. Preview deployments are a volume measure, not charged
@@ -99,7 +105,9 @@ suppresses its finding; independent findings still appear.
 By default the report shows an issue preview, or the existing open issue
 that should receive attention. Existing audit markers, configured related
 issue numbers, and related open issue titles prevent new filings. An
-incomplete issue list prevents filing. If the operator requests filing,
+incomplete issue list prevents filing. The preview needs no private
+destination, and a failed GitHub check keeps the preview with its dedup
+status marked unavailable. If the operator requests filing,
 pass `--file-issues` and set `allow_filing` on the intended private repositories.
 Run from one host using one private config. Each repository receives at most one
 combined issue; the audit never edits or closes an existing issue.

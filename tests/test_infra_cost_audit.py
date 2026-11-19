@@ -38,6 +38,8 @@ class Fixture:
         self.preview_target = None
         self.merge_count = 5
         self.next_page = None
+        self.machine = "turbo"
+        self.issue_list_fails = False
 
     def json(self, tool, *args, body=None):
         self.calls.append((tool, args, body))
@@ -64,7 +66,7 @@ class Fixture:
                             {"name": "Build Minutes", "pricingQuantity": 180, "pricingUnit": "USD", "billedCost": 3}]}]}}
         if tool == "vercel" and args[1] == "/v9/projects/prj_a":
             org, repo = self.vercel_link.split("/")
-            return {"id": "prj_a", "name": "app-web", "resourceConfig": {"buildMachineType": "turbo"},
+            return {"id": "prj_a", "name": "app-web", "resourceConfig": {"buildMachineType": self.machine},
                     "link": {"type": "github", "org": org, "repo": repo},
                     "commandForIgnoringBuildStep": None}
         if tool == "vercel" and args[1].startswith("/v7/deployments?"):
@@ -75,6 +77,8 @@ class Fixture:
         if tool == "gh" and args[:2] == ("repo", "view"):
             return {"nameWithOwner": REPO, "defaultBranchRef": {"name": "main"}, "isPrivate": self.private}
         if tool == "gh" and args[:2] == ("issue", "list"):
+            if self.issue_list_fails:
+                raise m.Unavailable("gh request failed")
             return copy.deepcopy(self.issues)
         if tool == "gh" and args[:3] == ("api", "--method", "POST"):
             assert args[3] == "repos/owner/app/issues"
@@ -144,6 +148,43 @@ class AuditTest(unittest.TestCase):
         codes = {x["code"] for x in self.collect(f, baseline=old)["repositories"][0]["findings"]}
         self.assertNotIn("vercel_cost_share_jump", codes)
         self.assertNotIn("railway_cost_share_jump", codes)
+
+    def test_cost_share_requires_a_like_billing_period(self):
+        f = Fixture()
+        old = self.collect(f)
+        old["observed_at"] = "2026-10-31T23:00:00Z"
+        row = old["repositories"][0]
+        row["github_actions"]["data"]["cost_share"]["share"] = "0.1"
+        # A completed baseline month never compares with a month-to-date run.
+        old["provider_periods"]["github"]["complete"] = True
+        codes = {x["code"] for x in self.collect(f, baseline=old)["repositories"][0]["findings"]}
+        self.assertNotIn("github_cost_share_jump", codes)
+        # Two partial windows of different length do not compare either.
+        old["provider_periods"]["github"].update(complete=False, elapsed_days="30")
+        codes = {x["code"] for x in self.collect(f, baseline=old)["repositories"][0]["findings"]}
+        self.assertNotIn("github_cost_share_jump", codes)
+        # A baseline without recorded periods is not comparable.
+        del old["provider_periods"]
+        codes = {x["code"] for x in self.collect(f, baseline=old)["repositories"][0]["findings"]}
+        self.assertNotIn("github_cost_share_jump", codes)
+
+    def test_unrecognized_machine_value_is_reported_not_classified(self):
+        f = Fixture()
+        f.machine = "14cpu-28gb"
+        r = self.collect(f)["repositories"][0]
+        data = r["vercel_settings"]["data"]
+        self.assertIsNone(data["machine"])
+        self.assertEqual(data["machine_reported"], "14cpu-28gb")
+        self.assertNotIn("vercel_premium_machine", {x["code"] for x in r["findings"]})
+
+    def test_preview_survives_a_failed_github_check_but_filing_does_not(self):
+        f = Fixture()
+        f.issue_list_fails = True
+        plan = self.collect(f)["repositories"][0]["filing"]["data"]
+        self.assertEqual(plan["decision"], "preview")
+        self.assertEqual(plan["dedup"]["status"], "unavailable")
+        self.assertEqual(self.collect(f, apply=True)["repositories"][0]["filing"]["status"], "unavailable")
+        self.assertFalse(f.posts())
 
     def test_railway_receives_the_requested_month_label(self):
         f = Fixture()

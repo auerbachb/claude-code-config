@@ -258,13 +258,19 @@ def vercel_project(run, settings, row):
     machine = resources.get("buildMachineType") if isinstance(resources, dict) else None
     if machine is None:
         machine = response.get("buildMachineType")
-    if not isinstance(machine, str) or machine not in {"standard", "enhanced", "turbo"}:
-        machine = None
+    reported = machine if isinstance(machine, str) and machine else None
+    # Only documented tier names classify. Any other reported value (for example a
+    # hardware form) stays visible as reported, with the tier left unknown rather
+    # than read as standard.
+    machine = reported if reported in {"standard", "enhanced", "turbo"} else None
     ignore = response.get("commandForIgnoringBuildStep")
     has_ignore = None
     if "commandForIgnoringBuildStep" in response and (ignore is None or isinstance(ignore, str)):
         has_ignore = bool(ignore and ignore.strip())
-    return {"machine": machine, "dashboard_ignore_configured": has_ignore}
+    out = {"machine": machine, "dashboard_ignore_configured": has_ignore}
+    if reported is not None and machine is None:
+        out.update(machine_reported=reported, machine_reason="unrecognized Vercel build machine value; tier unknown")
+    return out
 
 
 def vercel_cost_unit(data):
@@ -447,11 +453,38 @@ def provider_projects(row):
             "github": row["repo"], "railway": row.get("railway")}
 
 
-def baseline_share(baseline, provider, scope, row, cost, current_at):
+def period_window(start, end, now):
+    elapsed = Decimal(str((min(now, end) - start).total_seconds())) / 86400
+    return {"from": utc(start), "to": utc(end), "elapsed_days": elapsed, "complete": now >= end}
+
+
+def month_window(month, now):
+    year, mon = map(int, month.split("-"))
+    start = dt.datetime(year, mon, 1, tzinfo=dt.timezone.utc)
+    end = dt.datetime(year + mon // 12, mon % 12 + 1, 1, tzinfo=dt.timezone.utc)
+    return period_window(start, end, now)
+
+
+def periods_compatible(old, new):
+    # observed_at dates the collection, not the billed interval. Compare two
+    # completed periods, or two partial periods with the same elapsed length.
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return False
+    if old.get("complete") is not new.get("complete") or not isinstance(new.get("complete"), bool):
+        return False
+    if new["complete"]:
+        return True
+    return abs(num(old.get("elapsed_days")) - num(new.get("elapsed_days"))) <= 1
+
+
+def baseline_share(baseline, provider, scope, row, cost, current_at, periods=None):
     if not baseline or not scope or obj(baseline.get("provider_scopes", {})).get(provider) != scope:
         return None
     repo, project = row["repo"], provider_projects(row)[provider]
     if baseline.get("schema") != SCHEMA or date(baseline.get("observed_at")) >= current_at:
+        return None
+    if not periods_compatible(obj(baseline.get("provider_periods", {})).get(provider),
+                              obj(periods or {}).get(provider)):
         return None
     previous = [x for x in seq(baseline.get("repositories")) if isinstance(x, dict) and x.get("repo") == repo]
     if len(previous) != 1 or not project:
@@ -466,7 +499,7 @@ def baseline_share(baseline, provider, scope, row, cost, current_at):
     return prev if prev <= 1 else None
 
 
-def findings(row, evidence, limits, baseline, scopes, now):
+def findings(row, evidence, limits, baseline, scopes, now, periods=None):
     result = []
     settings = evidence["vercel_settings"]
     if settings["status"] == "ok":
@@ -487,7 +520,7 @@ def findings(row, evidence, limits, baseline, scopes, now):
         if not isinstance(cost, dict) or cost.get("share") is None:
             continue
         try:
-            old_share = baseline_share(baseline, provider, scope, row, cost, now)
+            old_share = baseline_share(baseline, provider, scope, row, cost, now, periods)
         except Unavailable:
             old_share = None
         if old_share is not None and cost["share"] - old_share >= num(limits.get("share_jump", "0.15")):
@@ -518,8 +551,15 @@ def audit(run, cfg, month, now, baseline, file_issues):
         "github": fingerprint("github", github["kind"] + ":" + github["account"]) if gb["status"] == "ok" else None,
         "railway": fingerprint("railway", railway["workspace"]) if rw["status"] == "ok" else None,
     }
+    # Railway's period starts in the requested month; that calendar month is the alignment proxy.
+    periods = {
+        "vercel": period_window(vu["data"][2], vu["data"][3], now) if vu["status"] == "ok" else None,
+        "github": month_window(month, now) if gb["status"] == "ok" else None,
+        "railway": month_window(month, now) if rw["status"] == "ok" else None,
+    }
     report = {"schema": SCHEMA, "observed_at": utc(now), "github_railway_month": month,
-              "provider_scopes": scopes, "filing_enabled": file_issues, "repositories": []}
+              "provider_scopes": scopes, "provider_periods": periods,
+              "filing_enabled": file_issues, "repositories": []}
     for row in cfg["repositories"]:
         name = row["repo"]
         out = {"repo": name, "provider_projects": provider_projects(row)}
@@ -538,7 +578,7 @@ def audit(run, cfg, month, now, baseline, file_issues):
                           if rw["status"] == "ok" and row.get("railway") else
                           {"status": "unavailable", "reason": "Railway project not configured"}
                           if not row.get("railway") else rw)
-        out["findings"] = findings(row, out, cfg.get("thresholds", {}), baseline, scopes, now)
+        out["findings"] = findings(row, out, cfg.get("thresholds", {}), baseline, scopes, now, periods)
         out["filing"] = (unavailable(lambda: issue_plan(run, row, out["findings"], file_issues))
                          if out["findings"] else {"status": "not_needed"})
         report["repositories"].append(out)
@@ -572,6 +612,17 @@ def issue_plan(run, row, items, apply):
     body = issue_body(items)
     if apply and not row.get("allow_filing"):
         return {"decision": "filing_not_allowed_for_repo"}
+    if apply:
+        return issue_checks(run, row, name, title, body, apply)
+    # A preview is built locally; a failed GitHub check must not hide it.
+    try:
+        return issue_checks(run, row, name, title, body, apply)
+    except Unavailable as exc:
+        return {"decision": "preview", "title": title, "body": body,
+                "dedup": {"status": "unavailable", "reason": str(exc)}}
+
+
+def issue_checks(run, row, name, title, body, apply):
     repo = obj(run.json("gh", "repo", "view", name, "--json", "nameWithOwner,isPrivate"))
     if str(repo.get("nameWithOwner", "")).lower() != name.lower():
         raise Unavailable("cannot verify the GitHub filing destination")
@@ -664,9 +715,12 @@ def main(argv=None):
         with tempfile.TemporaryDirectory(prefix="infra-cost-audit-") as tmp:
             report = audit(Runner(cfg.get("tools", {}), tmp), cfg, month, now, baseline, args.file_issues)
         output = json.dumps(report, indent=2, default=str) + "\n"
+        # Print first: issues may already be filed, so a failed snapshot write
+        # must not hide the report that names them.
+        sys.stdout.write(output)
+        sys.stdout.flush()
         if args.snapshot:
             write_snapshot(args.snapshot, output)
-        sys.stdout.write(output)
         return 0
     except (OSError, Unavailable, RecursionError) as exc:
         message = str(exc) if isinstance(exc, Unavailable) else "local audit unavailable"
