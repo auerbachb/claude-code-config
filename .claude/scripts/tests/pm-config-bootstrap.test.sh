@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # catalog: tests — Verifies the /pm bootstrap publish never replaces a config that appears after the absence probe
-# covers: .claude/skills/pm/modules/shared/config.md .claude/skills/pm/modules/rank/load.md .claude/scripts/tests/lib/skill-bash.sh
+# covers: .claude/skills/pm/modules/shared/config.md .claude/skills/pm/modules/rank/load.md .claude/scripts/tests/lib/skill-bash.sh .claude/pm-config.md
 set -uo pipefail
 
 test_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
