@@ -56,6 +56,7 @@ Exit codes: 0 ok, 1 changed (verify-unchanged only), 2 usage/input error.
 """
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -143,13 +144,76 @@ def checkout_top(cwd):
 def read_bytes(top, rel):
     """Read a corpus file, refusing any path that now resolves outside the
     checkout (a file swapped for an external symlink after inventory)."""
-    real = os.path.realpath(os.path.join(top, rel))
-    if not inside(top, real):
+    if is_env_file(rel):
+        die("%s is an environment file; it is never read" % rel)
+    try:
+        st, data = open_in_checkout(top, rel, read=True)
+    except EscapeError:
         die("%s now resolves outside the checkout; restart the audit" % rel)
-    data = read_regular(real)
+    except OSError as exc:
+        die("cannot read %s: %s" % (rel, exc))
     if data is None:
         die("%s is no longer a regular file; restart the audit" % rel)
     return data
+
+
+class EscapeError(Exception):
+    """A path component is a symlink or not a directory: the walk would leave
+    the checkout (or a parent was swapped mid-run)."""
+
+
+def open_in_checkout(top, rel, read=False):
+    """Walk rel from a descriptor on the checkout root, one component at a
+    time, never following a symlink in any component. Returns (lstat result
+    of the leaf, bytes or None). Bytes are read only when read=True and the
+    leaf is a regular, non-environment file, opened non-blocking with
+    O_NOFOLLOW on the descriptor the check used, so no swap between check and
+    open can redirect it. Raises EscapeError for a symlinked or non-directory
+    parent, OSError (FileNotFoundError) when the path is missing."""
+    parts = [x for x in rel.split("/") if x not in ("", ".")]
+    if not parts or ".." in parts:
+        raise EscapeError(rel)
+    dflags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(top, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        for part in parts[:-1]:
+            try:
+                nfd = os.open(part, dflags, dir_fd=fd)
+            except OSError as exc:
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise EscapeError(rel)
+                raise
+            os.close(fd)
+            fd = nfd
+        leaf = parts[-1]
+        st = os.stat(leaf, dir_fd=fd, follow_symlinks=False)
+        if not read or not stat.S_ISREG(st.st_mode) or is_env_file(leaf):
+            return st, None
+        try:
+            lfd = os.open(leaf, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0),
+                          dir_fd=fd)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                return st, None
+            raise
+        try:
+            if not stat.S_ISREG(os.fstat(lfd).st_mode):
+                return st, None
+            return st, read_fd(lfd)
+        finally:
+            os.close(lfd)
+    finally:
+        os.close(fd)
+
+
+def read_fd(fd):
+    chunks = []
+    while True:
+        b = os.read(fd, 1 << 20)
+        if not b:
+            break
+        chunks.append(b)
+    return b"".join(chunks)
 
 
 def read_regular(path):
@@ -160,13 +224,7 @@ def read_regular(path):
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             return None
-        chunks = []
-        while True:
-            b = os.read(fd, 1 << 20)
-            if not b:
-                break
-            chunks.append(b)
-        return b"".join(chunks)
+        return read_fd(fd)
     finally:
         os.close(fd)
 
@@ -570,11 +628,19 @@ def cmd_pairs(args):
 # ---------------------------------------------------------------- read-only check
 
 def path_digest(full, top=None):
-    """Digest one path without following it out of the checkout: a symlink is
-    hashed by its target string, a special file (FIFO, socket, device) and any
-    .env file by metadata only, never opened. None for a directory."""
+    """Digest one path without following anything out of the checkout. With
+    top, the path is walked from a checkout descriptor (no symlinked parent is
+    ever followed); a leaf symlink is hashed by its target string; special
+    files (FIFO, socket, device) and environment files by metadata only, never
+    opened. None for a directory."""
+    if top is None:
+        top, rel = os.path.dirname(full) or ".", os.path.basename(full)
+    else:
+        rel = os.path.relpath(full, top)
     try:
-        st = os.lstat(full)
+        st, data = open_in_checkout(top, rel, read=True)
+    except EscapeError:
+        return "outside:parent-is-not-a-real-directory"
     except OSError:
         return "missing"
     if stat.S_ISDIR(st.st_mode):
@@ -585,18 +651,6 @@ def path_digest(full, top=None):
         except OSError:
             return "link:unreadable"
     meta = "meta:%o:%d:%d" % (st.st_mode, st.st_size, st.st_mtime_ns)
-    if not stat.S_ISREG(st.st_mode) or is_env_file(full):
-        return meta
-    real = os.path.realpath(full)
-    if is_env_file(real):
-        return meta
-    if top is not None and not inside(top, real):
-        # A parent directory now links out of the checkout: never read it.
-        return "outside:" + meta
-    try:
-        data = read_regular(real)
-    except OSError:
-        return "missing"
     return meta if data is None else hashlib.sha256(data).hexdigest()
 
 
@@ -724,7 +778,7 @@ def validate(f, snap):
     reason = f.get("reason")
     if not isinstance(reason, str) or not reason.strip():
         errs.append("reason is required")
-    elif re.search("[\r\n\v\f\x85\u2028\u2029]", reason.strip()) or len(reason) > REASON_MAX:
+    elif re.search("[\r\n\v\f\x85\u2028\u2029]", reason) or len(reason) > REASON_MAX:
         errs.append("reason must be one line of at most %d characters" % REASON_MAX)
     if act in ("merge", "move") and not str(f.get("target") or "").strip():
         errs.append("%s needs a target" % act)
@@ -820,16 +874,12 @@ def cmd_report(args):
             f["start"] = int(f["start"])
             valid.append(f)
 
-    # A level-6/7 finding counts only when its pair has a "reviewed" coverage
-    # line; otherwise it is listed as unreviewed and kept out of tallies and
+    # A level-6/7 finding counts only when its pair is a candidate pair the
+    # report lists as reviewed (in a --pairs file and with a "reviewed"
+    # coverage line); otherwise it is listed apart and kept out of tallies and
     # filing.
-    cov_rows = read_jsonl(args.coverage)
-    reviewed_pairs = set()
-    for r in cov_rows:
-        if isinstance(r, dict) and r.get("status") == "reviewed":
-            pr, rl = r.get("pair"), norm_level(r.get("level"))
-            if rl and isinstance(pr, list) and len(pr) == 2 and all(isinstance(x, str) for x in pr):
-                reviewed_pairs.add((rl, tuple(sorted(pr))))
+    cov = coverage(read_jsonl(args.coverage), snap, lo, hi, args.pairs)
+    reviewed_pairs = set((x["level"], tuple(x["pair"])) for x in cov["pairs"]["reviewed"])
     pair_unreviewed, checked = [], []
     for f in valid:
         if f["level"] >= 6 and (f["level"], tuple(sorted((f["file"], f["other_file"])))) not in reviewed_pairs:
@@ -897,7 +947,7 @@ def cmd_report(args):
                 "in the total, and a moved line that is also removed counts only as removed. Counts are words on the "
                 "affected lines: a sentence cut on a line holding other sentences counts the whole line, so "
                 "sentence-level figures are an upper bound",
-        "coverage": coverage(cov_rows, snap, lo, hi, args.pairs),
+        "coverage": cov,
         "excluded": snap.get("excluded", []),
     }
     if args.format == "json":

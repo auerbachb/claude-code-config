@@ -231,11 +231,13 @@ C6="$WORK/c6.jsonl"
   echo '{"level":6,"pair":[".claude/skills/beta/SKILL.md",".claude/skills/alpha/SKILL.md"],"status":"reviewed"}'
 } > "$C6"
 check "report: keep conflict detected at the second pair location" \
-  "$(run_md report --snapshot "$SNAP" --findings "$FK" --coverage "$C6" --format json | jq -r '.conflicts | length')" "1"
+  "$(run_md report --snapshot "$SNAP" --findings "$FK" --coverage "$C6" --pairs "$WORK/p6.json" --format json | jq -r '.conflicts | length')" "1"
 check "report: pair finding without a reviewed pair is kept out of filing" \
   "$(run_md report --snapshot "$SNAP" --findings "$FP" --format json | jq -r '"\(.findings | length) \(.unreviewed_pair_findings | length)"')" "0 1"
 check "report: pair finding with a reviewed pair is offered" \
-  "$(run_md report --snapshot "$SNAP" --findings "$FP" --coverage "$C6" --format json | jq -r '"\(.findings | length) \(.unreviewed_pair_findings | length)"')" "1 0"
+  "$(run_md report --snapshot "$SNAP" --findings "$FP" --coverage "$C6" --pairs "$WORK/p6.json" --format json | jq -r '"\(.findings | length) \(.unreviewed_pair_findings | length)"')" "1 0"
+check "report: reviewed pair outside the candidate list is not offered" \
+  "$(run_md report --snapshot "$SNAP" --findings "$FP" --coverage "$C6" --format json | jq -r '"\(.findings | length) \(.unreviewed_pair_findings | length)"')" "0 1"
 C9="$WORK/c9.jsonl"
 echo '{"level":6.9,"pair":[".claude/skills/beta/SKILL.md",".claude/skills/alpha/SKILL.md"],"status":"reviewed"}' > "$C9"
 check "report: fractional coverage level is not counted as reviewed" \
@@ -246,9 +248,11 @@ FBAD="$WORK/fbad.jsonl"
   echo '{"level":1e999,"file":".claude/skills/alpha/SKILL.md","start":3,"end":3,"action":"cut","reason":"overflow level"}'
   echo '{"level":1,"file":".claude/skills/alpha/SKILL.md","start":3,"end":3,"action":"cut","reason":"agent field","_parse_error":7}'
   echo '{"level":1,"file":".claude/skills/alpha/SKILL.md","start":3,"end":3,"action":"cut","reason":"carriage\rreturn"}'
+  echo '{"level":1,"file":".claude/skills/alpha/SKILL.md","start":3,"end":3,"action":"cut","reason":"\rleading"}'
+  echo '{"level":1,"file":".claude/skills/alpha/SKILL.md","start":3,"end":3,"action":"cut","reason":"trailing\r"}'
 } > "$FBAD"
 RB="$(run_md report --snapshot "$FSNAP" --findings "$FBAD" --format json)"; RC=$?
-check "report: non-finite level and CR reason rejected without a crash" "$RC $(jq -r '.invalid | length' <<<"$RB")" "0 3"
+check "report: non-finite level and CR reason rejected without a crash" "$RC $(jq -r '.invalid | length' <<<"$RB")" "0 5"
 check "report: an agent _parse_error field is just a field" "$(jq -r '.findings | length' <<<"$RB")" "1"
 if run_md report --snapshot "$FSNAP" --findings "$FBAD" >/dev/null; then ok "report: markdown renders with malformed rows"; else bad "report: markdown renders with malformed rows"; fi
 check "report: malformed coverage pair skipped, valid pair in either order counted" \
@@ -341,6 +345,35 @@ git -C "$WORK/fx-env" init -q && git -C "$WORK/fx-env" add -A && git -C "$WORK/f
 check "inventory: Markdown link to an environment file excluded unread" \
   "$(cd "$WORK/fx-env" && python3 "$MDAUDIT" inventory | jq -r '[(.corpus | join(",")), ([.excluded[] | select(.path=="notes.md") | .reason] | .[0])] | join(" | ")')" \
   "ok.md | environment file (never read)"
+(cd "$WORK/fx-env" && python3 "$MDAUDIT" inventory > "$WORK/snap-env.json" && python3 "$MDAUDIT" fingerprint --snapshot "$WORK/snap-env.json" > "$WORK/before-env.json")
+check "verify-unchanged: environment-file link leaves the run UNCHANGED" \
+  "$(cd "$WORK/fx-env" && python3 "$MDAUDIT" verify-unchanged --snapshot "$WORK/snap-env.json" --before "$WORK/before-env.json")" "UNCHANGED"
+
+# The descriptor walk refuses a symlinked parent, including one swapped in
+# after the walk starts (simulated by swapping on the first os.open).
+mkdir -p "$WORK/fx-race/docs" "$WORK/race-out"
+printf 'in\n' > "$WORK/fx-race/docs/a.md"
+printf 'outside secret\n' > "$WORK/race-out/a.md"
+RACE="$(with_timeout python3 -I -B -c '
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import mdaudit
+top, out = sys.argv[2], sys.argv[3]
+real_open, state = os.open, {"swapped": False}
+def swapping_open(path, flags, *a, **k):
+    if not state["swapped"] and path == top:
+        state["swapped"] = True
+        os.rename(os.path.join(top, "docs"), os.path.join(top, "docs-old"))
+        os.symlink(out, os.path.join(top, "docs"))
+    return real_open(path, flags, *a, **k)
+os.open = swapping_open
+try:
+    mdaudit.open_in_checkout(top, "docs/a.md", read=True)
+    print("read")
+except mdaudit.EscapeError:
+    print("refused")
+' "$(dirname "$MDAUDIT")" "$WORK/fx-race" "$WORK/race-out")"
+check "walk: parent swapped for an outside link mid-walk is refused" "$RACE" "refused"
 
 # HEAD recorded by inventory must match the baseline.
 jq '.head = "0000000000000000000000000000000000000000"' "$WORK/snap-special.json" > "$WORK/snap-oldhead.json"
@@ -355,6 +388,16 @@ check "segment: blank quote line splits quoted paragraphs" \
 OUT="$(cd "$FX" && TMPDIR="$FX/docs" MDA_TARGET="" MDA_FROM="" MDA_STOP="" bash -c "$BLOCK" 2>&1)"; RC=$?
 if [ "$RC" -ne 0 ] && grep -q 'TMPDIR resolves inside the checkout' <<<"$OUT" && [ -z "$(find "$FX/docs" -name 'markdown-audit.*')" ]; then
   ok "block: TMPDIR inside the checkout refused"; else bad "block: TMPDIR inside the checkout refused" "$OUT"; fi
+# ...and refused before mktemp is ever called: a logging mktemp shim stays silent.
+mkdir -p "$WORK/shim"
+REAL_MKTEMP="$(command -v mktemp)"
+printf '#!/bin/sh\necho "$*" >> "%s"\nexec "%s" "$@"\n' "$WORK/mktemp.log" "$REAL_MKTEMP" > "$WORK/shim/mktemp"
+chmod +x "$WORK/shim/mktemp"
+: > "$WORK/mktemp.log"
+(cd "$FX" && PATH="$WORK/shim:$PATH" TMPDIR="$FX/docs" MDA_TARGET="" MDA_FROM="" MDA_STOP="" bash -c "$BLOCK" >/dev/null 2>&1)
+check "block: in-checkout TMPDIR never reaches mktemp" "$(wc -l < "$WORK/mktemp.log" | tr -d ' ')" "0"
+(cd "$FX" && PATH="$WORK/shim:$PATH" MDA_TARGET=".claude/skills/alpha/SKILL.md" MDA_FROM="" MDA_STOP="section" bash -c "$BLOCK" >/dev/null 2>&1)
+check "block: the mktemp shim is exercised on a normal run" "$(wc -l < "$WORK/mktemp.log" | tr -d ' ')" "1"
 
 # --------------------------------------------------------------- SKILL.md contract
 S="$SKILL_DIR/SKILL.md"
