@@ -33,3 +33,7 @@ Interpret **both** reads with **3.4's table, unchanged**: `RC=0` + `true` → pa
 
 **An unreadable operator priority is a stop of the same kind** (`PRIORITY_UNREADABLE=true`, 1B.1a): rank and report, launch nothing, and say so with 1B.1a's one-line warning. It lifts on its own once the file reads cleanly again (fixed, or removed) — no human resume is needed, because nothing was paused on purpose.
 
+<!-- pm-routing:begin -->
+Epic scope (issue #2545): when Step 0d bound `EPIC_NUMBER`, read `shared:epic` and apply its candidate filter here, beside `$SCOPE` and before ranking. The candidate set is exactly the epic's open children; the rest of the backlog is not ranked, offered or launched, and the parent is never a candidate. Without a typed epic, rank the whole backlog as before: no title, label or keyword ever narrows it to an epic.
+<!-- pm-routing:end -->
+
