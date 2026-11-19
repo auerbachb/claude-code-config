@@ -66,8 +66,9 @@ The startup/rule and schema baselines remain coordinated with Issues [#1158](htt
 | `/subagent` | Fit test, claims, orchestration boundaries | Planning, task prompt, execution, review, merge/handoff | `issue-claim.sh`, `issue-deps.sh`, existing review helpers | Phase guardrails at dispatch; reviewer contracts at review |
 | `/wrap` | PR target, authorship, merge authority | Discovery, gate verification, recovery, merge/sync, follow-ups, lessons | `merge-gate.sh`, `ci-status.sh`, `ac-checkboxes.sh`, `main-sync.sh` | Report templates when requested; duplicate policy for follow-up filing |
 | `/pr-monitor-and-manage` | Fleet selection, authority, stop criteria | Discovery, polling, triage, repair, completion | `pr-state.sh`, `polling-state-gate.sh`, `merge-gate.sh` | Polling commands during observation; reviewer/escalation policy when actionable |
+| `/go-on` | Resume routes, Step 0 classifier, receipt, stoppage log, live-work check | One module per stoppage kind (planned stop, usage-limit park, token exhaustion, unplanned); the review lane as prepare, publish, respond and merge | `scripts/dispatch-module.sh`, `merge-gate.sh`, `clean-behind-check.sh`, `diff-survival-check.sh` | Universal-resume ladder at Step 0; reviewer and merge-gate policy when the review lane reaches them |
 
-The `/pm` evidence below records its completed split. The `/subagent`, `/wrap`, and `/pr-monitor-and-manage` rows describe planned migrations. Their proposed module prerequisites are established in the ordered slices below, and safety/required gates stay available regardless of source layout.
+The `/pm` and `/go-on` evidence below records their completed splits. The `/subagent`, `/wrap`, and `/pr-monitor-and-manage` rows describe planned migrations. Their proposed module prerequisites are established in the ordered slices below, and safety/required gates stay available regardless of source layout.
 
 This issue establishes the contract and pilots it on `/issue-maker`; it does not rewrite the other giant skills. Migrate the rest as separately reviewable slices in this order:
 
@@ -124,6 +125,42 @@ The source paths are relative to `.claude/skills/pm/modules/`. Every fixture als
 | Measurement and retry scope | Count each selected file or named reference section once. For recovery, add the entry and active phase again only if the context needs them. |
 
 Run `bash .claude/scripts/tests/pm-split-verbatim-check.test.sh` for the source-read and guard fixtures. To reproduce the table, sum whitespace-delimited words and bytes in the listed files and excerpts, with `git show 475769d3:.claude/skills/pm/SKILL.md` as the baseline entry and the same reference excerpts.
+
+### /go-on slice (#2181)
+
+The issue asked for this slice after `/pm` and `/subagent`, so their loader conventions would be settled. On `origin/main` at `e0a68ddf` the `/pm` slices had landed and the `/subagent` slice had not. This slice therefore copies the `/pm` conventions and adds none of its own: a self-locating `scripts/dispatch-module.sh OPERATION PHASE` that prints one path, exit 2 for an unsupported pair, exit 3 with `required module unreadable: <path>` for a missing, unreadable or linked module, an installed-first resolver block in the entry (`go-on-module-resolver`), and `go-on-routing` markers around every line the split added.
+
+The entry keeps the two read-only and approval routes, Step 0 (0.1 to 0.5a), the run-mode reread, the live-work check, the class-to-module table, and a module-routing section covering the preflight, the missing-module blocker and compaction recovery. Each stoppage kind's 0.6 dispatch text moved verbatim to `modules/kinds/` (`planned-stop`, `usage-limit-park`, `token-exhaustion`, `unplanned`). The review lane moved verbatim to `modules/review/`: `prepare` (lifecycle-helper resolution, Steps 0b, 1 and 1b), `publish` (Steps 2 to 4, including the claim-holder line from #2356), `respond` (Steps 5 to 7) and `merge` (Steps 8 to 10). Every module header states its route, trigger, prerequisites, and next module or loop-back. Step numbers, probe letters and test anchors are unchanged, so references elsewhere still resolve.
+
+Before any write, the lane preflight resolves every module the selected lane can reach without reading them: the kind module, plus all four review modules for `token_exhaustion` and `unplanned`. A missing module is `[BLOCKED]`, naming the module, class, repository, PR or issue, evidence digest, last step and next step, with no fallback and no receipt. Before the receipt write the next step is a rerun. After it, the next step is a rerun with `--again`. On compaction, the entry is reloaded, the generation and live-work checks run again, and the class Step 0 selected is kept. A delegated lane reads only its kind module. A review lane reads its kind module, `review:prepare` and the active review module, and the lifecycle helpers are re-resolved and the authorship and diff-survival guards re-checked before any write. Completed prepare steps are not re-run.
+
+Measured on baseline `e0a68ddf` (`.claude/skills/go-on/SKILL.md`, 97,195 bytes / 14,116 words) with `LC_ALL=C wc -wc` on macOS. Python `bytes.split()` gives the same word counts. Each trace counts the entry and the distinct modules it reads once. No nested references are included on either side: the review lane cites the same references before and after the split.
+
+| Caller trace | Files read | Before bytes / words | After bytes / words |
+|---|---|---:|---:|
+| Classification only (rank 5 or unclassifiable) | entry | 97,195 / 14,116 | 51,782 / 7,340 |
+| `pause` / `end` | entry, `kinds/planned-stop` | 97,195 / 14,116 | 52,732 / 7,478 |
+| `usage_limit_park` | entry, `kinds/usage-limit-park` | 97,195 / 14,116 | 55,010 / 7,839 |
+| `token_exhaustion`, `continue_polling` | entry, `kinds/token-exhaustion`, `review/prepare`, `review/respond`, `review/merge` | 97,195 / 14,116 | 95,390 / 13,748 |
+| `token_exhaustion`, unpushed fixes | the previous row plus `review/publish` | 97,195 / 14,116 | 100,713 / 14,564 |
+| `unplanned`, full lane | entry, `kinds/unplanned`, all four review modules | 97,195 / 14,116 | 100,141 / 14,476 |
+| Compaction reread at Step 9a | entry, `kinds/unplanned`, `review/prepare`, `review/merge` | 97,195 / 14,116 (whole file again) | 79,281 / 11,504 |
+
+A full review-lane resume reads about 3% more source than before: that is the routing text. The delegated lanes and classification-only runs read roughly half. These are source bytes and words, **not runtime tokens**. No harness loader trace was available, so actual reads, cache effects, and whether a model follows the routing were not observed. A missing-module retry adds the entry and the selected lane again after repair; nothing written before the blocker is replayed.
+
+| Parity and recovery check | Verification |
+|---|---|
+| Original instructions | `go-on-dispatch-module.test.sh` compares the line multiset outside routing markers (blank lines and bare `---` separators ignored) with the baseline file while the comparison base is still unsplit; pin it with `GO_ON_SPLIT_BASELINE=e0a68ddf`. 1,004 instruction lines match. A one-word edit to a moved line fails it. |
+| Outputs and delegation | The delegated lanes still forward `--resume-refill` and `--generation`, and still relaunch nothing themselves; the review lane's status lines, `/wrap` hand-off and the rule against running `admin-merge.sh` are unchanged text. Existing suites (`go-on-universal-resume`, `subagent-limit-park`, `pause-multisession`, `end-pause-contract`, `claim-renewal-wiring`, `go-on-thread-comment-bound`, `test_quota_resume_roster.py`, `desk/tests/stoppage-offline`) pass against the entry and the module that now holds each block. |
+| Safety and merge gates | The generation gate, probes, receipt, stoppage log, run-mode reread and live-work check stay in the entry; the fixture fails if any leaves it or a lane step returns to it. Authorship, diff-survival and merge-gate text moved unchanged, and every negative contract check scans the entry and all modules. |
+| Selected reads | The fixture builds each trace from the entry's routing table and the real dispatcher, and checks that no kind's trace reads another kind's module. |
+| Missing module | The fixture removes a review module from a copied install: the preflight exits 3 naming the path before the simulated receipt write, and a delegated lane is not blocked by it. Invalid pairs exit 2; linked modules and linked module directories exit 3. |
+| Compaction recovery | The fixture re-dispatches a persisted kind and step and reads only that kind module, `review:prepare` (helpers and write guards), and the review module holding the step. |
+| Retry overhead | As in the table above: setup is the entry, and a rerun adds the selected lane again. Actual retry frequency is unknown. |
+
+Preserved ambiguities, moved verbatim rather than resolved: a `token_exhaustion` entry at Step 6 does not say whether Step 5 runs first; the rank-4 report wording in Step 10; the rank-2 table's "Relaunch each" against the lane's delegate-only rule; and `--again` with an unreadable receipt. The one added prerequisite statement, in the `token-exhaustion` header, cites existing rules: the lifecycle helpers and Step 0b's authorship guard come from `review:prepare`, and Step 1 runs before any commit or push as that step already requires.
+
+Run `bash .claude/scripts/tests/go-on-dispatch-module.test.sh`. Reproduce the table with `git show e0a68ddf:.claude/skills/go-on/SKILL.md | LC_ALL=C wc -wc` and `cat` of each trace's files piped to the same command.
 
 ## Behavior-preservation map
 

@@ -1312,7 +1312,8 @@ the pipelines it recorded, and it recorded none of these.
 - `phase-protocols.md`, `monitor-mode.md`, `subagent-orchestration.md` — the
   crash-vs-limit routing that points here.
 - `.claude/skills/go-on/SKILL.md` Steps 0.1a / 0.3 / 0.6 — generation gate,
-  probe F, and the phase-aware relaunch lane.
+  probe F, and the phase-aware relaunch lane (the lane's dispatch text is
+  `.claude/skills/go-on/modules/kinds/usage-limit-park.md`).
 - `.claude/reference/usage-limit-signal-audit-2026-07.md` — why no hook receives
   an approaching-limit signal, and what the recorder can and cannot supply.
 - `.claude/scripts/usage-horizon.sh --help` — the verdict contract §7.1 consumes.
