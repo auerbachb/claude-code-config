@@ -897,7 +897,13 @@ The event line carries `--dispatch-event <id>`. The PMM tick still runs the norm
 current-head merge gate, and ownership checks before acting; the pre-dispatch snapshot is wake
 evidence only. Re-emitted IDs remain pending until the completed tick explicitly acknowledges them.
 
-Call `Monitor` with `persistent: true` and description `PR fleet monitor`. Capture its task ID in
+Call `Monitor` with `timeout_ms` at the runtime maximum (1800000 where capped), `persistent: true`
+only if the Monitor schema lists it, and description `PR fleet monitor`. **On a capped runtime the
+watch expires** (Issue #2201): an expiry notice that names the exact recorded `.pmm_monitor_task_id`
+while `.pmm_monitor_generation` is unchanged is an expiry receipt (`.claude/reference/monitor-expiry.md`).
+Route pause, stop and idle-limit conditions first — any of them means no re-arm. Otherwise re-arm
+through this same `.pmm_rearm` claim, where the receipt stands in for the exact `TaskStop` of that one
+ID; an unbound notice is unknown liveness and takes the existing stale-identity path. Capture its task ID in
 `MONITOR_TASK_ID`; only the conditional publication below writes `.pmm_monitor_task_id`. Generate a fresh non-secret `$NEW_MONITOR_GENERATION` before each arm and
 embed it in that task's command. Reuse the ID and generation read by the identity preflight (or read
 them here for a new direct start / transactional resume) and read the actual cadence from state:

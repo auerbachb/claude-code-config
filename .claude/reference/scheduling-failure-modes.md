@@ -216,6 +216,23 @@ and the poll contributed nothing. That is a *degraded* state, not the design:
 far wider than any poll cadence. A run where the ceiling is the only thing producing ticks
 should be read as a broken poll, not a working watch.
 
+## Pattern 8 — Monitor Expiry Without Re-arm (Issue #2201, PR #2186)
+
+**Symptom:** a watch that was armed and ticking simply stops, with no error — 30 minutes after
+it was armed.
+
+**Cause:** the desktop app's `Monitor` has no `persistent` parameter and caps `timeout_ms` at
+1,800,000 (30 minutes). At expiry the thread gets one notice; if that notice produces no turn
+that re-arms the watch, the watch is gone. On PR #2186 (CI ran 3h01m) the PR watch and the
+silence-ceiling watch expired together every 30 minutes and were re-armed by hand six times; the
+ceiling, expiring on the same schedule, could not report the other's death. A bare
+`bgwork-ceiling.sh --arm-command` also printed `--session default`, which the arm hook rejected.
+
+**Fix:** arm at maximum `timeout_ms` and re-arm on every expiry notice under the owning
+workflow's expiry procedure; detect a missed re-arm from outside the watch (ceiling tick marker
+read by the Stop guard and launchd watchdog, `babysit-tick-watchdog.sh` at Stop); no silent
+`default` session. Detail: [`monitor-expiry.md`](monitor-expiry.md).
+
 ## Detection Heuristics
 
 Treat any of these as a scheduling failure until proven otherwise:
@@ -229,7 +246,7 @@ Treat any of these as a scheduling failure until proven otherwise:
 - Post-compaction recovery finds a `polling_failures` entry or a `monitoring_active: true` flag with no live schedule
 - Repeated poll ticks show unchanged `digest`/`digest_streak`, unchanged blocker, and no matching `last_cron_action` backoff
 
-Recovery is always the same: apologize briefly, arm a persistent `Monitor`, record the incident, continue.
+Recovery is always the same: apologize briefly, arm a `Monitor` (maximum `timeout_ms`; re-arm on expiry — [`monitor-expiry.md`](monitor-expiry.md)), record the incident, continue.
 
 ## Canonical Incident — 2026-04-20 Dropped PM Tick
 
