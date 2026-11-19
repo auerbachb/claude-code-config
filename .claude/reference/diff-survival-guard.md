@@ -1,6 +1,6 @@
 # Diff-Survival Guard (issue #757)
 
-Mechanism and rationale behind `.claude/scripts/diff-survival-check.sh`. Not auto-loaded — the enforceable rules live at the call sites (`/fixpr` Step 6a, `/merge-conflict` hard rule 2 + AI-layer step 4, `/go-on` Step 1).
+Mechanism and rationale behind `.claude/scripts/diff-survival-check.sh`. Not auto-loaded — the enforceable rules live at the call sites (`/fixpr` Step 6a, `/merge-conflict` hard rule 2 + AI-layer step 4, `/go-on` Step 1 in `modules/review/prepare.md`).
 
 ## The hole it closes
 

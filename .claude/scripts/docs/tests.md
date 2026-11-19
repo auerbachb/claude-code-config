@@ -95,6 +95,7 @@ opt-in of issue #1544.
 | [forgotten-pr-triage.test.sh](../tests/forgotten-pr-triage.test.sh) | Tests for `forgotten-pr-triage.sh` |
 | [gh-count.test.sh](../tests/gh-count.test.sh) | Tests the opt-in REST call counter in lib/gh-count.sh and its hook in merge-gate.sh, polling-state-gate.sh and escalate-review.sh |
 | [gh-rate-budget.test.sh](../tests/gh-rate-budget.test.sh) | Tests for `lib/gh-rate-budget.sh` (allowance backoff) and the cr-plan.sh poll wiring |
+| [go-on-dispatch-module.test.sh](../tests/go-on-dispatch-module.test.sh) | Checks /go-on incremental loading — path-only module resolution, per-stoppage-kind read traces, missing-module blocking, compaction re-dispatch, and verbatim parity with the pre-split file. |
 | [go-on-thread-comment-bound.test.sh](../tests/go-on-thread-comment-bound.test.sh) | Runs `/go-on` Step 7's real bot-thread count filter (anchor `go-on-bot-thread-count`) on fixtures — a thread whose comments exceed the 100 returned always counts and is flagged truncated, exact bot-login membership, resolved and human-only threads excluded, null authors safe, one count per thread |
 | [go-on-universal-resume.test.sh](../tests/go-on-universal-resume.test.sh) | Contract tests for `/go-on` as the universal resume front door — stoppage-class detection, precedence, refill-gate safety |
 | [handoff-scoping.test.sh](../tests/handoff-scoping.test.sh) | Tests per-repo handoff path scoping in `handoff-state.sh` |

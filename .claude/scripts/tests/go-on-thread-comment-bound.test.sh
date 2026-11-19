@@ -4,7 +4,8 @@
 #
 # WHAT IS UNDER TEST
 #   The fenced bash under `<!-- test-anchor: go-on-bot-thread-count -->` in
-#   `.claude/skills/go-on/SKILL.md`, extracted at run time by lib/skill-bash.sh
+#   `.claude/skills/go-on/modules/review/respond.md` (Step 7 moved there with the
+#   incremental split, issue #2181), extracted at run time by lib/skill-bash.sh
 #   and fed thread-node arrays on stdin. Nothing here is a transcription.
 #
 # WHY (issue #1953)
@@ -19,7 +20,7 @@ set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
-GO_ON="$REPO_ROOT/.claude/skills/go-on/SKILL.md"
+GO_ON="$REPO_ROOT/.claude/skills/go-on/modules/review/respond.md"
 # shellcheck source=lib/skill-bash.sh
 source "$TEST_DIR/lib/skill-bash.sh"
 

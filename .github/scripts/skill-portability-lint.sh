@@ -105,9 +105,9 @@ for skill in "${SKILLS[@]}"; do
     continue
   fi
   guarded_files+=("$f")
-  # The issue-maker and PM dispatchers resolve Markdown modules in this layout.
-  # Treat a failed enumeration as missing coverage, never an empty clean set.
-  if [[ "$skill" == "issue-maker" || "$skill" == "pm" ]]; then
+  # The issue-maker, PM, and /go-on dispatchers resolve Markdown modules in this
+  # layout. Treat a failed enumeration as missing coverage, never an empty clean set.
+  if [[ "$skill" == "issue-maker" || "$skill" == "pm" || "$skill" == "go-on" ]]; then
     module_files=""
     if [[ ! -d ".claude/skills/${skill}/modules" ]]; then
       echo "::error::Guarded module directory missing: .claude/skills/${skill}/modules"
@@ -120,12 +120,14 @@ for skill in "${SKILLS[@]}"; do
       echo "::error::No guarded module sources: .claude/skills/${skill}/modules"
       missing=$((missing + 1))
     fi
-    if [[ "$skill" == pm && -d ".claude/skills/pm/modules" ]]; then
-      if ! module_links=$(find ".claude/skills/pm/modules" -type l -print); then
-        echo "::error::Cannot verify PM module links"
+    if [[ ( "$skill" == pm || "$skill" == go-on ) && -d ".claude/skills/${skill}/modules" ]]; then
+      module_label=PM
+      [[ "$skill" == go-on ]] && module_label=/go-on
+      if ! module_links=$(find ".claude/skills/${skill}/modules" -type l -print); then
+        echo "::error::Cannot verify ${module_label} module links"
         missing=$((missing + 1))
-      elif [[ -L ".claude/skills/pm/modules" || -n "$module_links" ]]; then
-        echo "::error::PM module sources must be regular files in the skill module tree"
+      elif [[ -L ".claude/skills/${skill}/modules" || -n "$module_links" ]]; then
+        echo "::error::${module_label} module sources must be regular files in the skill module tree"
         missing=$((missing + 1))
       fi
     fi
