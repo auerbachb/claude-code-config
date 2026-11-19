@@ -19,6 +19,11 @@ stub="$tmp/presence.sh"
 cat > "$stub" <<'STUB'
 #!/usr/bin/env bash
 if [ "${1:-}" = is-away ]; then [ "${PRESENCE_AWAY:-0}" = 1 ]; exit; fi
+if [ "${1:-}" = status ]; then
+  [ "${PRESENCE_STATUS_FAIL:-0}" = 1 ] && exit 1
+  if [ "${PRESENCE_AWAY:-0}" = 1 ]; then echo '{"away":true}'; else echo '{"away":false}'; fi
+  exit 0
+fi
 printf '%s\n' "$*" > "$PRESENCE_CALLS"
 [ "${PRESENCE_FAIL:-0}" = 1 ] && exit 1
 printf 'presence: away, until later\n'
@@ -70,6 +75,7 @@ run 'until 25:99';        expect_refusal 'impossible clock time refused' 'is not
 run 'whenever';           expect_refusal 'nonsense refused' 'is not a return time I can read'
 run 'closing the laptop at 7'; expect_refusal 'laptop wording redirected' '/leave-by'
 run 6h '';                if [[ "$out" == 'Away not set — presence.sh not found (checked all three paths); presence could not be checked, so any earlier away window stays in force.' ]]; then ok 'missing presence.sh refused without claiming attended'; else bad "missing presence.sh: '$out'"; fi
+PRESENCE_STATUS_FAIL=1 run 'whenever'; if [[ -z "$calls" && "$out" == 'Away not set — '*'presence could not be checked, so any earlier away window stays in force.' ]]; then ok 'unreadable presence is not read as attended'; else bad "presence status failed: '$out'"; fi
 AWAY_BARE=true run '';    expect_refusal 'bare --away refused' '--away needs a return time'
 AWAY_BARE=true PRESENCE_AWAY=1 run ''; if [[ -z "$calls" && "$out" == 'Away not changed — --away needs a return time'*'stays in force.' ]]; then ok 'bare --away under an active window keeps it'; else bad "bare while away: '$out'"; fi
 run 'until 8:00 AM' "$stub" ''; expect_refusal 'missing window-plan.sh refused' 'window-plan.sh not found'

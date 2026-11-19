@@ -197,7 +197,7 @@ Read reference docs through the same order — `$HOME/.claude/skills-worktree/.c
 - `ISSUE_DEPS_SH` empty → **optional**. Print `DEGRADED: issue-deps.sh not found (checked all three paths) — dependency markers read by eye (1B.3)` and read the markers 1B.3 lists from the bodies and comments yourself.
 - `USAGE_HORIZON_SH` empty → **optional, degrades to `unknown`** (day mode only). Print `DEGRADED: usage-horizon.sh not found (checked all three paths) — runway verdict unavailable, day mode holds the conservative posture` on the arming turn and treat every tick's verdict as `unknown` (D2's horizon gate): in-flight work finishes, nothing new starts, and **no pre-emptive park ever fires** — an absent signal must not park a healthy board any more than it may green-light a dying one.
 - `WINDOW_PLAN_SH` empty → **optional** (only needed when `WINDOW_STR` is set). Print `DEGRADED: window-plan.sh not found (checked all three paths) — window fitting unavailable` and skip Step 0b; treat the run as windowless.
-- `PRESENCE_SH` empty → **optional** (only needed when `AWAY_STR` or `AWAY_BARE` is set). Step 0c refuses the declaration in its one line, says presence could not be checked, and changes nothing: an away window stored earlier stays in force and unattended handling is untouched.
+- `PRESENCE_SH` empty → **optional** (only needed when `AWAY_STR` or `AWAY_BARE` is set). Step 0c refuses the declaration in its one line, says presence could not be checked, and changes nothing (the same line when `presence.sh status --json` fails or does not report `away`): an away window stored earlier stays in force and unattended handling is untouched.
 - `PM_REPORT_SH` empty → **optional**. When scheduled reports are enabled, surface the report gate's missing-helper diagnostic once per PM run. Explicit `/board` remains available.
 - `PM_STANDING_QUEUE_SH` empty → **optional**. Surface one diagnostic and use the existing claimed queue and backlog refill without a standing plan.
 - `TABLE_FRESHNESS_SH` empty → **optional**. Keep explicit and scheduled reports available. Preserve the diagnostic when a rendered table's freshness clock cannot be written.
@@ -376,10 +376,17 @@ if [[ -n "${AWAY_STR:-}" || "${AWAY_BARE:-false}" == true ]]; then
     fi
   fi
   if [[ "$AWAY_SET" != true ]]; then
-    # Never claim "attended" without a helper that confirmed no away window is active.
-    if [[ -z "${PRESENCE_SH:-}" ]]; then
+    # Never claim "attended" unless presence.sh positively reported away=false:
+    # `is-away` exits 1 on a failure too, so read the status JSON instead.
+    AWAY_NOW=unknown
+    if [[ -n "${PRESENCE_SH:-}" ]]; then
+      AWAY_NOW=$("$PRESENCE_SH" status --json 2>/dev/null |
+        jq -r 'if .away == true then "yes" elif .away == false then "no" else "unknown" end' 2>/dev/null) || AWAY_NOW=unknown
+      [[ "$AWAY_NOW" == yes || "$AWAY_NOW" == no ]] || AWAY_NOW=unknown
+    fi
+    if [[ "$AWAY_NOW" == unknown ]]; then
       printf 'Away not set — %s; presence could not be checked, so any earlier away window stays in force.\n' "$AWAY_WHY"
-    elif "$PRESENCE_SH" is-away >/dev/null 2>&1; then
+    elif [[ "$AWAY_NOW" == yes ]]; then
       printf 'Away not changed — %s; the earlier away window stays in force.\n' "$AWAY_WHY"
     else
       printf 'Away not set — %s; continuing attended.\n' "$AWAY_WHY"
