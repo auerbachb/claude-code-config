@@ -44,7 +44,9 @@ A read --session s1; check "unreadable repo directory: exit 1, not an empty list
 chmod 755 "$D"
 A append --kind note --text "zero-padded" --session s3 --now 0400
 check "leading-zero --now is read as decimal" "$rc:$(printf '%s' "$out" | jq -r .at)" "0:400"
-check "the log file is private (0600)" "$(stat -f %Lp "$(cd "$REPO_ROOT" && "$AL" path --session s3)" 2>/dev/null || stat -c %a "$(cd "$REPO_ROOT" && "$AL" path --session s3)")" "600"
+LOGF=$(cd "$REPO_ROOT" && "$AL" path --session s3)
+if [ "$(uname -s)" = Darwin ]; then MODE=$(stat -f %Lp "$LOGF"); else MODE=$(stat -c %a "$LOGF"); fi
+check "the log file is private (0600)" "$MODE" "600"
 mkdir -p "$tmp/w/a_b" "$tmp/w/a/b"
 k1=$(cd "$tmp/w/a_b" && "$AL" path --session s); k2=$(cd "$tmp/w/a/b" && "$AL" path --session s)
 check "non-repo dirs a_b and a/b get different keys" "$([ "$k1" != "$k2" ] && echo distinct)" distinct
