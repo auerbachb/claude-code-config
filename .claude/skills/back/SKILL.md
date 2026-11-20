@@ -108,27 +108,32 @@ round.
   covers the chat: he sees only what is inside the `AskUserQuestion` call. So never print a brief above
   the menu; each question's `question` text **is** its brief, and nothing he needs to decide is outside
   the dialog. The dialog pages through a round's questions one at a time, so each page carries its own.
-  Shape of the `question` text:
+  Shape of the `question` text (issue #2598):
 
   ```text
   <the stored question, word for word>
-  Context: <the stored context, word for word>  — absent: `Context: not recorded (recording defect)`
-  What it is: <PR|Issue> #N "<title>" (<open|merged|closed>)  — one line per entry in `refs`
-  Meanwhile: <the stored did, word for word>. Already done / not done yet; can / cannot be undone.
+  Now: <now>
+  Change: <change>
+  Why: <why>
+  Risk: <risk>
+  Background: <context>  — only on an old record that has one (issue #2592)
+  Meanwhile: <the stored did, word for word>
+  Links: <PR|Issue> #N (<open|merged|closed>), …  — one line, no titles
   ```
 
-  - **Shown as recorded, never repaired.** Print the stored `question`, `context` (issue #2592) and
-    `did` whole: never shorten them into a terse title (`PR #N (x hold) — merge?`), and never rewrite, translate or fill them in
-    from the PR, the issue or the thread. A question that cannot be answered as recorded is a recording
-    defect to fix at the source, and a repaired menu would hide it. The `header` chip is the only short
-    label.
-  - **What it is** comes from the question's `refs`; `<PR|Issue>` follows the ref's `is`
-    (what GitHub says it is), else its `kind`. A ref with
-    `error` set prints `<PR|Issue> #N: could not read`; never guess its title. No refs: say in a few
-    words what the question is about.
-  - **Meanwhile** says plainly whether that action already happened (his answer only confirms or reverses
-    it) or whether nothing was done yet (his answer starts it). Unknown (`did` absent): `Meanwhile: not
-    recorded`. A Decision's meanwhile is its `context` lines.
+  - **Shown as recorded, never repaired.** Print the stored question and each field whole and word
+    for word: never shorten them into a terse title (`PR #N (x hold) — merge?`), and never rewrite,
+    translate, add to or fill them in from the PR, the issue or the thread. A question that cannot be
+    answered as recorded is a recording defect to fix at the source, and a repaired menu would hide
+    it. A missing field prints `<Field>: not recorded (recording defect)`. The `header` chip is the
+    only short label.
+  - **Links** is the only place references appear: the stored `links` word for word (URLs and commit
+    hashes included), each `PR #N` / `Issue #N` in it followed by its state from `refs` in
+    parentheses (`could not read` when that ref has `error`); then any other `refs` entry not already
+    in it, as `<PR|Issue> #N (<state>)`, `<PR|Issue>` following the ref's `is`, else its `kind`. Never
+    print a ref's title: titles carry the thread's own shorthand. No links and no refs: omit the line.
+  - **Meanwhile** is the stored `did` as written; absent: `Meanwhile: not recorded`. A Decision's
+    meanwhile is its `context` lines.
   - **What each option does** goes in that option's `description` (below), not in the question text.
   - End the question text with `<id>`, or `[<repo>] <id>` in `/back all`; the `header` chip names the
     decision in a few plain words, not the id.

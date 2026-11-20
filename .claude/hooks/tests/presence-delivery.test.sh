@@ -234,7 +234,7 @@ sj() { jq -r "$1" "$SF"; }
 # ============================================================================
 printf '== 3. a failed return is reported, not swallowed\n'
 seed here
-U record --question "Behind a failed return?" --context "Test background: what this change is and why the operator is being asked" --recommended "y" >/dev/null
+U record --question "Behind a failed return?" --now "The nightly job sends every new lead the same first email" --change "Send a shorter follow-up to leads who never opened the first" --why "A short second note may get replies from quiet leads" --risk "Some leads may find a second email annoying and unsubscribe" --recommended "y" >/dev/null
 CAS_STUB="$TMP/cas-fail-state.sh"
 cat >"$CAS_STUB" <<CASSTUB
 #!/usr/bin/env bash

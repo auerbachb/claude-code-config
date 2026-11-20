@@ -39,7 +39,7 @@
 #   now, since       epochs; since_source: declared | flag | default-24h
 #   away_seconds     now - since; digest_level: short (< 2 h) | medium (< 12 h) | long
 #   presence         presence.sh status --json, or null
-#   questions        open unattended questions in scope, oldest first: {id, repo, question, context, options,
+#   questions        open unattended questions in scope, oldest first: {id, repo, question, now, change, why, risk, links, context, options,
 #                    recommended, did, session, at, refs}; null when unreadable
 #   decisions        open Desk Decisions in scope: {id, repo, question, options, default_option,
 #                    session_id, created_at, context, refs}; null when unreadable
@@ -265,7 +265,7 @@ if [ -n "$Q" ] && printf '%s' "$Q" | "$JQ" -e 'type == "array"' >/dev/null 2>&1;
   printf '%s' "$Q" | "$JQ" -c --arg scope "$SCOPE" --arg repo "$QREPO" --arg sid "$SID" "$SCOPE_JQ"'
     [.[] | select(.status == "open")] as $open
     | {in: [$open[] | select($scope == "all" or mine($repo; $sid; .session))
-             | {id, repo, question, context, options, recommended, did, session, at}] | sort_by(.at),
+             | {id, repo, question, now, change, why, risk, links, context, options, recommended, did, session, at}] | sort_by(.at),
        total: ($open | length),
        here: ([$open[] | select(((.repo // "") | ascii_downcase) == ($repo | ascii_downcase))] | length)}' >"$WORK/q.json" 2>/dev/null || {
     printf '{"in":null,"total":0,"here":0}\n' >"$WORK/q.json"; unreadable "unattended questions" "the question records could not be read"; }
@@ -437,7 +437,7 @@ fi
 # Every `PR #N` / `Issue #N` in a question, its meanwhile note or a Decision's context gets the title and
 # state, read in the question's repo, so /back can say what the item is without improvising. A lookup
 # that fails gives {error: "could not read"}; the question itself is never dropped.
-REFS_DEF='def refs: [(.question // ""), (.did // ""), ((.context // []) | if type == "array" then .[] else . end)]
+REFS_DEF='def refs: [(.question // ""), (.did // ""), (.links // ""), ((.context // []) | if type == "array" then .[] else . end)]
   | map(tostring) | join(" ") | [scan("(?i)\\b(PR|Issue)\\s*#([0-9]+)")]
   | map({kind: (.[0] | ascii_downcase), number: (.[1] | tonumber)}) | unique_by([.kind, .number]) | .[:4];'
 REF_CAP=30

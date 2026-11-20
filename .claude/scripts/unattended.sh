@@ -24,17 +24,26 @@
 #                                                (presence.sh return) or `off`; an at-computer presence
 #                                                window that ran out counts too (issue #2294)
 #   unattended.sh window-ended                   exit 0 when a declared window has ended, else 1
-#   unattended.sh record --question TEXT --context TEXT [--recommended TEXT] [--options 'A|B|C']
-#                        [--did TEXT] [--session ID] [--source agent|hook] [--cwd DIR | --repo KEY]
-#                                                prints the new id, U-<n>. --context (issue #2592) is the
-#                                                plain-language background a person who has forgotten the
-#                                                thread needs to answer: what the PR/issue/change is, why
-#                                                it matters, what each option means. Required for
-#                                                --source agent (at least 30 letters; exit 2 otherwise);
-#                                                a hook-captured menu has none until the agent adds it
-#                                                with `update`. Writing guide:
-#                                                .claude/reference/unattended-mode.md §Writing a question
-#   unattended.sh update U-<n> (--did TEXT | --context TEXT)... [--cwd DIR | --repo KEY]
+#   unattended.sh record --question TEXT --now TEXT --change TEXT --why TEXT --risk TEXT
+#                        [--links TEXT] [--recommended TEXT] [--options 'A|B|C'] [--did TEXT]
+#                        [--session ID] [--source agent|hook] [--cwd DIR | --repo KEY]
+#                                                prints the new id, U-<n>. Issue #2598: the operator reads
+#                                                this days later with the thread forgotten, so it is
+#                                                written in plain words: --now what happens today,
+#                                                --change what would change, --why why, --risk the real
+#                                                risk, one short sentence each (15+ letters). All four
+#                                                are required for --source agent (exit 2 otherwise). The
+#                                                question, those four and --did refuse ticket refs (#N,
+#                                                PR #N, owner/repo#N), links, backticks, snake_case code
+#                                                names, pipeline labels (PM-A), U-/D- ids and commit
+#                                                hashes: those go in --links only. ALL_CAPS variable
+#                                                names (OPENAI_API_KEY) are allowed: he must know which. A hook-captured menu
+#                                                has no fields until the agent adds them with `update`.
+#                                                Writing guide: .claude/reference/unattended-mode.md
+#                                                §Writing a question. --context (issue #2592) is still
+#                                                read on old records and accepted, but no longer enough.
+#   unattended.sh update U-<n> (--did|--now|--change|--why|--risk|--links|--context TEXT)...
+#                        [--cwd DIR | --repo KEY]      an unknown id is refused (exit 1)
 #   unattended.sh answer U-<n> --answer TEXT [--by operator|thread] [--session ID] [--cwd DIR | --repo KEY]
 #                                                the operator answered it (in chat or at his return): only
 #                                                this, or `dismiss`, removes a question from the lists
@@ -209,8 +218,8 @@ all_json() { # FILE
     | [$r[] | select(.type == "question" and (.id | type) == "string")
         | . as $q
         | ([$d[] | select(.id == $q.id)] | last) as $res
-        | .did = (([$u[] | select(.id == $q.id and .did != null) | .did] | last) // .did)
-        | .context = (([$u[] | select(.id == $q.id and .context != null) | .context] | last) // .context)
+        | reduce ("did", "context", "now", "change", "why", "risk", "links") as $k (.;
+            .[$k] = (([$u[] | select(.id == $q.id and .[$k] != null) | .[$k]] | last) // .[$k]))
         | .status = (if $res == null then "open" elif $res.type == "answered" then "answered" else "dismissed" end)
         | .resolution = (if $res == null then null else ($res.answer // $res.reason // null) end)]' "$1" 2>/dev/null
 }
@@ -335,14 +344,11 @@ cmd_status() {
   fi
 }
 
-# Background worth reading (issue #2592): at least 30 letters, in any script, once references are
-# taken out. Tokens that are URLs (`://`, `www.`) or hold `#` (#N, owner/repo#N) are dropped, and
-# so are bare reference labels (pr, issue, pull, U-3). Only Unicode letters count, so punctuation
-# in any script (`—`, `…`) adds nothing; Chinese, Japanese and Thai letters count double, since
-# those scripts carry a word in one or two characters and use no spaces.
-context_ok() { # TEXT
-  local n
-  n=$(printf '%s' "$1" | perl -CSA -Mutf8 -ne '
+# Letters in TEXT once references are taken out (issue #2592), in any script. Tokens that are URLs
+# or hold `#` are dropped, and so are bare reference labels (pr, issue, pull, U-3). Only Unicode
+# letters count; Chinese, Japanese and Thai letters count double (no spaces, dense words).
+letter_count() { # TEXT
+  printf '%s' "$1" | perl -CSA -Mutf8 -ne '
     for my $t (split /\s+/) {
       next if $t =~ m{://} || $t =~ /^www\./i || index($t, chr(35)) >= 0;
       (my $l = $t) =~ s/\P{L}//g;
@@ -350,12 +356,44 @@ context_ok() { # TEXT
       my $wide = () = $l =~ /[\p{Han}\p{Hiragana}\p{Katakana}\p{Thai}]/g;
       $n += length($l) + $wide;
     }
-    END { print $n + 0 }') || n=0
-  [ "${n:-0}" -ge 30 ]
+    END { print $n + 0 }' 2>/dev/null || echo 0
+}
+context_ok() { [ "$(letter_count "$1")" -ge 30 ]; }   # legacy --context (issue #2592)
+
+# Issue #2598: what a plain-words field may not hold. Prints the first problem found, or nothing.
+# References and code belong in --links; the sentence itself has to read to a stranger.
+plain_problem() { # TEXT
+  printf '%s' "$1" | perl -CSA -Mutf8 -0777 -ne '
+    my @c = (
+      [qr{(?:https?://|www\.)\S}i,                       "a link"],
+      [qr{\b[a-z0-9-]+\.(?:com|org|net|io|dev|ai|app|co)/\S}i, "a link"],
+      [qr{\x23\d},                                     "a ticket number like \x23123"],
+      [qr{\b(?:pr|prs|issue|issues|pull)\s*\x23?\d+}i, "a ticket number like PR 123"],
+      [qr{\x60},                                       "backticks"],
+      [qr{\b(?![A-Z0-9_]+\b)[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b}, "a code name like some_field"],
+      [qr{\b[A-Z]{2,4}-[A-Z]\b},                     "a pipeline label like PM-A"],
+      [qr{\b[UD]-\d+\b},                              "a question id like U-25"],
+      [qr{\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b}, "a commit hash"],
+    );
+    my $text = $_;
+    for my $c (@c) { if ($text =~ $c->[0]) { print $c->[1]; last } }' 2>/dev/null
+}
+
+# Die with exit 2 when FIELD (a flag name) holds VALUE that is not plain words.
+require_plain() { # FLAG VALUE
+  local why
+  why=$(plain_problem "$2")
+  [ -z "$why" ] || die_usage "$1 contains $why: write it in plain words and put references in --links (.claude/reference/unattended-mode.md §Writing a question)"
+}
+require_field() { # FLAG VALUE
+  [ -n "$2" ] || die_usage "record needs $1: one plain sentence (.claude/reference/unattended-mode.md §Writing a question)"
+  require_plain "$1" "$2"
+  [ "$(letter_count "$2")" -ge 15 ] || die_usage "$1 is too short: one plain sentence a stranger can follow"
 }
 
 cmd_record() {
   local q="" ctx="" rec="" opts="" did="" sid="" src="agent" f n id rc
+  local fnow="" fchange="" fwhy="" frisk="" flinks=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --question) q="${2-}"; shift 2 || die_usage "--question needs a value" ;;
@@ -363,17 +401,25 @@ cmd_record() {
       --options) opts="${2-}"; shift 2 || die_usage "--options needs a value" ;;
       --did) did="${2-}"; shift 2 || die_usage "--did needs a value" ;;
       --context) ctx="${2-}"; shift 2 || die_usage "--context needs a value" ;;
+      --now) fnow="${2-}"; shift 2 || die_usage "--now needs a value" ;;
+      --change) fchange="${2-}"; shift 2 || die_usage "--change needs a value" ;;
+      --why) fwhy="${2-}"; shift 2 || die_usage "--why needs a value" ;;
+      --risk) frisk="${2-}"; shift 2 || die_usage "--risk needs a value" ;;
+      --links) flinks="${2-}"; shift 2 || die_usage "--links needs a value" ;;
       --session) sid="${2-}"; shift 2 || die_usage "--session needs a value" ;;
       --source) src="${2-}"; shift 2 || die_usage "--source needs a value" ;;
       *) die_usage "unknown argument to record: $1" ;;
     esac
   done
   [ -n "$q" ] || die_usage "record needs --question"
-  # Issue #2592: an agent writes the background with the question; only a hook-captured menu may
-  # arrive without it (the agent adds it with `update --context`).
+  # Issue #2598: an agent writes the four plain-words fields with the question; only a
+  # hook-captured menu may arrive without them (the agent adds them with `update`).
   if [ "$src" != hook ]; then
-    [ -n "$ctx" ] || die_usage "record needs --context: plain-language background for someone who has forgotten this thread (.claude/reference/unattended-mode.md §Writing a question)"
-    context_ok "$ctx" || die_usage "--context is too thin: at least a sentence (30 letters) of plain background, not just an id or a ref"
+    require_plain --question "$q"
+    require_field --now "$fnow"; require_field --change "$fchange"
+    require_field --why "$fwhy"; require_field --risk "$frisk"
+    [ -z "$did" ] || require_plain --did "$did"
+    [ -z "$ctx" ] || context_ok "$ctx" || die_usage "--context is too thin: at least a sentence (30 letters) of plain background, not just an id or a ref"
   fi
   f=$(q_file)
   mkdir -p "$Q_DIR" 2>/dev/null || { printf 'unattended.sh: cannot create %s\n' "$Q_DIR" >&2; return 1; }
@@ -385,9 +431,13 @@ cmd_record() {
   rc=0
   local json
   json=$("$JQ" -cn --arg id "$id" --arg q "$q" --arg c "$ctx" --arg r "$rec" --arg o "$opts" --arg d "$did" \
+    --arg fn "$fnow" --arg fc "$fchange" --arg fw "$fwhy" --arg fr "$frisk" --arg fl "$flinks" \
     --arg s "$sid" --arg src "$src" --argjson at "$(now)" '
     {type: "question", id: $id, at: $at, question: $q,
      context: (if $c == "" then null else $c end),
+     now: (if $fn == "" then null else $fn end), change: (if $fc == "" then null else $fc end),
+     why: (if $fw == "" then null else $fw end), risk: (if $fr == "" then null else $fr end),
+     links: (if $fl == "" then null else $fl end),
      options: ($o | if . == "" then [] else split("|") end),
      recommended: (if $r == "" then null else $r end),
      did: (if $d == "" then null else $d end),
@@ -400,7 +450,7 @@ cmd_record() {
 }
 
 cmd_update() {
-  local id="${1-}" did="" ctx=""
+  local id="${1-}" did="" ctx="" fnow="" fchange="" fwhy="" frisk="" flinks=""
   [ -n "$id" ] || die_usage "update needs an id"
   shift
   case "$id" in U-[0-9]*) ;; *) die_usage "bad id: $id" ;; esac
@@ -408,10 +458,20 @@ cmd_update() {
     case "$1" in
       --did) did="${2-}"; shift 2 || die_usage "--did needs a value" ;;
       --context) ctx="${2-}"; shift 2 || die_usage "--context needs a value" ;;
+      --now) fnow="${2-}"; shift 2 || die_usage "--now needs a value" ;;
+      --change) fchange="${2-}"; shift 2 || die_usage "--change needs a value" ;;
+      --why) fwhy="${2-}"; shift 2 || die_usage "--why needs a value" ;;
+      --risk) frisk="${2-}"; shift 2 || die_usage "--risk needs a value" ;;
+      --links) flinks="${2-}"; shift 2 || die_usage "--links needs a value" ;;
       *) die_usage "unknown argument to update: $1" ;;
     esac
   done
-  [ -n "$did" ] || [ -n "$ctx" ] || die_usage "update needs --did or --context"
+  [ -n "$did$ctx$fnow$fchange$fwhy$frisk$flinks" ] || die_usage "update needs at least one of --did --now --change --why --risk --links --context"
+  [ -z "$did" ] || require_plain --did "$did"
+  [ -z "$fnow" ] || require_field --now "$fnow"
+  [ -z "$fchange" ] || require_field --change "$fchange"
+  [ -z "$fwhy" ] || require_field --why "$fwhy"
+  [ -z "$frisk" ] || require_field --risk "$frisk"
   [ -z "$ctx" ] || context_ok "$ctx" || die_usage "--context is too thin: at least a sentence (30 letters) of plain background, not just an id or a ref"
   local f rc=0
   f=$(q_file)
@@ -422,9 +482,11 @@ cmd_update() {
     unlock; printf 'unattended.sh: %s is not a recorded question; nothing written\n' "$id" >&2; return 1
   fi
   local json
-  json=$("$JQ" -cn --arg id "$id" --arg d "$did" --arg c "$ctx" --argjson at "$(now)" \
+  json=$("$JQ" -cn --arg id "$id" --arg d "$did" --arg c "$ctx" --arg fn "$fnow" --arg fc "$fchange" \
+    --arg fw "$fwhy" --arg fr "$frisk" --arg fl "$flinks" --argjson at "$(now)" \
     '{type: "update", id: $id, at: $at}
-     + (if $d == "" then {} else {did: $d} end) + (if $c == "" then {} else {context: $c} end)') || rc=1
+     + ({did: $d, context: $c, now: $fn, change: $fc, why: $fw, risk: $fr, links: $fl}
+        | with_entries(select(.value != "")))') || rc=1
   [ "$rc" -eq 0 ] && { append "$f" "$json" || rc=1; }
   unlock
   [ "$rc" -eq 0 ] || { printf 'unattended.sh: write failed\n' >&2; return 1; }
@@ -461,12 +523,17 @@ digest_file() { # FILE LABEL SID SHOWN
   nold=$(printf '%s' "$split" | "$JQ" -r '.old | length')
   text=""
   if [ "$nnew" -gt 0 ]; then
-    out=$(printf '%s' "$split" | "$JQ" -r '.new | to_entries[] | .value as $q
+    out=$(printf '%s' "$split" | "$JQ" -r 'def fields($q): ["Now", "now"], ["Change", "change"], ["Why", "why"], ["Risk", "risk"]
+  | . as [$label, $k]
+  | "\n   \($label): \($q[$k] // "not recorded (recording defect, issue #2598)")";
+.new | to_entries[] | .value as $q
       | "\(.key + 1). \($q.id): \($q.question)"
-        + "\n   Context: \($q.context // "missing: recorded without background (issue #2592)")"
+        + ([fields($q)] | join(""))
+        + (if $q.context then "\n   Background: \($q.context)" else "" end)
         + "\n   Recommended: \($q.recommended // "none given")"
         + (if ($q.options | length) > 0 then " (options: \($q.options | join(" | ")))" else "" end)
-        + "\n   Meanwhile: \($q.did // "not recorded; see the thread")"') || out=""
+        + "\n   Meanwhile: \($q.did // "not recorded; see the thread")"
+        + (if $q.links then "\n   Links: \($q.links)" else "" end)') || out=""
     [ -n "$out" ] || { printf 'unattended.sh: could not render the list\n' >&2; return 1; }
     text=$(printf '%sQuestions recorded while you were away (%s):\n%s' "${label:+[$label] }" "$nnew" "$out")
   fi
@@ -608,14 +675,19 @@ list_file() { # FILE LABEL
   a=$(all_json "$f") && [ -n "$a" ] || { printf 'unattended.sh: cannot read the questions file\n' >&2; return 1; }
   n=$(printf '%s' "$a" | "$JQ" -r 'length')
   [ "${n:-0}" -gt 0 ] || return 0
-  printf '%s' "$a" | "$JQ" -r --arg label "$label" '
+  printf '%s' "$a" | "$JQ" -r --arg label "$label" 'def fields($q): ["Now", "now"], ["Change", "change"], ["Why", "why"], ["Risk", "risk"]
+  | . as [$label, $k]
+  | "\n   \($label): \($q[$k] // "not recorded (recording defect, issue #2598)")";
+
     (if $label == "" then "" else "[\($label)] " end) as $p
     | "\($p)Recorded questions (\(length)):",
-      (.[] | "\(.id) [\(.status)]: \(.question)"
-        + "\n   Context: \(.context // "missing: recorded without background (issue #2592)")"
+      (.[] | . as $q | "\(.id) [\(.status)]: \(.question)"
+        + ([fields($q)] | join(""))
+        + (if .context then "\n   Background: \(.context)" else "" end)
         + "\n   Recommended: \(.recommended // "none given")"
         + (if (.options | length) > 0 then " (options: \(.options | join(" | ")))" else "" end)
         + "\n   Meanwhile: \(.did // "not recorded; see the thread")"
+        + (if .links then "\n   Links: \(.links)" else "" end)
         + (if .status == "answered" then "\n   Answer: \(.resolution // "")"
            elif .status == "dismissed" then "\n   Dismissed: \(.resolution // "no reason given")" else "" end))'
 }
@@ -677,7 +749,7 @@ while [ $# -gt 0 ]; do
     --repo) [ $# -ge 2 ] || die_usage "--repo needs a value"; REPO="$2"; shift 2 ;;
     # A value-taking flag carries its value through verbatim, so text such as an answer that starts
     # with --repo or --cwd is not read as a global option.
-    --answer|--reason|--question|--context|--recommended|--options|--did|--session|--source|--by|--for|--from|--shown-file|--until-epoch)
+    --answer|--reason|--question|--context|--now|--change|--why|--risk|--links|--recommended|--options|--did|--session|--source|--by|--for|--from|--shown-file|--until-epoch)
       args+=("$1"); shift
       if [ $# -gt 0 ]; then args+=("$1"); shift; fi ;;
     *) args+=("$1"); shift ;;
