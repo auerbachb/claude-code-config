@@ -112,12 +112,13 @@ round.
 
   ```text
   <the stored question, word for word>
+  Context: <the stored context, word for word>  — absent: `Context: not recorded (recording defect)`
   What it is: <PR|Issue> #N "<title>" (<open|merged|closed>)  — one line per entry in `refs`
   Meanwhile: <the stored did, word for word>. Already done / not done yet; can / cannot be undone.
   ```
 
-  - **Shown as recorded, never repaired.** Print the stored `question` and `did` whole: never shorten
-    them into a terse title (`PR #N (x hold) — merge?`), and never rewrite, translate or fill them in
+  - **Shown as recorded, never repaired.** Print the stored `question`, `context` (issue #2592) and
+    `did` whole: never shorten them into a terse title (`PR #N (x hold) — merge?`), and never rewrite, translate or fill them in
     from the PR, the issue or the thread. A question that cannot be answered as recorded is a recording
     defect to fix at the source, and a repaired menu would hide it. The `header` chip is the only short
     label.
