@@ -465,8 +465,12 @@ while IFS="$(printf '\t')" read -r rr rk rn; do
       # `gh issue view` also answers for a PR: the URL says which it is.
       is: (if (.url // "") | test("/pull/[0-9]+") then "pr" elif (.url // "") | test("/issues/[0-9]+") then "issue" else $is end),
       title, state, url,
-      # The body opening, flattened: comments, markup and runs of whitespace collapsed to one line.
-      summary: ((.body // "") | gsub("(?s)<!--.*?-->"; " ") | gsub("[#*`>|]+"; " ") | gsub("\\s+"; " ")
+      # The body opening, flattened to one line: comments dropped, markup removed only where it is syntax.
+      summary: ((.body // "") | gsub("(?s)<!--.*?-->"; " ")
+        # Markup only where it is syntax: a leading heading or quote marker, emphasis pairs and
+        # code-span ticks. Literal characters (C#, a > b) are kept.
+        | split("\n") | map(sub("^\\s*(#{1,6}\\s+|>\\s*)+"; "")) | join(" ")
+        | gsub("\\*\\*|__|`"; "") | gsub("\\s+"; " ")
         | ltrimstr(" ") | rtrimstr(" ") | if . == "" then null elif length > 600 then .[:597] + "..." else . end),
       error: null}' <<<"$got" >>"$REFS"
   else
