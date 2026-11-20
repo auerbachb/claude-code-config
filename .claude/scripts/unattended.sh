@@ -24,10 +24,17 @@
 #                                                (presence.sh return) or `off`; an at-computer presence
 #                                                window that ran out counts too (issue #2294)
 #   unattended.sh window-ended                   exit 0 when a declared window has ended, else 1
-#   unattended.sh record --question TEXT [--recommended TEXT] [--options 'A|B|C']
+#   unattended.sh record --question TEXT --context TEXT [--recommended TEXT] [--options 'A|B|C']
 #                        [--did TEXT] [--session ID] [--source agent|hook] [--cwd DIR | --repo KEY]
-#                                                prints the new id, U-<n>
-#   unattended.sh update U-<n> --did TEXT [--cwd DIR | --repo KEY]
+#                                                prints the new id, U-<n>. --context (issue #2592) is the
+#                                                plain-language background a person who has forgotten the
+#                                                thread needs to answer: what the PR/issue/change is, why
+#                                                it matters, what each option means. Required for
+#                                                --source agent (at least 8 words; exit 2 otherwise);
+#                                                a hook-captured menu has none until the agent adds it
+#                                                with `update`. Writing guide:
+#                                                .claude/reference/unattended-mode.md §Writing a question
+#   unattended.sh update U-<n> (--did TEXT | --context TEXT)... [--cwd DIR | --repo KEY]
 #   unattended.sh answer U-<n> --answer TEXT [--by operator|thread] [--session ID] [--cwd DIR | --repo KEY]
 #                                                the operator answered it (in chat or at his return): only
 #                                                this, or `dismiss`, removes a question from the lists
@@ -202,7 +209,8 @@ all_json() { # FILE
     | [$r[] | select(.type == "question" and (.id | type) == "string")
         | . as $q
         | ([$d[] | select(.id == $q.id)] | last) as $res
-        | .did = (([$u[] | select(.id == $q.id) | .did] | last) // .did)
+        | .did = (([$u[] | select(.id == $q.id and .did != null) | .did] | last) // .did)
+        | .context = (([$u[] | select(.id == $q.id and .context != null) | .context] | last) // .context)
         | .status = (if $res == null then "open" elif $res.type == "answered" then "answered" else "dismissed" end)
         | .resolution = (if $res == null then null else ($res.answer // $res.reason // null) end)]' "$1" 2>/dev/null
 }
@@ -327,20 +335,34 @@ cmd_status() {
   fi
 }
 
+# Background worth reading: at least 8 words once PR/issue/U- references are taken out (issue #2592).
+context_ok() { # TEXT
+  local n
+  n=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/(pr|issue|u-|d-)? ?#?[0-9]+//g' | tr -cs '[:alpha:]' '\n' | grep -c '[[:alpha:]]' || true)
+  [ "${n:-0}" -ge 8 ]
+}
+
 cmd_record() {
-  local q="" rec="" opts="" did="" sid="" src="agent" f n id rc
+  local q="" ctx="" rec="" opts="" did="" sid="" src="agent" f n id rc
   while [ $# -gt 0 ]; do
     case "$1" in
       --question) q="${2-}"; shift 2 || die_usage "--question needs a value" ;;
       --recommended) rec="${2-}"; shift 2 || die_usage "--recommended needs a value" ;;
       --options) opts="${2-}"; shift 2 || die_usage "--options needs a value" ;;
       --did) did="${2-}"; shift 2 || die_usage "--did needs a value" ;;
+      --context) ctx="${2-}"; shift 2 || die_usage "--context needs a value" ;;
       --session) sid="${2-}"; shift 2 || die_usage "--session needs a value" ;;
       --source) src="${2-}"; shift 2 || die_usage "--source needs a value" ;;
       *) die_usage "unknown argument to record: $1" ;;
     esac
   done
   [ -n "$q" ] || die_usage "record needs --question"
+  # Issue #2592: an agent writes the background with the question; only a hook-captured menu may
+  # arrive without it (the agent adds it with `update --context`).
+  if [ "$src" != hook ]; then
+    [ -n "$ctx" ] || die_usage "record needs --context: plain-language background for someone who has forgotten this thread (.claude/reference/unattended-mode.md §Writing a question)"
+    context_ok "$ctx" || die_usage "--context is too thin: at least 8 words of plain background, not just an id or a ref"
+  fi
   f=$(q_file)
   mkdir -p "$Q_DIR" 2>/dev/null || { printf 'unattended.sh: cannot create %s\n' "$Q_DIR" >&2; return 1; }
   lock "$f" || { printf 'unattended.sh: questions file is locked\n' >&2; return 1; }
@@ -350,9 +372,10 @@ cmd_record() {
   id="U-$((n + 1))"
   rc=0
   local json
-  json=$("$JQ" -cn --arg id "$id" --arg q "$q" --arg r "$rec" --arg o "$opts" --arg d "$did" \
+  json=$("$JQ" -cn --arg id "$id" --arg q "$q" --arg c "$ctx" --arg r "$rec" --arg o "$opts" --arg d "$did" \
     --arg s "$sid" --arg src "$src" --argjson at "$(now)" '
     {type: "question", id: $id, at: $at, question: $q,
+     context: (if $c == "" then null else $c end),
      options: ($o | if . == "" then [] else split("|") end),
      recommended: (if $r == "" then null else $r end),
      did: (if $d == "" then null else $d end),
@@ -365,24 +388,27 @@ cmd_record() {
 }
 
 cmd_update() {
-  local id="${1-}" did=""
+  local id="${1-}" did="" ctx=""
   [ -n "$id" ] || die_usage "update needs an id"
   shift
   case "$id" in U-[0-9]*) ;; *) die_usage "bad id: $id" ;; esac
   while [ $# -gt 0 ]; do
     case "$1" in
       --did) did="${2-}"; shift 2 || die_usage "--did needs a value" ;;
+      --context) ctx="${2-}"; shift 2 || die_usage "--context needs a value" ;;
       *) die_usage "unknown argument to update: $1" ;;
     esac
   done
-  [ -n "$did" ] || die_usage "update needs --did"
+  [ -n "$did" ] || [ -n "$ctx" ] || die_usage "update needs --did or --context"
+  [ -z "$ctx" ] || context_ok "$ctx" || die_usage "--context is too thin: at least 8 words of plain background, not just an id or a ref"
   local f rc=0
   f=$(q_file)
   mkdir -p "$Q_DIR" 2>/dev/null || { printf 'unattended.sh: cannot create %s\n' "$Q_DIR" >&2; return 1; }
   lock "$f" || { printf 'unattended.sh: questions file is locked\n' >&2; return 1; }
   local json
-  json=$("$JQ" -cn --arg id "$id" --arg d "$did" --argjson at "$(now)" \
-    '{type: "update", id: $id, at: $at, did: $d}') || rc=1
+  json=$("$JQ" -cn --arg id "$id" --arg d "$did" --arg c "$ctx" --argjson at "$(now)" \
+    '{type: "update", id: $id, at: $at}
+     + (if $d == "" then {} else {did: $d} end) + (if $c == "" then {} else {context: $c} end)') || rc=1
   [ "$rc" -eq 0 ] && { append "$f" "$json" || rc=1; }
   unlock
   [ "$rc" -eq 0 ] || { printf 'unattended.sh: write failed\n' >&2; return 1; }
@@ -421,6 +447,7 @@ digest_file() { # FILE LABEL SID SHOWN
   if [ "$nnew" -gt 0 ]; then
     out=$(printf '%s' "$split" | "$JQ" -r '.new | to_entries[] | .value as $q
       | "\(.key + 1). \($q.id): \($q.question)"
+        + "\n   Context: \($q.context // "missing: recorded without background (issue #2592)")"
         + "\n   Recommended: \($q.recommended // "none given")"
         + (if ($q.options | length) > 0 then " (options: \($q.options | join(" | ")))" else "" end)
         + "\n   Meanwhile: \($q.did // "not recorded; see the thread")"') || out=""
@@ -569,6 +596,7 @@ list_file() { # FILE LABEL
     (if $label == "" then "" else "[\($label)] " end) as $p
     | "\($p)Recorded questions (\(length)):",
       (.[] | "\(.id) [\(.status)]: \(.question)"
+        + "\n   Context: \(.context // "missing: recorded without background (issue #2592)")"
         + "\n   Recommended: \(.recommended // "none given")"
         + (if (.options | length) > 0 then " (options: \(.options | join(" | ")))" else "" end)
         + "\n   Meanwhile: \(.did // "not recorded; see the thread")"
@@ -633,7 +661,7 @@ while [ $# -gt 0 ]; do
     --repo) [ $# -ge 2 ] || die_usage "--repo needs a value"; REPO="$2"; shift 2 ;;
     # A value-taking flag carries its value through verbatim, so text such as an answer that starts
     # with --repo or --cwd is not read as a global option.
-    --answer|--reason|--question|--recommended|--options|--did|--session|--source|--by|--for|--from|--shown-file|--until-epoch)
+    --answer|--reason|--question|--context|--recommended|--options|--did|--session|--source|--by|--for|--from|--shown-file|--until-epoch)
       args+=("$1"); shift
       if [ $# -gt 0 ]; then args+=("$1"); shift; fi ;;
     *) args+=("$1"); shift ;;

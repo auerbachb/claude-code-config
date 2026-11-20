@@ -108,11 +108,11 @@ denies menus once it is armed), take one bounded round:
 3. **Ask** in one `AskUserQuestion` call: at most four questions in all, recommended option first in
    each, the most consequential first. Any beyond four are recorded as usual after away is set.
    If unattended mode is already armed (`unattended.sh status`), open no menu (`human-queue.md`
-   §Unattended): record each question with `unattended.sh record` and take its recommended option.
+   §Unattended): record each question with `unattended.sh record` (with `--context`, issue #2592) and take its recommended option.
    A step only he can do (a sign-in, a `.env` value, an agreement, his device, his call) also offers
    `I'll do it later`; a free-text answer saying the same counts.
 4. **Record each answer where the work reads it**, then apply it after he leaves without asking
-   again: `unattended.sh record --question … --recommended …` then `unattended.sh answer U-<n>
+   again: `unattended.sh record --question … --context … --recommended …` then `unattended.sh answer U-<n>
    --answer … --by operator`; a comment on the issue or PR it concerns (PRs he authored only,
    `safety.md` §Authorship); a message to the sub-agent or session that asked. An answer here is his
    own chat answer, so it carries the same authority as one typed in chat (one paid review approved
@@ -129,7 +129,7 @@ denies menus once it is armed), take one bounded round:
    an exit 5 the refused text goes nowhere: `<what>` and `<why>` below, the record and every printed
    line use only the rewritten text that names the variable or account, never the refused value.
    Record it instead with `unattended.sh record --question
-   "Human task: <what>" --did "not saved to the human-task list: <why>" --repo <owner/name of the work>` (the same repo
+   "Human task: <what>" --context "<what the step is for and why only he can do it, in plain words>" --did "not saved to the human-task list: <why>" --repo <owner/name of the work>` (the same repo
    as `add`, so the question lands in that repo's list) and leave it open, so it is
    listed on his return, then print one line: `not saved to the human-task list: <why>
    (owner-task.sh <not found|exit N>); recorded as U-<n>`. If `record` also fails, claim no `U-<n>`:

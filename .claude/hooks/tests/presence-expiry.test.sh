@@ -139,8 +139,8 @@ check "a live re-declaration leaves nothing to expire" "$(P expire)" ""
 printf '== any live message returns him: list first from every repo, dialog after\n'
 rm -rf "$HOME/.claude/unattended"
 lapse here
-U record --question "Rename the job?" --recommended "keep" >/dev/null
-UB record --question "Gadgets: which DB?" --recommended "postgres" >/dev/null
+U record --question "Rename the job?" --context "Test background: what this change is and why the operator is being asked" --recommended "keep" >/dev/null
+UB record --question "Gadgets: which DB?" --context "Test background: what this change is and why the operator is being asked" --recommended "postgres" >/dev/null
 OUT=$(operator s-1)
 C=$(ctx "$OUT")
 has "the list covers this repo" "$C" "[acme/widgets] Questions recorded while you were away (1)"
@@ -167,7 +167,7 @@ check "no questions saved this time" "$(U pending)" 0
 OUT=$(operator s-1)
 has "nothing saved: the dialog comes in the same turn" "$(ctx "$OUT")" "PRESENCE DIALOG"
 lapse here
-U record --question "Q?" --recommended "y" >/dev/null
+U record --question "Q?" --context "Test background: what this change is and why the operator is being asked" --recommended "y" >/dev/null
 OUT=$(operator s-1)
 has "something saved: list only" "$(ctx "$OUT")" "Q?"
 for i in 1 2 3 4; do ( operator "s-$i" >"$TMP/dlg.$i" 2>/dev/null ) & done
@@ -180,7 +180,7 @@ check "dialog-claim is spent" "$(P dialog-claim; echo $?)" 1
 printf '== while the return winner is still listing, nobody else lists or asks\n'
 rm -rf "$HOME/.claude/unattended"
 lapse here
-U record --question "Still listing?" --recommended "y" >/dev/null
+U record --question "Still listing?" --context "Test background: what this change is and why the operator is being asked" --recommended "y" >/dev/null
 P return >/dev/null
 check "the dialog waits for the list" "$(sj '.presence.return.dialog')" listing
 check "probe: a return is in progress" "$(P probe)" returning
@@ -202,7 +202,7 @@ has "so the next message lists again" "$(ctx "$OUT")" "Still listing?"
 printf '== concurrent returns: one session handles the return\n'
 rm -rf "$HOME/.claude/unattended"
 lapse here
-U record --question "Concurrent?" --recommended "y" >/dev/null
+U record --question "Concurrent?" --context "Test background: what this change is and why the operator is being asked" --recommended "y" >/dev/null
 for i in 1 2 3 4; do ( operator "r-$i" >"$TMP/ret.$i" 2>/dev/null ) & done
 wait
 LISTED=0
@@ -212,7 +212,7 @@ check "away handling ended" "$(U is-active; echo $?)" 1
 
 printf '== a declaration answers the pending dialog\n'
 lapse here
-U record --question "Pending dialog?" --recommended "y" >/dev/null
+U record --question "Pending dialog?" --context "Test background: what this change is and why the operator is being asked" --recommended "y" >/dev/null
 operator s-1 >/dev/null
 check "the dialog is pending" "$(sj '.presence.return.dialog')" pending
 P set here --by operator-message --for 1h >/dev/null
@@ -222,7 +222,7 @@ lacks "so the next message does not ask" "$(ctx "$OUT")" "PRESENCE DIALOG"
 
 printf '== an away window runs out: listed without a menu, away handling continues\n'
 rm -rf "$HOME/.claude/unattended"
-U record --question "Saved before the end?" --recommended "go" >/dev/null
+U record --question "Saved before the end?" --context "Test background: what this change is and why the operator is being asked" --recommended "go" >/dev/null
 lapse away
 check "unattended flag is still on after the end" "$(sj '.unattended.active')" true
 check "away is-active after the end" "$(U is-active; echo $?)" 0
@@ -348,8 +348,8 @@ fmtt() { date -r "$1" '+%a %H:%M %Z' 2>/dev/null || date -d "@$1" '+%a %H:%M %Z'
 # lists EVERY repo's saved questions, then leaves the dialog for his next message.
 printf '== a return winner that died: the next operator message lists every repo, then the dialog\n'
 lapse away
-U record --question "Stranded A?" --recommended "a" >/dev/null
-UB record --question "Stranded B?" --recommended "b" >/dev/null
+U record --question "Stranded A?" --context "Test background: what this change is and why the operator is being asked" --recommended "a" >/dev/null
+UB record --question "Stranded B?" --context "Test background: what this change is and why the operator is being asked" --recommended "b" >/dev/null
 P return >/dev/null
 check "a return left the dialog listing" "$(sj '.presence.return.dialog')" listing
 GD=$(sj '.presence.return.generation')
@@ -368,8 +368,8 @@ has "and his next message asks the dialog" "$(ctx "$OUT2")" "PRESENCE DIALOG"
 printf '== a return winner killed before it printed: the next message still lists every repo (issue #2352)\n'
 lapse away
 clear_questions
-U record --question "Killed return A?" --recommended "a" >/dev/null
-UB record --question "Killed return B?" --recommended "b" >/dev/null
+U record --question "Killed return A?" --context "Test background: what this change is and why the operator is being asked" --recommended "a" >/dev/null
+UB record --question "Killed return B?" --context "Test background: what this change is and why the operator is being asked" --recommended "b" >/dev/null
 KILLBIN="$TMP/killbin"; mkdir -p "$KILLBIN"
 KILL_REAL_JQ=$(command -v jq)
 cat >"$KILLBIN/jq" <<KILLJQ
@@ -393,7 +393,7 @@ has "and the other repo's, never reached" "$C" "Killed return B?"
 # expire and its is-active read (the wrapper runs the return just before the real is-active).
 printf '== expiry racing a return: the claimed notice and its list still reach the thread\n'
 lapse away
-U record --question "Race A?" --recommended "a" >/dev/null
+U record --question "Race A?" --context "Test background: what this change is and why the operator is being asked" --recommended "a" >/dev/null
 RACE_SH="$TMP/is-active-race.sh"
 cat > "$RACE_SH" <<RACE
 #!/usr/bin/env bash
@@ -443,8 +443,8 @@ check "the guard lets the menu through" "$(guard s-here)" ""
 # the questions every repo saved while it ran out are listed, not only the current repo's.
 printf '== off after an at-computer window ran out: every repo saved questions are listed\n'
 lapse here
-U record --question "Off A?" --recommended "a" >/dev/null
-UB record --question "Off B?" --recommended "b" >/dev/null
+U record --question "Off A?" --context "Test background: what this change is and why the operator is being asked" --recommended "a" >/dev/null
+UB record --question "Off B?" --context "Test background: what this change is and why the operator is being asked" --recommended "b" >/dev/null
 OFF_OUT=$(U off)
 has "off lists the current repo's saved question" "$OFF_OUT" "Off A?"
 has "and the other repo's saved question" "$OFF_OUT" "Off B?"

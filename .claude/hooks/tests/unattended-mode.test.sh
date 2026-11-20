@@ -139,13 +139,14 @@ check "guard: start_session is denied while unattended" "$(printf '%s' "$OUT" | 
 has "guard: and says to use a sub-agent" "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason')" "sub-agent"
 check "guard: start_session records no question" "$(jq -s '[.[] | select(.type == "question")] | length' "$QF")" "2"
 has "reason: names the script by full path" "$REASON" "'$SCRIPT' update"
+has "reason: asks for the background at once (issue #2592)" "$REASON" "update <id> --context"
 
 # ---------------------------------------------------------------- script
 printf '== record / update / per repo\n'
-ID=$(U record --question "Rename the job?" --recommended "keep the name" --did "kept the name")
+ID=$(U record --question "Rename the job?" --context "Test background: what this change is and why the operator is being asked" --recommended "keep the name" --did "kept the name")
 check "agent record gets the next id" "$ID" "U-3"
 U update U-2 --did "parked the merge" ; check "update exits 0" "$?" "0"
-IDB=$( (cd "$REPO_B" && "$SCRIPT" record --question "B?" ) )
+IDB=$( (cd "$REPO_B" && "$SCRIPT" record --question "B?" --context "Test background: what this change is and why the operator is being asked" ) )
 check "another repo has its own ids" "$IDB" "U-1"
 check "pending in repo A" "$(U pending)" "3"
 
@@ -168,7 +169,7 @@ has "the same session's next prompt gets a one-line summary with the count and i
 lacks "the summary is not the full list again" "$SCTX" "Recommended:"
 
 printf '== window end\n'
-U record --question "Late question?" --recommended "yes" >/dev/null
+U record --question "Late question?" --context "Test background: what this change is and why the operator is being asked" --recommended "yes" >/dev/null
 OUT=$(prompt_payload "$REPO_A" "<ci-monitor-event>tick</ci-monitor-event>" | "$DIGEST")
 check "automated prompt before the end: nothing" "$OUT" ""
 # End the window: rewrite the flag through session-state.sh, as `on` does.
@@ -196,7 +197,7 @@ check "after the return: the menu renders" "$OUT" ""
 printf '== origin-less repos, failed writes\n'
 NO_A="$TMP/no-origin-a"; NO_B="$TMP/no-origin-b"
 git init -q "$NO_A"; git init -q "$NO_B"
-(cd "$NO_A" && "$SCRIPT" record --question "A only?" >/dev/null)
+(cd "$NO_A" && "$SCRIPT" record --question "A only?" --context "Test background: what this change is and why the operator is being asked" >/dev/null)
 check "two repos without an origin do not share a file" "$( (cd "$NO_B" && "$SCRIPT" pending) )" "0"
 check "the first still has its question" "$( (cd "$NO_A" && "$SCRIPT" pending) )" "1"
 # A jq that dies after printing partial JSON: no receipt, nothing appended.
@@ -208,13 +209,13 @@ exit 137
 FAKEJQ
 chmod +x "$FAKE/jq"
 BEFORE=$(wc -l <"$QF" | tr -d ' ')
-OUT=$( (cd "$REPO_A" && PATH="$FAKE:$PATH" "$SCRIPT" record --question "Killed?" 2>/dev/null); echo "rc=$?")
+OUT=$( (cd "$REPO_A" && PATH="$FAKE:$PATH" "$SCRIPT" record --question "Killed?" --context "Test background: what this change is and why the operator is being asked" 2>/dev/null); echo "rc=$?")
 check "a killed jq prints no receipt" "$OUT" "rc=1"
 check "and appends nothing" "$(wc -l <"$QF" | tr -d ' ')" "$BEFORE"
 
 printf '== off\n'
 U on --for 1h >/dev/null
-U record --question "Q at off?" >/dev/null
+U record --question "Q at off?" --context "Test background: what this change is and why the operator is being asked" >/dev/null
 PEND_BEFORE_OFF=$(U pending)
 OFF=$(U off)
 has "off: switches off" "$OFF" "unattended: off"
@@ -239,8 +240,8 @@ sprompt() { # CWD SESSION_OR_EMPTY — the hook's additionalContext for an opera
     + (if $sid == "" then {} else {session_id: $sid} end)' | "$DIGEST" | jq -r '.hookSpecificOutput.additionalContext // ""'
 }
 "$SCRIPT" on --for 6h >/dev/null
-UC record --question "Pick the region?" --recommended "us-east" >/dev/null
-UC record --question "Rename the table?" --recommended "keep" >/dev/null
+UC record --question "Pick the region?" --context "Test background: what this change is and why the operator is being asked" --recommended "us-east" >/dev/null
+UC record --question "Rename the table?" --context "Test background: what this change is and why the operator is being asked" --recommended "keep" >/dev/null
 BEFORE=$(wc -l <"$QC" | tr -d ' ')
 D1=$(UC digest); D2=$(UC digest --mark)
 has "digest lists both" "$D1" "U-2: Rename the table?"
@@ -259,7 +260,7 @@ has "same session: one summary line with the count and both ids" "$C2" "2 saved 
 lacks "same session: no second full listing" "$C2" "Recommended:"
 check "still pending after being shown twice" "$(UC pending)" "2"
 
-UC record --question "Third thing?" --recommended "yes" >/dev/null
+UC record --question "Third thing?" --context "Test background: what this change is and why the operator is being asked" --recommended "yes" >/dev/null
 C3=$(sprompt "$REPO_C" s-c1)
 has "a question saved after the first listing appears in full" "$C3" "U-3: Third thing?"
 has "and the header counts only the new one" "$C3" "Questions recorded while you were away (1)"
@@ -311,8 +312,8 @@ check "dismiss another id" "$(UC dismiss U-3 --reason 'stale' | tr '\n' ' ')" "U
 check "all resolved: pending 0" "$(UC pending)" "0"
 check "all resolved: the hook lists nothing" "$(sprompt "$REPO_C" s-c10)" ""
 check "all resolved: digest prints nothing" "$(UC digest)" ""
-UC record --question "Fourth?" >/dev/null
-UC record --question "Fifth?" >/dev/null
+UC record --question "Fourth?" --context "Test background: what this change is and why the operator is being asked" >/dev/null
+UC record --question "Fifth?" --context "Test background: what this change is and why the operator is being asked" >/dev/null
 check "dismiss several ids in one act" "$(UC dismiss U-4 U-5 --reason 'bulk' | tr '\n' ' ')" "U-4 dismissed U-5 dismissed "
 check "and both are recorded" "$(jq -s '[.[] | select(.type == "dismissed" and .reason == "bulk")] | length' "$QC")" "2"
 
@@ -329,7 +330,7 @@ check "list --all --json: spans repos" "$(UC list --all --json | jq -r '[.[].rep
 
 printf '== issue #2352: records written before this change\n'
 REPO_D="$TMP/repo-d"; git init -q "$REPO_D"; git -C "$REPO_D" remote add origin https://github.com/acme/legacy.git
-(cd "$REPO_D" && "$SCRIPT" record --question "Old one?" >/dev/null && "$SCRIPT" record --question "Old two?" >/dev/null)
+(cd "$REPO_D" && "$SCRIPT" record --question "Old one?" --context "Test background: what this change is and why the operator is being asked" >/dev/null && "$SCRIPT" record --question "Old two?" --context "Test background: what this change is and why the operator is being asked" >/dev/null)
 printf '%s\n' '{"type":"listed","through":2,"at":1}' >>"$UDIR/acme__legacy.jsonl"
 check "an old listed watermark hides nothing: pending" "$( (cd "$REPO_D" && "$SCRIPT" pending) )" "2"
 has "and both are listed" "$( (cd "$REPO_D" && "$SCRIPT" digest) )" "U-2: Old two?"
@@ -339,8 +340,8 @@ check "dismiss clears the old ones" "$( (cd "$REPO_D" && "$SCRIPT" pending) )" "
 printf '== issue #2352: a hook killed at any point before it emits loses nothing\n'
 REPO_K="$TMP/repo-k"; git init -q "$REPO_K"; git -C "$REPO_K" remote add origin https://github.com/acme/killme.git
 UK() { (cd "$REPO_K" && "$SCRIPT" "$@"); }
-UK record --question "Kill A?" --recommended "a" >/dev/null
-UK record --question "Kill B?" --recommended "b" >/dev/null
+UK record --question "Kill A?" --context "Test background: what this change is and why the operator is being asked" --recommended "a" >/dev/null
+UK record --question "Kill B?" --context "Test background: what this change is and why the operator is being asked" --recommended "b" >/dev/null
 SEEN_K="$UDIR/seen/acme__killme"
 REAL_JQ=$(command -v jq); REAL_SCRIPT="$SCRIPT"
 export REAL_JQ REAL_SCRIPT KPID="$TMP/hook.pid" KMARK="$TMP/kill.marks"
@@ -427,10 +428,31 @@ check "and the questions file is untouched by all of it" "$(grep -c '"type":"que
 check "...with no other record type added" "$(jq -s '[.[] | select(.type != "question")] | length' "$UDIR/acme__killme.jsonl")" "0"
 
 printf '== issue #2352: answer text that looks like a global option is kept verbatim\n'
-UC record --question "Option-looking answer?" --recommended "x" >/dev/null
+UC record --question "Option-looking answer?" --context "Test background: what this change is and why the operator is being asked" --recommended "x" >/dev/null
 OPTQ=$(UC pending >/dev/null; jq -rs '[.[] | select(.type == "question")] | last | .id' "$QC")
 check "answer text starting with --repo is kept" "$(UC answer "$OPTQ" --answer '--repo oops' --by operator)" "$OPTQ answered"
 check "...and stored as the answer, not read as a global option" "$(jq -rs --arg i "$OPTQ" '[.[] | select(.type == "answered" and .id == $i)][0].answer' "$QC")" "--repo oops"
+
+# ---------------------------------------------------------------- issue #2592: background at the source
+printf '== issue #2592: --context\n'
+REPO_X="$TMP/repo-ctx"; mkdir -p "$REPO_X"; (cd "$REPO_X" && git init -q && git remote add origin https://github.com/acme/ctx.git)
+UX() { (cd "$REPO_X" && "$SCRIPT" "$@"); }
+UX record --question "No background?" >/dev/null 2>&1; check "agent record without --context: usage error" "$?" "2"
+UX record --question "Thin?" --context "PR #12" >/dev/null 2>&1; check "context that is only a ref: usage error" "$?" "2"
+CX=$(UX record --question "Merge PR #12?" --context "PR #12 changes how the nightly lead import treats salespeople, and merging it starts refusing whole files")
+check "agent record with context gets an id" "$CX" "U-1"
+check "context stored" "$(UX list --json | jq -r '.[0].context')" "PR #12 changes how the nightly lead import treats salespeople, and merging it starts refusing whole files"
+HX=$(UX record --source hook --question "Captured menu?")
+check "hook record may arrive without context" "$HX" "U-2"
+has "missing context is flagged in the digest" "$(UX digest)" "Context: missing: recorded without background"
+UX update "$HX" --context "The menu asked whether to keep the old job name, which three dashboards still link to by name" >/dev/null
+check "update --context fills it in" "$(UX list --json | jq -r --arg i "$HX" '.[] | select(.id == $i) | .context')" "The menu asked whether to keep the old job name, which three dashboards still link to by name"
+UX update "$HX" --did "kept the name" >/dev/null
+check "a later --did update keeps the context" "$(UX list --json | jq -r --arg i "$HX" '.[] | select(.id == $i) | "\(.did)|\(.context | length > 0)"')" "kept the name|true"
+check "eight words with a one-letter word count" "$(UX update "$HX" --context "This change adds a retry for failed imports" >/dev/null 2>&1; echo $?)" "0"
+UX update "$HX" --context "issue #1 issue #2 issue #3 issue #4 issue #5 issue #6 issue #7 issue #8" >/dev/null 2>&1; check "lowercase refs only: usage error" "$?" "2"
+UX update "$HX" --context "too thin" >/dev/null 2>&1; check "update with thin context: usage error" "$?" "2"
+UX update "$HX" >/dev/null 2>&1; check "update with neither field: usage error" "$?" "2"
 
 printf '\nunattended-mode.test.sh: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
