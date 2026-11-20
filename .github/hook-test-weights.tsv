@@ -26,6 +26,7 @@
 11	.claude/hooks/tests/session-start-sync-reconcile.test.sh
 14	.claude/hooks/tests/session-start-sync-resume.test.sh
 7	.claude/hooks/tests/session-start-sync.test.sh
+2	.claude/hooks/tests/silence-detector-away.test.sh
 2	.claude/hooks/tests/silence-detector-time-dedupe.test.sh
 1	.claude/hooks/tests/silence-watchdog.test.sh
 3	.claude/hooks/tests/skill-command-tracker.test.sh

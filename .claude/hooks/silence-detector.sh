@@ -128,10 +128,56 @@ CWD=$(parse_json_field '.cwd')
 # clears this marker after the next visible response.
 touch "$ACTIVE_FILE" 2>/dev/null || true
 
+# Operator away (issue #2594): he reads no chat, so never nag for a visible
+# message. Instead remind the thread, at most once per AWAY_REMIND_S, to write
+# nothing to chat and log what it would have said for /back. presence.sh is
+# consulted only on a new session or when this call would otherwise emit
+# something (warning or time injection), so the common no-output path stays cheap.
+AWAY_FILE="/tmp/claude-away-reminded-${SESSION_ID}"
+AWAY_REMIND_S="${AWAY_REMIND_S:-900}"
+[[ "$AWAY_REMIND_S" =~ ^[0-9]+$ ]] || AWAY_REMIND_S=900
+operator_away() {
+  local p="${PRESENCE_SH:-}" c dir
+  if [[ -z "$p" ]]; then
+    dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)
+    for c in "$dir/../scripts/presence.sh" \
+             "${HOME:+$HOME/.claude/skills-worktree/.claude/scripts/presence.sh}" \
+             "${HOME:+$HOME/.claude/scripts/presence.sh}"; do
+      [[ -n "$c" && -x "$c" ]] && { p="$c"; break; }
+    done
+  fi
+  [[ -n "$p" && -x "$p" ]] || return 1
+  "$p" is-away >/dev/null 2>&1
+}
+time_due() {
+  [[ -f "$TIME_FILE" ]] || return 0
+  local m; m=$(file_mtime "$TIME_FILE"); [[ -n "$m" ]] || return 0
+  local age=$(( $(date +%s) - m )); (( age < 0 || age >= TIME_INJECT_S ))
+}
+# Away handling: refresh the heartbeat (silence is expected), then the reminder
+# when its throttle allows, else the time injection. $1 = "force" on new-session
+# paths: the reminder ignores a marker left by an earlier same-id session.
+away_emit() {
+  local remind=1 am now_s
+  now_s=$(date +%s)
+  touch "$HEARTBEAT_FILE" 2>/dev/null || true
+  rm -f "$WARNED_FILE" 2>/dev/null || true
+  if [[ "${1:-}" != "force" && -f "$AWAY_FILE" ]]; then
+    am=$(file_mtime "$AWAY_FILE")
+    if [[ -n "$am" ]] && (( now_s - am >= 0 && now_s - am < AWAY_REMIND_S )); then remind=0; fi
+  fi
+  if (( remind )); then
+    touch "$AWAY_FILE" "$TIME_FILE" 2>/dev/null || true
+    emit_context "Current system time: ${current_time}. OPERATOR AWAY (presence): while presence reports away he reads no chat; he catches up with /back. Write NO chat text: no progress, status, merge line, blocker notice, recap or closing summary (if a turn must end with text, the shortest allowed close). Append each thing you would have said with away-log.sh append --kind blocker|decision|owner-task|merged|stopped|summary|note --text '<one line, no secret values>' (~/.claude/skills-worktree/.claude/scripts/away-log.sh). Questions still go to the unattended queue; gates, safety stops and records are unchanged. Contract: .claude/reference/away-log.md."
+  else
+    emit_time_if_due
+  fi
+}
+
 # If heartbeat file doesn't exist, create it (first tool call in session)
 if [[ ! -f "$HEARTBEAT_FILE" ]]; then
   touch "$HEARTBEAT_FILE"
-  emit_time_if_due force
+  if operator_away; then away_emit force; else emit_time_if_due force; fi
   exit 0
 fi
 last_ack=$(file_mtime "$HEARTBEAT_FILE")
@@ -139,12 +185,17 @@ last_ack=$(file_mtime "$HEARTBEAT_FILE")
 # Fallback if stat failed
 if [[ -z "$last_ack" ]]; then
   touch "$HEARTBEAT_FILE"
-  emit_time_if_due force
+  if operator_away; then away_emit force; else emit_time_if_due force; fi
   exit 0
 fi
 
 now=$(date +%s)
 elapsed=$((now - last_ack))
+
+if { [[ $elapsed -ge $THRESHOLD ]] || time_due; } && operator_away; then
+  away_emit
+  exit 0
+fi
 
 if [[ $elapsed -ge $THRESHOLD ]]; then
   if [[ -f "$WARNED_FILE" ]]; then

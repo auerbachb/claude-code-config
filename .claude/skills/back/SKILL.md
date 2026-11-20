@@ -174,8 +174,10 @@ A checklist, one line each: `- [ ] <what> — <why a person is needed> (<source>
 
 - `tasks` is `null`: print `Human tasks: unavailable (<reason from .unreadable>)`, never "none".
 - An empty list: `No open human tasks.`
-- **Recovered tasks (the fallback scan).** Read this thread's own messages since the away declaration
-  (`since`). A handed-over task is a step this thread told the operator to do himself because only a
+- **Recovered tasks (the fallback scan).** Start with the report's `away_log` entries of kind
+  `owner-task` (issue #2594): while he was away the thread wrote nothing to chat and logged them there
+  instead. Read this thread's own messages since the away declaration (`since`) only for what the log
+  cannot hold: `away_log` is null, or the absence began before the thread logged anything. A handed-over task is a step this thread told the operator to do himself because only a
   person can: an `OWNER_ACTION:` line, "only you can…", "you need to…", a sign-in or login, a `.env` or
   secret value to fill in, an agreement to accept, a live test on his own profile or account. Not a
   question (those are Step 3), not a status line, not work an agent can still do. Write each one as
@@ -216,7 +218,9 @@ Length follows `digest_level`:
 
 Sections, in order, each skipped when empty: **Merged** (`activity.merged`), **Opened**
 (`activity.opened`), **Still failing** (`activity.failed`), **Stopped or parked** (`stoppages`,
-`handoffs`, and questions left open above), **Still running** (`running`). Name PRs as `PR #N`.
+`handoffs`, and questions left open above), **Still running** (`running`), **Logged while away**
+(`away_log` entries of kind `blocker`, `decision`, `stopped`, `summary` and `note` not already shown above;
+`merged` and `owner-task` entries are covered by Merged and Step 4). Name PRs as `PR #N`.
 
 **Still failing** lists only `activity.failed`, the failures that still matter, one line each:
 `<workflow> on PR #N` (`pr` null: `on <branch>`, e.g. `on main`) with its link. Never list or total every failed run.
