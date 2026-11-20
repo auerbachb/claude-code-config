@@ -22,10 +22,15 @@
 #     The file `append` writes for this repo and session.
 #
 #   --session  default $CLAUDE_CODE_SESSION_ID, then $CLAUDE_SESSION_ID, then "nosession"
-#   --cwd      the thread's checkout (default: current directory); picks the repo key
+#   --cwd      the thread's checkout (default: current directory); picks the repo key. Without a
+#              resolvable repo the key is _local/<dir name>-<sha256 of the full path, 16 hex>.
+#
+#   A missing log (no file for the scope) reads as [] — nothing was logged; append creates the
+#   file on its first entry. A log that exists but cannot be read exits 1.
 #
 # STORAGE
-#   $AWAY_LOG_DIR (default ~/.claude/away-log)/<owner>__<repo>/<session>.jsonl, one object per
+#   $AWAY_LOG_DIR (default ~/.claude/away-log)/<owner>__<repo>/<session>.jsonl (mode 0600, dirs
+#   0700), one object per
 #   line: {at, at_iso, repo, session, kind, text}. Append-only; a line (text capped at 2000
 #   bytes) is written with one printf in append mode, so concurrent appends do not interleave.
 #
@@ -84,6 +89,9 @@ while [ $# -gt 0 ]; do
 done
 case "$SINCE" in ''|*[!0-9]*) die 2 "--since takes an epoch" ;; esac
 case "$NOW" in *[!0-9]*) die 2 "--now takes an epoch" ;; esac
+# Base 10 explicitly: a leading zero is not valid JSON and would otherwise read as octal.
+SINCE=$(( 10#$SINCE ))
+[ -z "$NOW" ] || NOW=$(( 10#$NOW ))
 [ -d "$CWD" ] || die 2 "--cwd is not a directory: $CWD"
 [ -n "$JQ" ] || die 1 "jq not found"
 case "$SID" in *[!A-Za-z0-9._-]*) SID="" ;; esac
@@ -99,7 +107,11 @@ if [ -x "$HERE/session-state.sh" ]; then
 fi
 if [ -z "$REPO" ] || [ "$REPO" = "_unknown" ]; then
   top=$(cd "$CWD" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null) || top=""
-  REPO="_local/$(printf '%s' "${top:-$CWD}" | tr '/' '_')"
+  [ -n "$top" ] || top=$(cd "$CWD" 2>/dev/null && pwd -P) || top="$CWD"
+  # A digest of the full path: "/a_b" and "/a/b" must not share a key.
+  dig=$(printf '%s' "$top" | { shasum -a 256 2>/dev/null || sha256sum 2>/dev/null; } | cut -c1-16)
+  [ -n "$dig" ] || die 1 "no sha256 tool (shasum or sha256sum) to key a checkout without a repo"
+  REPO="_local/$(basename "$top")-$dig"
 fi
 REPO_DIR="$ROOT/$(printf '%s' "$REPO" | sed 's#/#__#g')"
 FILE="$REPO_DIR/$SID_KEY.jsonl"
@@ -132,10 +144,12 @@ case "$CMD" in
     hq_refuse_secret text "$RAW"
     hq_refuse_secret text "$TEXT"
     [ -n "$NOW" ] || NOW=$(date +%s)
-    AT_ISO=$(date -u -r "$NOW" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -d "@$NOW" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)
+    AT_ISO=$(date -u -r "$NOW" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -d "@$NOW" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null) || AT_ISO=""
+    [ -n "$AT_ISO" ] || die 2 "--now $NOW is outside the range date can format"
     LINE=$("$JQ" -cn --argjson at "$NOW" --arg iso "$AT_ISO" --arg repo "$REPO" --arg s "$SID_KEY" \
       --arg k "$KIND" --arg t "$TEXT" '{at: $at, at_iso: $iso, repo: $repo, session: $s, kind: $k, text: $t}') \
       || die 1 "could not build the entry"
+    umask 077   # private to this user: away messages can name accounts and repos
     mkdir -p "$REPO_DIR" 2>/dev/null || die 1 "cannot create $REPO_DIR"
     printf '%s\n' "$LINE" >>"$FILE" || die 1 "cannot append to $FILE"
     printf '%s\n' "$LINE"

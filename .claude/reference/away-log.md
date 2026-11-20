@@ -17,7 +17,7 @@ While away, a thread:
    |---|---|
    | `blocker` | an owner-only blocker, an exhausted recovery or a genuine stall |
    | `decision` | a call it made that he may want to revisit (questions themselves still go to the unattended queue) |
-   | `owner-task` | a step only he can do. Also save it with `owner-task.sh add` as `human-queue.md` requires. |
+   | `owner-task` | a step only he can do. Also save it with `owner-task.sh add` as `human-queue.md` requires, using the same text as `--what`, so `/back`'s recovery matches it as a duplicate instead of adding it twice. |
    | `merged` | the `merged PR #N` line |
    | `stopped` | a pipeline or watch that stopped, with how it resumes |
    | `summary` | the closing message of finished work |
@@ -34,7 +34,7 @@ On his next live message presence returns him and normal decision-only output re
 
 ## Storage and reading
 
-`~/.claude/away-log/<owner>__<repo>/<session>.jsonl` (override the root with `AWAY_LOG_DIR`). Each line is `{at, at_iso, repo, session, kind, text}`. The log is append-only and is never pruned by the writer.
+`~/.claude/away-log/<owner>__<repo>/<session>.jsonl` (override the root with `AWAY_LOG_DIR`), private to the user (files 0600, directories 0700). A missing log means nothing was logged and reads as an empty list; a log that exists but cannot be read is reported as unreadable. Each line is `{at, at_iso, repo, session, kind, text}`. The log is append-only and is never pruned by the writer.
 
 `back-report.sh` reads it into `away_log`: entries since the away declaration, from this session in thread scope and from every repo and session with `--all`. When it cannot read the log it sets `away_log` to null and names the source in `unreadable`, so the gap is reported rather than shown as an empty list. `/back` Step 4 saves `owner-task` entries through `--save-recovered`, and Step 5 shows the rest under **Logged while away**.
 

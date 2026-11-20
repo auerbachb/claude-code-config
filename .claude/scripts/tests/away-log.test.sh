@@ -42,6 +42,12 @@ AWAY_LOG_DIR="$tmp/none" A read --all; check "no log directory: empty array" "$r
 D=$(dirname "$F"); chmod 000 "$D"
 A read --session s1; check "unreadable repo directory: exit 1, not an empty list" "$rc" 1
 chmod 755 "$D"
+A append --kind note --text "zero-padded" --session s3 --now 0400
+check "leading-zero --now is read as decimal" "$rc:$(printf '%s' "$out" | jq -r .at)" "0:400"
+check "the log file is private (0600)" "$(stat -f %Lp "$(cd "$REPO_ROOT" && "$AL" path --session s3)" 2>/dev/null || stat -c %a "$(cd "$REPO_ROOT" && "$AL" path --session s3)")" "600"
+mkdir -p "$tmp/w/a_b" "$tmp/w/a/b"
+k1=$(cd "$tmp/w/a_b" && "$AL" path --session s); k2=$(cd "$tmp/w/a/b" && "$AL" path --session s)
+check "non-repo dirs a_b and a/b get different keys" "$([ "$k1" != "$k2" ] && echo distinct)" distinct
 A read --since soon; check "bad --since: usage error" "$rc" 2
 A bogus; check "unknown command: usage error" "$rc" 2
 A --help; check "--help exits 0" "$rc" 0

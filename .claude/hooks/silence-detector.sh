@@ -168,7 +168,7 @@ away_emit() {
   fi
   if (( remind )); then
     touch "$AWAY_FILE" "$TIME_FILE" 2>/dev/null || true
-    emit_context "Current system time: ${current_time}. OPERATOR AWAY (presence): while presence reports away he reads no chat; he catches up with /back. Write NO chat text: no progress, status, merge line, blocker notice, recap or closing summary (if a turn must end with text, the shortest allowed close). Append each thing you would have said with away-log.sh append --kind blocker|decision|owner-task|merged|stopped|summary|note --text '<one line, no secret values>' (~/.claude/skills-worktree/.claude/scripts/away-log.sh). Questions still go to the unattended queue; gates, safety stops and records are unchanged. Contract: .claude/reference/away-log.md."
+    emit_context "Current system time: ${current_time}. OPERATOR AWAY (presence): while presence reports away he reads no chat; he catches up with /back. Write NO chat text: no progress, status, merge line, blocker notice, recap or closing summary (if a turn must end with text, the shortest allowed close). Append each thing you would have said with away-log.sh append --kind blocker|decision|owner-task|merged|stopped|summary|note --text '<one line, no secret values>' (first of ~/.claude/skills-worktree/.claude/scripts/, ~/.claude/scripts/, .claude/scripts/). Questions still go to the unattended queue; gates, safety stops and records are unchanged. Contract: .claude/reference/away-log.md."
   else
     emit_time_if_due
   fi
