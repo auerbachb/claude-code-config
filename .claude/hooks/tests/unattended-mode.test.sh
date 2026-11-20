@@ -452,6 +452,7 @@ check "a later --did update keeps the context" "$(UX list --json | jq -r --arg i
 check "eight words with a one-letter word count" "$(UX update "$HX" --context "This change adds a retry for failed imports" >/dev/null 2>&1; echo $?)" "0"
 UX update "$HX" --context "issue #1 issue #2 issue #3 issue #4 issue #5 issue #6 issue #7 issue #8" >/dev/null 2>&1; check "lowercase refs only: usage error" "$?" "2"
 UX update "$HX" --context "https://github.com/acme/widgets/pull/12 https://github.com/acme/widgets/issues/34" >/dev/null 2>&1; check "URLs only: usage error" "$?" "2"
+UX update "$HX" --context "acme/widgets#12 acme/widgets#13 acme/widgets#14 acme/widgets#15" >/dev/null 2>&1; check "owner/repo#N refs only: usage error" "$?" "2"
 UX update "$HX" --context "too thin" >/dev/null 2>&1; check "update with thin context: usage error" "$?" "2"
 UX update "$HX" >/dev/null 2>&1; check "update with neither field: usage error" "$?" "2"
 

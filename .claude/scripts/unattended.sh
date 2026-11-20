@@ -337,8 +337,18 @@ cmd_status() {
 
 # Background worth reading: at least 8 words once URLs and PR/issue/U- references are taken out (issue #2592).
 context_ok() { # TEXT
+  # Count whitespace-separated tokens that are words: a token holding a digit, `/`, `#` or `:`
+  # (URLs, owner/repo#N, #N, U-3) is a reference, and bare pr/issue/pull/u/d are reference
+  # labels; neither counts. Any other token with a letter in it is a word.
   local n
-  n=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's#[a-z]+://[^[:space:]]*##g; s/(pr|issue|u-|d-)? ?#?[0-9]+//g' | tr -cs '[:alpha:]' '\n' | grep -c '[[:alpha:]]' || true)
+  n=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | awk '
+    { for (i = 1; i <= NF; i++) {
+        t = $i
+        if (t ~ /[0-9\/#:]/) continue
+        gsub(/[^a-z]/, "", t)
+        if (t == "" || t ~ /^(pr|prs|issue|issues|pull|u|d)$/) continue
+        n++ } }
+    END { print n + 0 }')
   [ "${n:-0}" -ge 8 ]
 }
 
