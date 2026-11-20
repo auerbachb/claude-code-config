@@ -466,13 +466,14 @@ while IFS="$(printf '\t')" read -r rr rk rn; do
       is: (if (.url // "") | test("/pull/[0-9]+") then "pr" elif (.url // "") | test("/issues/[0-9]+") then "issue" else $is end),
       title, state, url,
       # The body opening, flattened to one line: comments dropped, markup removed only where it is syntax.
-      summary: ((.body // "") | gsub("(?s)<!--.*?-->"; " ")
+      summary: ((.body // "")
         # Markup only where it is syntax: a leading heading or quote marker, emphasis pairs and
         # code-span ticks. Literal characters (C#, a > b, x**2, __init__) are kept.
         | split("\n") | map(sub("^\\s*(#{1,6}\\s+|>\\s*)+"; "")) | join(" ")
-        # Code spans (odd pieces between ticks) are kept verbatim; elsewhere a ** or __ pair is
-        # dropped only when it wraps text, so x**2 and __init__ survive.
+        # Code spans (odd pieces between ticks) are kept verbatim; elsewhere HTML comments are
+        # dropped and a ** or __ pair only when it wraps text, so x**2 and __init__ survive.
         | [splits("`")] | to_entries | map(if .key % 2 == 1 then .value else .value
+            | gsub("(?s)<!--.*?-->"; " ")
             | gsub("(?<![\\w*])\\*\\*(?<t>[^*\\s](?:[^*]*[^*\\s])?)\\*\\*(?![\\w*])"; "\(.t)")
             | gsub("(?<![\\w_])__(?<t>[^_\\s](?:[^_]*[^_\\s])?)__(?![\\w_])"; "\(.t)") end) | join("")
         | gsub("\\s+"; " ")
