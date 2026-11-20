@@ -43,7 +43,7 @@ case "$1 $2" in
     {"databaseId":5,"workflowName":".github/workflows/lint.yml","workflowDatabaseId":20,"displayTitle":"main broke","url":"r5","headBranch":"main","status":"completed","conclusion":"failure","createdAt":"2026-11-19T04:00:00Z","updatedAt":"2026-11-19T04:10:00Z"},
     {"databaseId":6,"workflowName":"lint","workflowDatabaseId":20,"displayTitle":"fixed later","url":"r6","headBranch":"c","status":"completed","conclusion":"failure","createdAt":"2026-11-19T05:00:00Z","updatedAt":"2026-11-19T05:10:00Z"},
     {"databaseId":7,"workflowName":"lint","workflowDatabaseId":20,"displayTitle":"the fix","url":"r7","headBranch":"c","status":"completed","conclusion":"success","createdAt":"2026-11-19T06:00:00Z","updatedAt":"2026-11-19T06:10:00Z"}]' ;;
-  "pr view") [ "$3" = 8 ] || exit 1; printf '{"title":"Opened one","state":"OPEN","url":"u8"}\n' ;;
+  "pr view") [ "$3" = 8 ] || exit 1; printf '{"title":"Opened one","state":"OPEN","url":"u8","body":"## Summary\\n<!-- note -->\\nHolds **rep** leads   on send.\\n\\nMore."}\n' ;;
   "issue view") [ "$3" = 9 ] || exit 1; printf '{"title":"A PR named as an issue","state":"MERGED","url":"https://github.com/acme/widgets/pull/9"}\n' ;;
   *) exit 1 ;;
 esac
@@ -137,6 +137,9 @@ check "a run named by its workflow file path shows the bare workflow name" "$(f 
 check "a Decision's refs: the PR read with title and state" "$(f '.decisions[0].refs[] | select(.kind == "pr") | "\(.number):\(.title):\(.state)"')" "8:Opened one:OPEN"
 check "a failed lookup degrades to could not read, the Decision kept" "$(f '.decisions[0].refs[] | select(.number == 12) | "\(.number):\(.error)"'):$(f '.decisions | length')" "12:could not read:1"
 check "a ref read as what GitHub says it is" "$(f '.decisions[0].refs[] | select(.kind == "pr") | .is')" pr
+check "a ref carries its body opening, markup and whitespace collapsed" "$(f '.decisions[0].refs[] | select(.kind == "pr") | .summary')" "Summary Holds rep leads on send. More."
+check "a ref with no body has a null summary" "$(f '.decisions[0].refs[] | select(.number == 9) | .summary')" null
+check "a failed lookup has no summary" "$(f '.decisions[0].refs[] | select(.number == 12) | .summary')" null
 check "a failed lookup has no resolved kind" "$(f '.decisions[0].refs[] | select(.number == 12) | .is')" null
 check "an Issue reference that is really a PR is read as a PR" "$(f '.decisions[0].refs[] | select(.number == 9) | "\(.kind):\(.is):\(.state)"')" "issue:pr:MERGED"
 check "a question naming nothing has no refs" "$(f '.questions[0].refs')" "[]"
