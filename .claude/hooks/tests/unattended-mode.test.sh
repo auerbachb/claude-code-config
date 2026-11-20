@@ -457,6 +457,8 @@ check "non-Latin background counts" "$(UX update "$HX" --context "Это изм�
 check "words with digits or slashes count" "$(UX update "$HX" --context "Note: turning on 2FA and/or v2 login changes sign-in" >/dev/null 2>&1; echo $?)" "0"
 UX update "$HX" --context "too thin" >/dev/null 2>&1; check "update with thin context: usage error" "$?" "2"
 UX update "$HX" >/dev/null 2>&1; check "update with neither field: usage error" "$?" "2"
+UX update U-99 --did "nothing" >/dev/null 2>&1; check "update of an unknown id: refused" "$?" "1"
+check "and nothing appended" "$(grep -c '"U-99"' "$HOME/.claude/unattended/acme__ctx.jsonl")" "0"
 
 printf '\nunattended-mode.test.sh: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

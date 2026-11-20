@@ -418,6 +418,10 @@ cmd_update() {
   f=$(q_file)
   mkdir -p "$Q_DIR" 2>/dev/null || { printf 'unattended.sh: cannot create %s\n' "$Q_DIR" >&2; return 1; }
   lock "$f" || { printf 'unattended.sh: questions file is locked\n' >&2; return 1; }
+  # An unknown id would append an update nothing ever reads: refuse it (issue #2592).
+  if ! all_json "$f" | "$JQ" -e --arg id "$id" 'any(.[]; .id == $id)' >/dev/null 2>&1; then
+    unlock; printf 'unattended.sh: %s is not a recorded question; nothing written\n' "$id" >&2; return 1
+  fi
   local json
   json=$("$JQ" -cn --arg id "$id" --arg d "$did" --arg c "$ctx" --argjson at "$(now)" \
     '{type: "update", id: $id, at: $at}
