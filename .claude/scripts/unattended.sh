@@ -337,18 +337,21 @@ cmd_status() {
 
 # Background worth reading: at least 8 words once URLs and PR/issue/U- references are taken out (issue #2592).
 context_ok() { # TEXT
-  # Count whitespace-separated tokens that are words: a token holding a digit, `/`, `#` or `:`
-  # (URLs, owner/repo#N, #N, U-3) is a reference, and bare pr/issue/pull/u/d are reference
-  # labels; neither counts. Any other token with a letter in it is a word.
-  local n
-  n=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | awk '
+  # Count whitespace-separated tokens that are words. URLs (`://`, `www.`) and anything holding
+  # `#` (#N, owner/repo#N) are references. From every other token ASCII punctuation and digits are
+  # removed; an empty remainder (`-`, `123`) or a bare reference label (pr/issue/pull/u/d, so `U-3`)
+  # does not count. Non-ASCII bytes are kept, so words in any script count (`2FA`, `and/or` too).
+  # The awk program is kept in a variable so none of its quoting sits inside the $( ).
+  local n prog
+  prog='BEGIN { punct = "[!-@[-" sprintf("%c", 96) "{-~]" }
     { for (i = 1; i <= NF; i++) {
         t = $i
-        if (t ~ /[0-9\/#:]/) continue
-        gsub(/[^a-z]/, "", t)
+        if (t ~ /:\/\// || t ~ /^www\./ || index(t, sprintf("%c", 35))) continue
+        gsub(punct, "", t)
         if (t == "" || t ~ /^(pr|prs|issue|issues|pull|u|d)$/) continue
         n++ } }
-    END { print n + 0 }')
+    END { print n + 0 }'
+  n=$(printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C awk "$prog")
   [ "${n:-0}" -ge 8 ]
 }
 
