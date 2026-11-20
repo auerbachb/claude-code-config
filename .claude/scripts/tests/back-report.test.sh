@@ -109,13 +109,13 @@ printf '== overnight absence, declared away, questions and decisions waiting\n'
 "$STATE" --set ".unattended.active=true" --set ".unattended.since_epoch=$(( NOW - 36000 ))" \
   --set ".unattended.until_epoch=$(( NOW + 3600 ))" >/dev/null
 "$STATE" --set ".unattended.since_epoch=$(( NOW - 36000 ))" >/dev/null
-(cd "$REPO" && "$UNATT" record --question "Which region?" --recommended us-east --did "used us-east" --session sess-a >/dev/null)
-(cd "$REPO" && "$UNATT" record --question "Unattributed?" >/dev/null)
-(cd "$REPO" && "$UNATT" record --question "Another thread's?" --session sess-b >/dev/null)
-(cd "$OTHER" && "$UNATT" record --question "Gadget question?" --session sess-b >/dev/null)
+(cd "$REPO" && "$UNATT" record --question "Which region?" --context "Test background: what this change is and why the operator is being asked" --recommended us-east --did "used us-east" --session sess-a >/dev/null)
+(cd "$REPO" && "$UNATT" record --question "Unattributed?" --context "Test background: what this change is and why the operator is being asked" >/dev/null)
+(cd "$REPO" && "$UNATT" record --question "Another thread's?" --context "Test background: what this change is and why the operator is being asked" --session sess-b >/dev/null)
+(cd "$OTHER" && "$UNATT" record --question "Gadget question?" --context "Test background: what this change is and why the operator is being asked" --session sess-b >/dev/null)
 THIRD="$tmp/third"; git init -q "$THIRD"; git -C "$THIRD" remote add origin https://github.com/acme/sprockets.git
-(cd "$THIRD" && "$UNATT" record --question "Sprocket question?" --session sess-c >/dev/null)
-(cd "$REPO" && "$UNATT" record --question "Answered already?" --session sess-a >/dev/null)
+(cd "$THIRD" && "$UNATT" record --question "Sprocket question?" --context "Test background: what this change is and why the operator is being asked" --session sess-c >/dev/null)
+(cd "$REPO" && "$UNATT" record --question "Answered already?" --context "Test background: what this change is and why the operator is being asked" --session sess-a >/dev/null)
 (cd "$REPO" && "$UNATT" answer U-4 --answer yes >/dev/null)
 "$STATE" --set ".unattended.since_epoch=$(( NOW - 13 * 3600 ))" >/dev/null
 R --session sess-a --now "$NOW"
@@ -139,6 +139,7 @@ check "a failed lookup degrades to could not read, the Decision kept" "$(f '.dec
 check "a ref read as what GitHub says it is" "$(f '.decisions[0].refs[] | select(.kind == "pr") | .is')" pr
 check "a failed lookup has no resolved kind" "$(f '.decisions[0].refs[] | select(.number == 12) | .is')" null
 check "an Issue reference that is really a PR is read as a PR" "$(f '.decisions[0].refs[] | select(.number == 9) | "\(.kind):\(.is):\(.state)"')" "issue:pr:MERGED"
+check "a question carries its recorded context (issue #2592)" "$(f '.questions[0].context')" "Test background: what this change is and why the operator is being asked"
 check "a question naming nothing has no refs" "$(f '.questions[0].refs')" "[]"
 check "elsewhere split: other threads in this repo" "$(f .other_threads_open_this_repo)" 1
 check "elsewhere split: other repos" "$(f .other_threads_open_other_repos)" 3

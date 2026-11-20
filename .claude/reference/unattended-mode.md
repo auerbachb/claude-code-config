@@ -49,7 +49,8 @@ Unattended mode declares the opposite — keep working, do not wait. They can be
 
 ## While unattended
 
-- **No menus, no waiting.** Record (`unattended.sh record --question ... --recommended ... --did ...`),
+- **No menus, no waiting.** Record (`unattended.sh record --question ... --context ... --recommended ... --did ...`;
+  see §Writing a question),
   print the receipt, take the recommended option only where it is reversible and no rule requires
   confirmation (a branch-protection change, a paid review, a merge opt-out), park only the step
   that is not, keep working. If a menu call slips through, the guard hook records it and denies it; record
@@ -62,6 +63,23 @@ Unattended mode declares the opposite — keep working, do not wait. They can be
   attended or not. A sub-agent has no operator; a spawned session must not block on one. The block is
   byte-checked by `verbatim-block-lint.sh` in `.claude/reference/subagent-phase-guardrails.md` and
   `/pr-monitor-and-manage`.
+
+
+## Writing a question (issue #2592)
+
+The operator reads saved questions hours or days later, often in another thread, having forgotten
+this one. `/back` shows the record word for word and never fills it in, so a record that cannot be
+answered as written stays unanswerable: the fix belongs here, when it is written.
+
+- **`--context` is required** for an agent's record (at least a sentence: 30 letters beyond any ids or links). A
+  hook-captured menu arrives without it; add it at once with `update U-<n> --context '…'`.
+- **Write for a stranger.** Say what the PR, issue or change is and what it does, why it matters,
+  and what each option means in practice. Name the repo, product or feature.
+- **No thread shorthand.** Pipeline names (`PM-A`), code identifiers (`rep_list_status`) and
+  in-thread terms ("the ETL thread", "predicate", "activate") are explained or left out.
+- **The question stands alone.** "Should junk senders be blocked at the mailbox?" needs which
+  mailbox, which rule and what blocking would cost; put that in the question or the context.
+- **`--did`** stays what the thread already did meanwhile; it is not background.
 
 ## Past decisions
 

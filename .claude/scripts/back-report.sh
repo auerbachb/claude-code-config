@@ -39,7 +39,7 @@
 #   now, since       epochs; since_source: declared | flag | default-24h
 #   away_seconds     now - since; digest_level: short (< 2 h) | medium (< 12 h) | long
 #   presence         presence.sh status --json, or null
-#   questions        open unattended questions in scope, oldest first: {id, repo, question, options,
+#   questions        open unattended questions in scope, oldest first: {id, repo, question, context, options,
 #                    recommended, did, session, at, refs}; null when unreadable
 #   decisions        open Desk Decisions in scope: {id, repo, question, options, default_option,
 #                    session_id, created_at, context, refs}; null when unreadable
@@ -265,7 +265,7 @@ if [ -n "$Q" ] && printf '%s' "$Q" | "$JQ" -e 'type == "array"' >/dev/null 2>&1;
   printf '%s' "$Q" | "$JQ" -c --arg scope "$SCOPE" --arg repo "$QREPO" --arg sid "$SID" "$SCOPE_JQ"'
     [.[] | select(.status == "open")] as $open
     | {in: [$open[] | select($scope == "all" or mine($repo; $sid; .session))
-             | {id, repo, question, options, recommended, did, session, at}] | sort_by(.at),
+             | {id, repo, question, context, options, recommended, did, session, at}] | sort_by(.at),
        total: ($open | length),
        here: ([$open[] | select(((.repo // "") | ascii_downcase) == ($repo | ascii_downcase))] | length)}' >"$WORK/q.json" 2>/dev/null || {
     printf '{"in":null,"total":0,"here":0}\n' >"$WORK/q.json"; unreadable "unattended questions" "the question records could not be read"; }
