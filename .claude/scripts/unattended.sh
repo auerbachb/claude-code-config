@@ -30,7 +30,7 @@
 #                                                plain-language background a person who has forgotten the
 #                                                thread needs to answer: what the PR/issue/change is, why
 #                                                it matters, what each option means. Required for
-#                                                --source agent (at least 8 words; exit 2 otherwise);
+#                                                --source agent (at least 30 letters; exit 2 otherwise);
 #                                                a hook-captured menu has none until the agent adds it
 #                                                with `update`. Writing guide:
 #                                                .claude/reference/unattended-mode.md §Writing a question
@@ -335,24 +335,23 @@ cmd_status() {
   fi
 }
 
-# Background worth reading: at least 8 words once URLs and PR/issue/U- references are taken out (issue #2592).
+# Background worth reading (issue #2592): at least 30 letters, in any script, once references are
+# taken out. Tokens that are URLs (`://`, `www.`) or hold `#` (#N, owner/repo#N) are dropped, and
+# so are bare reference labels (pr, issue, pull, U-3). Only Unicode letters count, so punctuation
+# in any script (`—`, `…`) adds nothing; Chinese, Japanese and Thai letters count double, since
+# those scripts carry a word in one or two characters and use no spaces.
 context_ok() { # TEXT
-  # Count whitespace-separated tokens that are words. URLs (`://`, `www.`) and anything holding
-  # `#` (#N, owner/repo#N) are references. From every other token ASCII punctuation and digits are
-  # removed; an empty remainder (`-`, `123`) or a bare reference label (pr/issue/pull/u/d, so `U-3`)
-  # does not count. Non-ASCII bytes are kept, so words in any script count (`2FA`, `and/or` too).
-  # The awk program is kept in a variable so none of its quoting sits inside the $( ).
-  local n prog
-  prog='BEGIN { punct = "[!-@[-" sprintf("%c", 96) "{-~]" }
-    { for (i = 1; i <= NF; i++) {
-        t = $i
-        if (t ~ /:\/\// || t ~ /^www\./ || index(t, sprintf("%c", 35))) continue
-        gsub(punct, "", t)
-        if (t == "" || t ~ /^(pr|prs|issue|issues|pull|u|d)$/) continue
-        n++ } }
-    END { print n + 0 }'
-  n=$(printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C awk "$prog")
-  [ "${n:-0}" -ge 8 ]
+  local n
+  n=$(printf '%s' "$1" | perl -CSA -Mutf8 -ne '
+    for my $t (split /\s+/) {
+      next if $t =~ m{://} || $t =~ /^www\./i || index($t, chr(35)) >= 0;
+      (my $l = $t) =~ s/\P{L}//g;
+      next if $l eq "" || lc($l) =~ /^(pr|prs|issue|issues|pull|u|d)$/;
+      my $wide = () = $l =~ /[\p{Han}\p{Hiragana}\p{Katakana}\p{Thai}]/g;
+      $n += length($l) + $wide;
+    }
+    END { print $n + 0 }') || n=0
+  [ "${n:-0}" -ge 30 ]
 }
 
 cmd_record() {
@@ -374,7 +373,7 @@ cmd_record() {
   # arrive without it (the agent adds it with `update --context`).
   if [ "$src" != hook ]; then
     [ -n "$ctx" ] || die_usage "record needs --context: plain-language background for someone who has forgotten this thread (.claude/reference/unattended-mode.md §Writing a question)"
-    context_ok "$ctx" || die_usage "--context is too thin: at least 8 words of plain background, not just an id or a ref"
+    context_ok "$ctx" || die_usage "--context is too thin: at least a sentence (30 letters) of plain background, not just an id or a ref"
   fi
   f=$(q_file)
   mkdir -p "$Q_DIR" 2>/dev/null || { printf 'unattended.sh: cannot create %s\n' "$Q_DIR" >&2; return 1; }
@@ -413,7 +412,7 @@ cmd_update() {
     esac
   done
   [ -n "$did" ] || [ -n "$ctx" ] || die_usage "update needs --did or --context"
-  [ -z "$ctx" ] || context_ok "$ctx" || die_usage "--context is too thin: at least 8 words of plain background, not just an id or a ref"
+  [ -z "$ctx" ] || context_ok "$ctx" || die_usage "--context is too thin: at least a sentence (30 letters) of plain background, not just an id or a ref"
   local f rc=0
   f=$(q_file)
   mkdir -p "$Q_DIR" 2>/dev/null || { printf 'unattended.sh: cannot create %s\n' "$Q_DIR" >&2; return 1; }

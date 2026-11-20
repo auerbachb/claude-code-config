@@ -71,7 +71,7 @@ The operator reads saved questions hours or days later, often in another thread,
 this one. `/back` shows the record word for word and never fills it in, so a record that cannot be
 answered as written stays unanswerable: the fix belongs here, when it is written.
 
-- **`--context` is required** for an agent's record (at least 8 words beyond any ids). A
+- **`--context` is required** for an agent's record (at least a sentence: 30 letters beyond any ids or links). A
   hook-captured menu arrives without it; add it at once with `update U-<n> --context '…'`.
 - **Write for a stranger.** Say what the PR, issue or change is and what it does, why it matters,
   and what each option means in practice. Name the repo, product or feature.

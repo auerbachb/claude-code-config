@@ -455,6 +455,8 @@ UX update "$HX" --context "https://github.com/acme/widgets/pull/12 https://githu
 UX update "$HX" --context "acme/widgets#12 acme/widgets#13 acme/widgets#14 acme/widgets#15" >/dev/null 2>&1; check "owner/repo#N refs only: usage error" "$?" "2"
 check "non-Latin background counts" "$(UX update "$HX" --context "Это изменение добавляет повторную попытку для неудачных ночных импортов" >/dev/null 2>&1; echo $?)" "0"
 check "words with digits or slashes count" "$(UX update "$HX" --context "Note: turning on 2FA and/or v2 login changes sign-in" >/dev/null 2>&1; echo $?)" "0"
+check "unspaced Chinese background counts" "$(UX update "$HX" --context "这个改动让夜间导入在遇到销售代表状态时拒绝整个文件" >/dev/null 2>&1; echo $?)" "0"
+UX update "$HX" --context "— — — — — — — — … … … “ ” — — —" >/dev/null 2>&1; check "non-ASCII punctuation only: usage error" "$?" "2"
 UX update "$HX" --context "too thin" >/dev/null 2>&1; check "update with thin context: usage error" "$?" "2"
 UX update "$HX" >/dev/null 2>&1; check "update with neither field: usage error" "$?" "2"
 UX update U-99 --did "nothing" >/dev/null 2>&1; check "update of an unknown id: refused" "$?" "1"
