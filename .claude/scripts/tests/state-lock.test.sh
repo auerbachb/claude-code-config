@@ -875,6 +875,163 @@ check_eq "release completes once the gate is free; nothing left behind" "0" \
   "$([[ -e "$LOCK_DIR" || -e "$GATE" ]] && echo 1 || echo 0)"
 
 echo
+echo "== issue #2402: stale lock-aside sweep =="
+SWEEP="$REPO_ROOT/.claude/scripts/state-lock-sweep.sh"
+reset_state; run --set '.seed=1'
+OLD=202601010000   # touch -t stamp, months older than the 1h grace
+mk_aside() { # name [entries...] ; created old unless AGE=young
+  local d="$STATE_FILE.$1"; shift
+  mkdir -p "$d"
+  local e; for e in "$@"; do printf 'pid=1\n' > "$d/$e"; done
+  [[ "${AGE:-old}" == young ]] || touch -t "$OLD" "$d"
+}
+mk_aside lock.rel.111-1 owner
+mk_aside lock.rel.222-2 .owner.222
+mk_aside lock.stale.333-3
+AGE=young mk_aside lock.rel.444-4 owner
+mk_aside lock.rel.555-5 owner unexpected.txt
+mk_aside lock.rel.666-6 owner; mkdir "$STATE_FILE.lock.rel.666-6/nested"; touch -t "$OLD" "$STATE_FILE.lock.rel.666-6"
+VICTIM="$HOME/victim-2402"; mkdir -p "$VICTIM"; printf 'keep\n' > "$VICTIM/owner"
+ln -s "$VICTIM" "$STATE_FILE.lock.rel.777-7"
+printf 'x\n' > "$STATE_FILE.lock.rel.888-8"; touch -t "$OLD" "$STATE_FILE.lock.rel.888-8"
+mk_aside lock.rel.999-9 owner; ln -s "$VICTIM/owner" "$STATE_FILE.lock.rel.999-9/.owner.9"; touch -t "$OLD" "$STATE_FILE.lock.rel.999-9"
+mkdir -p "$LOCK_DIR"; printf 'pid=1\n' > "$LOCK_DIR/owner"; touch -t "$OLD" "$LOCK_DIR"
+inv="$(bash "$SWEEP")"; inv_rc=$?
+check_eq "inventory exits 0" "0" "$inv_rc"
+check_eq "inventory lists the three valid old asides as removable" "3" "$(grep -c '^removable' <<<"$inv")"
+check_eq "inventory deletes nothing" "9" "$(find "$HOME/.claude" -maxdepth 1 -name 'session-state.json.lock.*' | wc -l | tr -d ' ')"
+check_eq "inventory totals" "removed=0 removable=3 retained=6 failed=0 unexamined=0" "$(grep '^totals' <<<"$inv" | cut -f2)"
+app="$(bash "$SWEEP" --apply)"; app_rc=$?
+check_eq "apply exits 0" "0" "$app_rc"
+check_eq "apply totals" "removed=3 removable=0 retained=6 failed=0 unexamined=0" "$(grep '^totals' <<<"$app" | cut -f2)"
+for a in lock.rel.111-1 lock.rel.222-2 lock.stale.333-3; do
+  check_eq "removed valid old aside $a" "0" "$([[ -e "$STATE_FILE.$a" ]] && echo 1 || echo 0)"
+done
+for a in lock.rel.444-4 lock.rel.555-5 lock.rel.666-6 lock.rel.777-7 lock.rel.888-8 lock.rel.999-9; do
+  check_eq "retained $a" "1" "$([[ -e "$STATE_FILE.$a" || -L "$STATE_FILE.$a" ]] && echo 1 || echo 0)"
+done
+check_eq "young aside retained as too young" "1" "$(grep -c $'^retained\ttoo young.*lock.rel.444-4$' <<<"$app")"
+check_eq "symlink aside retained as symlink" "1" "$(grep -c $'^retained\tsymlink\t.*lock.rel.777-7$' <<<"$app")"
+check_eq "symlink victim untouched" "keep" "$(cat "$VICTIM/owner")"
+check_eq "aside with a symlinked owner file retained" "1" "$(grep -c $'^retained\tsymlink entry .owner.9\t' <<<"$app")"
+check_eq "live lock untouched" "1" "$([[ -f "$LOCK_DIR/owner" ]] && echo 1 || echo 0)"
+check_eq "state file untouched" "1" "$(jq -r '.seed' "$STATE_FILE")"
+again="$(bash "$SWEEP" --apply)"
+check_eq "second apply is idempotent" "removed=0 removable=0 retained=6 failed=0 unexamined=0" "$(grep '^totals' <<<"$again" | cut -f2)"
+capped="$(bash "$SWEEP" --max 2)"
+check_eq "candidates beyond --max are unexamined, not zero" "unexamined=4" \
+  "$(grep '^totals' <<<"$capped" | cut -f2 | grep -o 'unexamined=[0-9]*')"
+check_eq "entries past --max share one summary line" "1" "$(grep -c '^unexamined' <<<"$capped")"
+# CodeAnt 4630497918: malformed names that match the glob count toward --max
+# too, so they cannot make one sweep examine past the cap.
+for i in $(seq 1 20); do mkdir -p "$STATE_FILE.lock.rel.bad-$i-x"; done
+malformed="$(bash "$SWEEP" --max 3)"
+check_eq "malformed names count toward --max" "removed=0 removable=0 retained=3 failed=0 unexamined=23" \
+  "$(grep '^totals' <<<"$malformed" | cut -f2)"
+check_eq "only --max entries examined among malformed names" "3" "$(grep -c '^retained' <<<"$malformed")"
+check_eq "output stays bounded past --max" "5" "$(wc -l <<<"$malformed" | tr -d ' ')"
+for i in $(seq 1 20); do rmdir "$STATE_FILE.lock.rel.bad-$i-x"; done
+check_eq "bad --max is a usage error" "2" "$(bash "$SWEEP" --max x >/dev/null 2>&1; echo $?)"
+other="$HOME/other-2402.json"; mkdir -p "$other.lock.rel.1-1"; touch -t "$OLD" "$other.lock.rel.1-1"
+multi="$(bash "$SWEEP" --apply --state-file "$STATE_FILE" --state-file "$other")"
+check_eq "repeated --state-file sweeps each scope" "2" "$(grep -c '^totals' <<<"$multi")"
+check_eq "second scope's aside removed" "0" "$([[ -e "$other.lock.rel.1-1" ]] && echo 1 || echo 0)"
+check_eq "--quiet prints nothing for an empty scope" "" "$(bash "$SWEEP" --quiet --state-file "$HOME/none-2402.json")"
+rm -rf "$LOCK_DIR" "$STATE_FILE".lock.rel.* "$VICTIM"
+# A zero-padded grace is decimal, not octal: "010" is ten seconds, so a
+# nine-second-old aside is still too young (octal would make it eight).
+# Fixed clock: mtime 1000000, "now" 1000009 — no wall-clock boundary.
+mkdir -p "$STATE_FILE.lock.rel.123-4"; printf 'pid=1\n' > "$STATE_FILE.lock.rel.123-4/owner"
+python3 -c 'import os,sys; os.utime(sys.argv[1],(1000000,1000000))' "$STATE_FILE.lock.rel.123-4"
+padded="$(bash -c 'source "$1"; _state_lock_now() { printf 1000009; }; state_lock_sweep_asides "$2" apply 010' \
+  _ "$LOCK_LIB" "$STATE_FILE")"
+check_eq "zero-padded grace is read as decimal" "1" "$(grep -c $'^retained\ttoo young' <<<"$padded")"
+check_eq "oversized --grace-seconds is a usage error" "2" "$(bash "$SWEEP" --grace-seconds 99999999999 >/dev/null 2>&1; echo $?)"
+rm -rf "$STATE_FILE.lock.rel.123-4"
+
+# Swap races between validation and deletion. Each case replaces the aside's
+# NAME at a fixed point inside the sweep (deterministic hooks: `pwd` and `rm`
+# are shadowed by functions that swap once, then defer to the real command):
+# with a symlink to the live lock (pwd, rm), with a fresh same-name real
+# directory (pwd-dir), or with a fresh same-name EMPTY directory after the
+# sweep entered the aside (rm-dir), or at the final removal itself (mv-dir:
+# the swap fires right before the tombstone rename, so the rename takes the
+# replacement; it must be put back, survive, and not count as removed).
+# Nothing outside the validated inode may be deleted.
+swap_case() { # hook(pwd|pwd-dir|rm|rm-dir|mv-dir) -> prints sweep output; leaves fixtures for asserts
+  bash -c '
+    source "$1"; c="$2"; lock="$3"; flag="$4"; hook="$5"
+    swap() {
+      [[ -e "$flag" ]] && return; : > "$flag"; mv "$c" "$c.moved"
+      if [[ "$hook" == pwd-dir ]]; then
+        # Same-name replacement: a real, owned, old directory with an owner file.
+        mkdir "$c"; printf "pid=new\n" > "$c/owner"; touch -t 202601010000 "$c"
+      elif [[ "$hook" == rm-dir || "$hook" == mv-dir ]]; then
+        # Fresh, owned, old, EMPTY same-name directory: rmdir by name would take it.
+        mkdir "$c"; touch -t 202601010000 "$c"
+      else
+        ln -s "$lock" "$c"
+      fi
+    }
+    if [[ "$hook" == pwd || "$hook" == pwd-dir ]]; then
+      # First pwd = the parent-path probe, i.e. after re-validation and
+      # before the sweep enters the aside.
+      pwd() { swap; builtin pwd "$@"; }
+    elif [[ "$hook" == mv-dir ]]; then
+      # First mv = the tombstone rename, after every check, unlink and the
+      # pre-rename inode re-check (the mv inside swap recurses once, harmlessly).
+      mv() { swap; command mv "$@"; }
+    else
+      # First rm = the first unlink, i.e. after the sweep entered the aside.
+      rm() { swap; command rm "$@"; }
+    fi
+    state_lock_sweep_asides "$6" apply
+  ' _ "$LOCK_LIB" "$STATE_FILE.lock.rel.42-1" "$LOCK_DIR" "$HOME/swap-2402.flag" "$1" "$STATE_FILE"
+}
+for hook in pwd pwd-dir rm rm-dir mv-dir; do
+  reset_state; command rm -rf "$STATE_FILE".lock.rel.* "$HOME/swap-2402.flag"
+  mkdir -p "$LOCK_DIR"; printf 'pid=live\n' > "$LOCK_DIR/owner"
+  mk_aside lock.rel.42-1 owner
+  swap_out="$(swap_case "$hook")"; swap_rc=$?
+  check_eq "swap via $hook: the swap fired" "1" "$([[ -e "$STATE_FILE.lock.rel.42-1.moved" ]] && echo 1 || echo 0)"
+  check_eq "swap via $hook: live lock owner survives" "pid=live" "$(cat "$LOCK_DIR/owner" 2>/dev/null)"
+  if [[ "$hook" == pwd-dir ]]; then
+    check_eq "same-name replacement refused as a different directory" "1" "$(grep -c $'^failed\tchanged before removal: different directory\t' <<<"$swap_out")"
+    check_eq "same-name replacement keeps its owner file" "pid=new" "$(cat "$STATE_FILE.lock.rel.42-1/owner" 2>/dev/null)"
+    check_eq "same-name replacement: original keeps its file" "1" "$([[ -f "$STATE_FILE.lock.rel.42-1.moved/owner" ]] && echo 1 || echo 0)"
+  elif [[ "$hook" == rm-dir || "$hook" == mv-dir ]]; then
+    check_eq "$hook: no tombstone left behind" "0" "$(find "$(dirname "$STATE_FILE")" -maxdepth 1 -name "$(basename "$STATE_FILE").lock.sweep.*" | wc -l | tr -d ' ')"
+    check_eq "$hook: empty same-name replacement survives the final rmdir" "1" "$([[ -d "$STATE_FILE.lock.rel.42-1" && ! -L "$STATE_FILE.lock.rel.42-1" ]] && echo 1 || echo 0)"
+    check_eq "$hook: empty same-name replacement refused as a different directory" "1" "$(grep -c $'^failed\tchanged before removal: different directory\t' <<<"$swap_out")"
+    check_eq "$hook: unlink stayed bound to the original inode" "0" "$([[ -e "$STATE_FILE.lock.rel.42-1.moved/owner" ]] && echo 1 || echo 0)"
+  else
+    check_eq "swap via $hook: symlink itself not followed or removed" "1" "$([[ -L "$STATE_FILE.lock.rel.42-1" ]] && echo 1 || echo 0)"
+  fi
+  check_eq "swap via $hook: reported failed, not removed" "1" "$(grep -c $'^failed\t' <<<"$swap_out")"
+  check_eq "swap via $hook: sweep exits 1" "1" "$swap_rc"
+  if [[ "$hook" == pwd ]]; then
+    check_eq "swap before entry: refused as resolving elsewhere" "1" "$(grep -c $'^failed\tchanged before removal: resolves elsewhere\t' <<<"$swap_out")"
+    check_eq "swap before entry: moved original keeps its file" "1" "$([[ -f "$STATE_FILE.lock.rel.42-1.moved/owner" ]] && echo 1 || echo 0)"
+  elif [[ "$hook" == rm ]]; then
+    check_eq "swap after entry: final removal refuses the symlink" "1" "$(grep -c $'^failed\tchanged before removal: replaced by a symlink\t' <<<"$swap_out")"
+    check_eq "swap after entry: unlink stayed bound to the original inode" "0" "$([[ -e "$STATE_FILE.lock.rel.42-1.moved/owner" ]] && echo 1 || echo 0)"
+  fi
+done
+command rm -rf "$STATE_FILE".lock.rel.* "$LOCK_DIR" "$HOME/swap-2402.flag"
+
+# The sweep runs while a real holder acquires and releases in a loop: every
+# write survives and the active lock is never removed by the sweep.
+reset_state; run --set '.loop=0'
+LOOP_STOP="$HOME/loop-2402.stop"
+( for i in $(seq 1 40); do [[ -e "$LOOP_STOP" ]] && break; run --set ".loop=$i" >/dev/null 2>&1; done ) &
+LOOP_PID=$!
+for _ in $(seq 1 20); do bash "$SWEEP" --apply --grace-seconds 0 >/dev/null 2>&1; done
+wait "$LOOP_PID" 2>/dev/null
+touch "$LOOP_STOP"
+check_eq "concurrent writer's last update survives the sweep" "40" "$(jq -r '.loop' "$STATE_FILE")"
+check_eq "no lock or aside left after the loop" "0" "$(find "$HOME/.claude" -maxdepth 1 -name 'session-state.json.lock*' | wc -l | tr -d ' ')"
+
+echo
 echo "== summary: $PASS passed, $FAIL failed =="
 if [[ "$FAIL" -gt 0 ]]; then
   echo "FAILED: state-lock tests" >&2

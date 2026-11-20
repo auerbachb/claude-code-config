@@ -114,6 +114,29 @@ class ChildProgressTest(unittest.TestCase):
         self.publish()
         self.assertEqual(self.command('--tick'), '')
 
+    def test_large_state_file_is_observed_and_bound_still_rejects(self):
+        # Issue #2402: a realistic ~9 MB state file used to exceed the 8 MiB
+        # read bound and fail every probe. It is observed now; a file over the
+        # (raised) bound still fails closed, and recovery follows a smaller one.
+        source = Path(self.env['CLAUDE_SESSION_STATE_FILE'])
+        filler = {'prs': {str(n): {'notes': 'Ünïcødé — 漢字 ' * 40} for n in range(5000)}}
+        self.inventory['repos']['pad/large'] = filler
+        self.publish()
+        self.assertGreater(source.stat().st_size, 9 * 1024 * 1024)
+        self.assertEqual(self.command('--tick'), '')
+        self.age_observation()
+        self.heartbeat.touch()
+        self.assertIn('CHILD STALL SUSPECT', self.command('--tick'))
+        with source.open('w') as stream:
+            stream.write(json.dumps(self.inventory)[:-1])
+            stream.write(', "pad": "' + 'x' * (32 * 1024 * 1024) + '"}')
+        self.assertIn('CHILD PROGRESS UNKNOWN', self.command('--tick'))
+        self.assertEqual(self.command('--tick'), '')
+        del self.inventory['repos']['pad/large']
+        self.output.write_text('child continues\n')
+        self.publish()
+        self.assertEqual(self.command('--tick'), '')
+
     def test_parent_and_child_notices_do_not_suppress_each_other(self):
         self.command('--tick')
         self.age_observation()

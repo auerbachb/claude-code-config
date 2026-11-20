@@ -1122,6 +1122,18 @@ if [[ -n "${HOME:-}" && -x "$_compact_bin" && -f "$_compact_state" \
   fi
 fi
 
+# Stale lock-aside sweep (issue #2402). A lock released or broken by a process
+# killed mid-delete leaves a `<state>.lock.rel.*` / `.lock.stale.*` directory
+# behind for good. Detached, never waited on, every source; it only removes
+# validated asides older than an hour (state-lock.sh state_lock_sweep_asides)
+# and logs only when it found something. CLAUDE_STATE_LOCK_SWEEP_AUTO=0
+# disables it; CLAUDE_STATE_LOCK_SWEEP_BIN overrides the path (tests).
+_sweep_bin="${CLAUDE_STATE_LOCK_SWEEP_BIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" 2>/dev/null && pwd)/state-lock-sweep.sh}"
+if [[ -n "${HOME:-}" && -x "$_sweep_bin" && "${CLAUDE_STATE_LOCK_SWEEP_AUTO:-1}" != 0 ]]; then
+  ( nohup "$_sweep_bin" --apply --quiet --state-file "$HOME/.claude/session-state.json" \
+      >> "$HOME/.claude/session-state.json.sweep.log" 2>&1 < /dev/null & ) 2>/dev/null
+fi
+
 # Fold symlink-publish notices into the notices variable before sanitization so
 # they reach the user when no other notices are present.
 if [[ -n "$_agents_notices" ]]; then

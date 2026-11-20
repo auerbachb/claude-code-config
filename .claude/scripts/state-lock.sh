@@ -872,6 +872,182 @@ _state_lock_install_trap() {
   fi
 }
 
+# state_lock_sweep_asides <state-file> <inventory|apply> [grace-seconds] [max-candidates]
+#
+# Lock-aside sweep (issue #2402). Release and stale-break rename a lock to
+# `<state-file>.lock.rel.<pid>-<n>` / `.lock.stale.<pid>-<n>` and then
+# `rm -rf` it; a process killed between the two (a hook timeout, for one)
+# leaves the aside behind for good. An aside is no longer a lock — nothing
+# reads it as one, and its only remaining use is its own removal — so it can
+# be removed without proving the fleet quiet. A releaser removing the same
+# aside at the same moment is benign (its `rm` errors are suppressed). The
+# real risk is filesystem substitution, so a candidate is removed only when
+# ALL of these hold, re-checked immediately before deletion:
+#   - an exact direct sibling name: <base>.lock.(rel|stale).<digits>-<digits>
+#     (the live `<base>.lock` and its `.gate` never match);
+#   - a real directory, not a symlink, owned by the current user;
+#   - mtime older than grace-seconds (default 3600; a real lock lives
+#     milliseconds, a stale one is broken at 120 s);
+#   - it holds only regular, non-symlink `owner` / `.owner.*` files;
+#   - at deletion time, entered by `cd -P`, it is the same physical path,
+#     the same inode, and still older than the grace.
+# Files are removed one by one; the emptied directory is then renamed into
+# a private tombstone and `rmdir`'d only if the tombstone entry is still the
+# validated inode — never `rm -rf`, never a followed symlink, never a
+# removal by the aside's own name. Anything else is retained and reported with its reason.
+# Glob matches beyond max-candidates (default 500), malformed names
+# included, are counted unexamined and reported in ONE summary line.
+# Never touches acquire or release; costs nothing on the lock hot path.
+#
+# stdout: one `<outcome>\t<reason>\t<path>` line per examined candidate
+# (outcome: removed | removable | retained | failed), one
+# `unexamined\t<reason with count>\t<scope glob>` line when the cap was hit,
+# then
+# `totals\tremoved=N removable=N retained=N failed=N unexamined=N\t<state-file>`.
+# Returns 0, 1 when any removal failed, 2 on a usage error.
+state_lock_sweep_asides() (
+  local state_file="${1:-}" mode="${2:-inventory}" grace="${3:-3600}" cap="${4:-500}"
+  local dir base now c name entry reason mtime examined=0 phys_dir ino tomb
+  local removed=0 removable=0 retained=0 failed=0 unexamined=0
+  # Bounded digit strings, read as decimal (a leading 0 must not mean octal).
+  [[ -n "$state_file" && ( "$mode" == inventory || "$mode" == apply ) &&
+     "$grace" =~ ^[0-9]{1,9}$ && "$cap" =~ ^[0-9]{1,9}$ ]] || {
+    echo "state-lock: usage: state_lock_sweep_asides <state-file> <inventory|apply> [grace-seconds 0-999999999] [max 0-999999999]" >&2
+    return 2
+  }
+  grace=$((10#$grace)); cap=$((10#$cap))
+  dir="$(dirname -- "$state_file")"; base="$(basename -- "$state_file")"
+  shopt -s nullglob dotglob
+  now="$(_state_lock_now)"
+  report() { printf '%s\t%s\t%s\n' "$1" "$2" "$3"; }
+  # Inode of a directory itself (never a symlink target: callers have
+  # already refused symlinks). `ls -di` is portable across GNU and BSD.
+  dir_inode() { local i; i="$(ls -di -- "$1" 2>/dev/null)" || return 1; i="${i%% *}"; [[ "$i" =~ ^[0-9]+$ ]] && printf '%s' "$i"; }
+  # One entry's verdict: empty when it is an expected lock file, or when it
+  # vanished (a concurrent releaser finishing the same cleanup).
+  entry_problem() {
+    local e="$1" n
+    n="$(basename -- "$e")"
+    [[ -e "$e" || -L "$e" ]] || return 0
+    if [[ -L "$e" ]]; then echo "symlink entry $n"; return; fi
+    if [[ -d "$e" ]]; then echo "nested directory $n"; return; fi
+    [[ -f "$e" ]] || { echo "unexpected entry $n"; return; }
+    case "$n" in owner|.owner.*) ;; *) echo "unexpected entry $n" ;; esac
+  }
+  for c in "$dir/$base".lock.rel.* "$dir/$base".lock.stale.*; do
+    # The cap counts every glob match, malformed names included, so no class
+    # of entry can make one sweep examine or print an unbounded number.
+    if (( examined >= cap )); then
+      unexamined=$((unexamined + 1)); continue
+    fi
+    examined=$((examined + 1))
+    name="$(basename -- "$c")"
+    [[ "$name" =~ ^.+\.lock\.(rel|stale)\.[0-9]+-[0-9]+$ && "${name%.lock.*}" == "$base" ]] || {
+      retained=$((retained + 1)); report retained "name does not match the aside pattern" "$c"; continue; }
+    reason=""
+    if [[ -L "$c" ]]; then reason="symlink"
+    elif [[ ! -d "$c" ]]; then reason="not a directory"
+    elif [[ ! -O "$c" ]]; then reason="foreign owner"
+    elif ! mtime="$(_state_lock_file_mtime "$c")"; then reason="age unknown"
+    elif (( now - mtime < grace )); then reason="too young ($((now - mtime))s < ${grace}s)"
+    elif ! ino="$(dir_inode "$c")"; then reason="inode unknown"
+    else
+      for entry in "$c"/*; do
+        reason="$(entry_problem "$entry")"
+        [[ -z "$reason" ]] || break
+      done
+    fi
+    if [[ -n "$reason" ]]; then
+      retained=$((retained + 1)); report retained "$reason" "$c"; continue
+    fi
+    if [[ "$mode" == inventory ]]; then
+      removable=$((removable + 1)); report removable "stale aside" "$c"; continue
+    fi
+    # Vanished since the check: a concurrent releaser finished it.
+    if [[ ! -e "$c" && ! -L "$c" ]]; then
+      removed=$((removed + 1)); report removed "removed concurrently" "$c"; continue
+    fi
+    # Re-validate type and ownership right before deleting anything.
+    if [[ -L "$c" || ! -d "$c" || ! -O "$c" ]]; then
+      retained=$((retained + 1)); report retained "changed before removal" "$c"; continue
+    fi
+    # Delete from INSIDE the verified directory, bound to its inode: enter it,
+    # confirm the physical path is the aside itself (a swap to a symlink would
+    # land elsewhere, e.g. in the live lock), confirm it is the same inode the
+    # checks above validated and still old enough (a same-name replacement
+    # directory is refused), and unlink entries relative to it, so a later
+    # swap of the name cannot redirect a deletion.
+    phys_dir="$(cd -P -- "$dir" 2>/dev/null && pwd -P)" || phys_dir=""
+    reason="$(
+      [[ -n "$phys_dir" ]] || { echo "parent directory unresolvable"; exit 0; }
+      cd -P -- "$c" 2>/dev/null || { [[ -e "$c" || -L "$c" ]] && echo "could not enter"; exit 0; }
+      [[ "$(pwd -P)" == "${phys_dir%/}/$name" && -O . ]] || { echo "changed before removal: resolves elsewhere"; exit 0; }
+      [[ "$(dir_inode .)" == "$ino" ]] || { echo "changed before removal: different directory"; exit 0; }
+      if ! mtime="$(_state_lock_file_mtime .)" || (( now - mtime < grace )); then
+        echo "changed before removal: no longer old enough"; exit 0
+      fi
+      for entry in ./*; do
+        problem="$(entry_problem "$entry")"
+        [[ -z "$problem" ]] || { echo "changed before removal: $problem"; exit 0; }
+        [[ -e "$entry" || -L "$entry" ]] || continue
+        if ! rm -f -- "$entry" 2>/dev/null && [[ -e "$entry" || -L "$entry" ]]; then
+          echo "could not remove ${entry#./}"; exit 0
+        fi
+      done
+    )"
+    # The final removal must name a path, so it never removes the aside's
+    # NAME. Instead, after a quick re-check, the name is renamed into a fresh
+    # private tombstone directory (mktemp -d, mode 0700, a name nothing else
+    # uses), the tombstone entry's inode is compared with the validated one,
+    # and only a match is rmdir'd. Whatever sits at the original name after
+    # the rename — a same-name replacement created at any moment — is never
+    # touched. A mismatch (a replacement got renamed instead of the aside) is
+    # renamed back when the original name is still free, otherwise left in
+    # the tombstone; either way nothing is removed and it is reported failed.
+    # Residual: the rmdir of the tombstone entry still names a path, but only
+    # inside the private tombstone; a sweeper killed between rename and rmdir
+    # leaves an empty `<state>.lock.sweep.*` directory, which is harmless.
+    if [[ -z "$reason" ]]; then
+      if [[ ! -e "$c" && ! -L "$c" ]]; then
+        :   # Gone already (a racing releaser finished it): counts as removed.
+      elif [[ -L "$c" ]]; then
+        reason="changed before removal: replaced by a symlink"
+      elif [[ ! -d "$c" || "$(dir_inode "$c")" != "$ino" ]]; then
+        reason="changed before removal: different directory"
+      elif ! tomb="$(mktemp -d "$dir/$base.lock.sweep.XXXXXX" 2>/dev/null)"; then
+        reason="could not create a tombstone"
+      elif ! mv -- "$c" "$tomb/aside" 2>/dev/null; then
+        rmdir -- "$tomb" 2>/dev/null
+        [[ -e "$c" || -L "$c" ]] && reason="could not move aside to the tombstone"
+      elif [[ -L "$tomb/aside" || ! -d "$tomb/aside" || "$(dir_inode "$tomb/aside")" != "$ino" ]]; then
+        reason="changed before removal: different directory"
+        if [[ ! -e "$c" && ! -L "$c" ]] && mv -- "$tomb/aside" "$c" 2>/dev/null; then
+          rmdir -- "$tomb" 2>/dev/null
+        else
+          reason="$reason (left in $tomb)"
+        fi
+      elif ! rmdir -- "$tomb/aside" 2>/dev/null; then
+        reason="rmdir failed (left in $tomb)"
+      else
+        rmdir -- "$tomb" 2>/dev/null
+      fi
+    fi
+    if [[ -n "$reason" ]]; then
+      failed=$((failed + 1)); report failed "$reason" "$c"
+    else
+      removed=$((removed + 1)); report removed "stale aside" "$c"
+    fi
+  done
+  # One summary line for everything past the cap, so output stays bounded.
+  if (( unexamined > 0 )); then
+    report unexamined "over the candidate cap ($cap): $unexamined entries" "$dir/$base.lock.*"
+  fi
+  printf 'totals\tremoved=%s removable=%s retained=%s failed=%s unexamined=%s\t%s\n' \
+    "$removed" "$removable" "$retained" "$failed" "$unexamined" "$state_file"
+  (( failed == 0 )) || return 1
+  return 0
+)
+
 # Guard: this file is a library. Running it directly just prints the header.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   sed -n '/^# PURPOSE$/,/^$/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'
