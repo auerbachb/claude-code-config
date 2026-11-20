@@ -335,10 +335,10 @@ cmd_status() {
   fi
 }
 
-# Background worth reading: at least 8 words once PR/issue/U- references are taken out (issue #2592).
+# Background worth reading: at least 8 words once URLs and PR/issue/U- references are taken out (issue #2592).
 context_ok() { # TEXT
   local n
-  n=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/(pr|issue|u-|d-)? ?#?[0-9]+//g' | tr -cs '[:alpha:]' '\n' | grep -c '[[:alpha:]]' || true)
+  n=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's#[a-z]+://[^[:space:]]*##g; s/(pr|issue|u-|d-)? ?#?[0-9]+//g' | tr -cs '[:alpha:]' '\n' | grep -c '[[:alpha:]]' || true)
   [ "${n:-0}" -ge 8 ]
 }
 
