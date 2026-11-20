@@ -127,10 +127,11 @@ round.
     answered as recorded is a recording defect to fix at the source, and a repaired menu would hide
     it. A missing field prints `<Field>: not recorded (recording defect)`. The `header` chip is the
     only short label.
-  - **Links** is the only place references appear: each of the question's `refs` as `<PR|Issue> #N
-    (<state>)`, `<PR|Issue>` following the ref's `is` (what GitHub says it is), else its `kind`; a ref
-    with `error` set prints `<PR|Issue> #N (could not read)`. Never print a ref's title: titles carry
-    the thread's own shorthand. No refs: omit the line.
+  - **Links** is the only place references appear: the stored `links` word for word (URLs and commit
+    hashes included), each `PR #N` / `Issue #N` in it followed by its state from `refs` in
+    parentheses (`could not read` when that ref has `error`); then any other `refs` entry not already
+    in it, as `<PR|Issue> #N (<state>)`, `<PR|Issue>` following the ref's `is`, else its `kind`. Never
+    print a ref's title: titles carry the thread's own shorthand. No links and no refs: omit the line.
   - **Meanwhile** is the stored `did` as written; absent: `Meanwhile: not recorded`. A Decision's
     meanwhile is its `context` lines.
   - **What each option does** goes in that option's `description` (below), not in the question text.

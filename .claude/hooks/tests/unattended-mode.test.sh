@@ -453,7 +453,7 @@ D=$(UX digest)
 has "digest: Now line" "$D" "Now: $NOW"
 has "digest: Risk line" "$D" "Risk: $RSK"
 has "digest: one Links line" "$D" "Links: PR #4421, Issue #3994"
-for bad in "Proceed with the change (#12)?" "Proceed (acme/widgets#12)?" "Merge PR #4421 now?" "Holds acme/widgets#12 back?" "Holds #12 back?" "Uses the rep_list_status column?" "Should PM-A hold it?" "Answer U-25 first?" "Ship commit 4d9190704?" "See https://example.com/x?" 'Run `foo` now?'; do
+for bad in "Proceed with the change (#12)?" "Proceed (acme/widgets#12)?" "Merge PR #4421 now?" "Holds acme/widgets#12 back?" "Holds #12 back?" "Uses the rep_list_status column?" "Should PM-A hold it?" "Answer U-25 first?" "Ship commit 4d9190704?" "See https://example.com/x?" "See github.com/acme/widgets/pull/42?" 'Run `foo` now?'; do
   UX record --question "$bad" --now "$NOW" --change "$CHG" --why "$WHY" --risk "$RSK" >/dev/null 2>&1
   check "question refused: $bad" "$?" "2"
 done

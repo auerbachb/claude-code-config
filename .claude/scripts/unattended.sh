@@ -366,6 +366,7 @@ plain_problem() { # TEXT
   printf '%s' "$1" | perl -CSA -Mutf8 -0777 -ne '
     my @c = (
       [qr{(?:https?://|www\.)\S}i,                       "a link"],
+      [qr{\b[a-z0-9-]+\.(?:com|org|net|io|dev|ai|app|co)/\S}i, "a link"],
       [qr{\x23\d},                                     "a ticket number like \x23123"],
       [qr{\b(?:pr|prs|issue|issues|pull)\s*\x23?\d+}i, "a ticket number like PR 123"],
       [qr{\x60},                                       "backticks"],
