@@ -15,7 +15,7 @@
 3	.claude/hooks/tests/babysit-tick-watchdog.test.sh
 4	.claude/hooks/tests/bgwork-ceiling-hooks.test.sh
 2	.claude/hooks/tests/issue-claim-guard.test.sh
-65	.claude/hooks/tests/pause-lifecycle-hooks.test.sh
+20	.claude/hooks/tests/pause-lifecycle-hooks.test.sh
 11	.claude/hooks/tests/polling-backoff-warn.test.sh
 0	.claude/hooks/tests/post-compact-reconcile.test.sh
 2	.claude/hooks/tests/quota-reserve-hooks.test.sh
@@ -102,7 +102,6 @@
 15	.claude/scripts/tests/estimate-log.test.sh
 1	.claude/scripts/tests/estimate-resolve.test.sh
 27	.claude/scripts/tests/estimate-rounds-batch-bash.test.sh
-20	.claude/scripts/tests/execution-pause-status.test.sh
 2	.claude/scripts/tests/fixpr-step3b-daily-cap.test.sh
 0	.claude/scripts/tests/fixpr-step3b-pushed-sha.test.sh
 11	.claude/scripts/tests/fixpr-step3b-tier-triggers.test.sh

@@ -120,45 +120,17 @@ SCOPE_HASH="$(scope_hash "$SESSION_ID")" || {
   exit 5
 }
 MARKER="$MARKER_DIR/claude-execution-pause-v2-$SCOPE_HASH"
-# In-flight activation record (issue #2402, CodeRabbit 4636153100): written by
-# an activating process before it does anything else, removed by that process
-# after its marker and state are final. Clear never touches it, so a clear
-# racing an activation cannot hide the activation from the lock-free status.
-ACTIVATING_PREFIX="$MARKER_DIR/claude-execution-pause-activating-"
-INTENT=""
-
-# Start time of process $1 as `ps` prints it, whitespace squeezed; empty when
-# it cannot be read. With the pid it identifies one process across pid reuse.
-pid_start_time() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//'; }
-
-# 0 when a live activation for scope hash $1 is in flight. A record counts
-# only while it is a regular, non-symlink file of ours naming a running
-# process. Its first line is `<pid> <start time>`: when both start times can
-# be read, they decide (equal -> held at any age, so an activation stuck
-# behind the lock for a long time still holds — CodeAnt 4636571089; unequal ->
-# the pid was reused, not held). Only when identity cannot be proven does a
-# 15-minute age cutoff bound how long a record can hold. A crashed
-# activation never completed, so its leftover record holds nothing.
-activation_in_flight() {
-  local f pid line recorded current
-  for f in "$ACTIVATING_PREFIX$1".*; do
-    [[ -f "$f" && ! -L "$f" && -O "$f" ]] || continue
-    pid="${f##*.}"
-    [[ "$pid" =~ ^[1-9][0-9]{0,9}$ ]] || continue
-    kill -0 "$pid" 2>/dev/null || continue
-    line=""; IFS= read -r line < "$f" 2>/dev/null || [[ -n "$line" ]] || line=""
-    recorded=""
-    [[ "$line" == "$pid "* ]] && recorded="${line#"$pid "}"
-    current="$(pid_start_time "$pid")"
-    if [[ -n "$recorded" && -n "$current" ]]; then
-      [[ "$recorded" == "$current" ]] && return 0
-      continue
-    fi
-    [[ -n "$(find "$f" -prune -mmin -15 2>/dev/null)" ]] && return 0
-  done
-  return 1
-}
 PATH_EXPR="$(pause_path "$SESSION_ID")" || exit 5
+
+# Marker and session-state are one lifecycle invariant. Hold the canonical
+# state lock across status, activation, and clearing so neither a concurrent
+# resume nor a launch-gate read can observe a half-applied transition. The
+# nested session-state.sh process inherits this lock and re-enters safely.
+[[ -f "$LOCK_LIB" ]] || { echo "execution-pause.sh: state-lock.sh unavailable" >&2; exit 5; }
+# shellcheck source=state-lock.sh
+source "$LOCK_LIB"
+state_lock_acquire "$STATE_FILE" || exit $?
+trap 'state_lock_release' EXIT
 
 read_end_proof() {
   jq -Sce --arg session "$SESSION_ID" '
@@ -191,19 +163,6 @@ legacy_snapshot() {
     '{token:$token,at:$state.at,pending:$pending}'
 }
 
-# Token of an already-read native gate record ($2, compact JSON as --get-json
-# prints it) for the scope hash $1. Shared by the guarded legacy clear (which
-# records the token) and both status paths (which compare against it), so the
-# canonicalization can never drift between writer and reader. Returns 7 when
-# the gate is active, 4 when it is malformed.
-native_token_of() {
-  local native_hash="$1" state="$2"
-  if jq -e 'type == "object" and .active == true' <<< "$state" >/dev/null; then return 7; fi
-  state="$(jq -cS 'if . == null or (type == "object" and .active == false)
-                   then . else error("native gate malformed") end' <<< "$state")" || return 4
-  printf '%s\0%s' "$native_hash" "$state" | sha256_input
-}
-
 native_gate_token() {
   local session="$1" native_hash native_path state
   native_hash="$(scope_hash "$session")" || return 4
@@ -213,7 +172,10 @@ native_gate_token() {
     return 7
   fi
   state="$(session_state --raw-path --get-json "$native_path")" || return 4
-  native_token_of "$native_hash" "$state"
+  if jq -e 'type == "object" and .active == true' <<< "$state" >/dev/null; then return 7; fi
+  state="$(jq -cS 'if . == null or (type == "object" and .active == false)
+                   then . else error("native gate malformed") end' <<< "$state")" || return 4
+  printf '%s\0%s' "$native_hash" "$state" | sha256_input
 }
 
 legacy_resume_scope() {
@@ -266,206 +228,6 @@ legacy_launch_held() {
   [[ "$active" != false && "$active" != null ]]
 }
 
-# ----------------------------------------------------------------------------
-# Lock-free status (issue #2402)
-#
-# `--status` reads the state file ONCE, without the state lock, then checks
-# markers. Writers publish the state by atomic rename, so one open of the file
-# is one consistent snapshot. Every marker check happens AFTER the snapshot,
-# which keeps half-applied transitions conservative:
-#   - activation publishes the marker before it even takes the lock, and so
-#     before the state: a snapshot taken before the state write still sees
-#     the marker afterwards -> active;
-#   - an activation also leaves a per-process in-flight record for its whole
-#     run that only it removes, checked before the marker: a clear racing
-#     the activation can remove the marker but not that record -> active;
-#   - clear writes inactive state before removing the marker: `inactive` needs
-#     an inactive snapshot AND a missing marker afterwards, i.e. a clear that
-#     had already finished removing it.
-# The answer is a point-in-time check, not a reservation through the launch —
-# exactly what the locked read gave. The locked read is kept behind
-# CLAUDE_EXECUTION_PAUSE_STATUS_LOCKED=1 as parity oracle and rollback; only it
-# can return exit 6. One intended difference: the unlocked read does not run
-# session-state.sh's in-memory flat-.prs migration, so a malformed legacy flat
-# container no longer turns status into exit 4.
-# ----------------------------------------------------------------------------
-STATUS_SNAPSHOT_JQ="$(cat <<'JQ'
-  def field(f): try {ok: f} catch {err: true};
-  [inputs]
-  | if length != 1 or (.[0] | type) != "object"
-    then error("state file must contain exactly one top-level JSON object") else .[0] end
-  | . as $d
-  | {primary: field($d.repos[$repo].execution_pauses[$session].active
-                    | if type == "string" then . else tojson end)}
-  + if $launch then
-      field($d.repos[$repo].legacy_end_resume_scopes[$session]) as $binding
-      | {binding: $binding}
-      # Legacy-only inputs only when a usable binding exists; the task
-      # inventory is reduced to the one boolean the hold needs, so a large
-      # inventory is never copied out (errors stay errors: they hold).
-      + if ($binding.ok | type) == "object" and ($binding.ok.legacy | type) == "string" then
-          {native: field($d.repos[$repo].execution_pauses[$session]),
-           rearming: field($d.repos[$repo].background_tasks
-             | if . == null then false
-               elif type == "array" then any(.[]; .session_id == $binding.ok.legacy and .status == "rearming")
-               else error("task inventory malformed") end),
-           legacy_active: field($d.repos[$repo].execution_pauses[$binding.ok.legacy].active)}
-        else {} end
-    else {} end
-JQ
-)"
-
-# Mirror of legacy_launch_held over the snapshot in $SNAP. 0 = launch held.
-# Same hold / no-hold branches; markers are read here, after the snapshot.
-snapshot_legacy_held() {
-  local binding legacy recorded native_hash state current active legacy_hash
-  jq -e '.binding | has("ok")' <<< "$SNAP" >/dev/null 2>&1 || return 1
-  binding="$(jq -c '.binding.ok' <<< "$SNAP")" || return 1
-  [[ "$binding" != null ]] || return 1
-  legacy="$(jq -er '.legacy | select(type == "string" and length > 0)' <<< "$binding" 2>/dev/null)" || return 0
-  recorded="$(jq -er '.native_token | select(type == "string" and test("^[a-f0-9]{64}$"))' \
-    <<< "$binding" 2>/dev/null)" || return 0
-  native_hash="$(scope_hash "$SESSION_ID")" || return 0
-  if activation_in_flight "$native_hash" ||
-     [[ -e "$MARKER_DIR/claude-execution-pause-v2-$native_hash" ||
-        -L "$MARKER_DIR/claude-execution-pause-v2-$native_hash" ]]; then
-    return 0
-  fi
-  jq -e '.native | has("ok")' <<< "$SNAP" >/dev/null 2>&1 || return 0
-  state="$(jq -c '.native.ok' <<< "$SNAP")" || return 0
-  current="$(native_token_of "$native_hash" "$state" 2>/dev/null)" || return 0
-  [[ "$current" == "$recorded" ]] || return 1
-  jq -e '.rearming | has("ok")' <<< "$SNAP" >/dev/null 2>&1 || return 0
-  active="$(jq -r '.rearming.ok' <<< "$SNAP")" || return 0
-  [[ "$active" == true ]] || return 1
-  legacy_hash="$(scope_hash "$legacy")" || return 0
-  if activation_in_flight "$legacy_hash" ||
-     [[ -e "$MARKER_DIR/claude-execution-pause-v2-$legacy_hash" ||
-        -L "$MARKER_DIR/claude-execution-pause-v2-$legacy_hash" ]]; then
-    return 0
-  fi
-  jq -e '.legacy_active | has("ok")' <<< "$SNAP" >/dev/null 2>&1 || return 0
-  active="$(jq -c '.legacy_active.ok' <<< "$SNAP")" || return 0
-  [[ "$active" != false && "$active" != null ]]
-}
-
-status_unlocked() {
-  local launch=false class=ok value
-  if [[ "${CLAUDE_EXECUTION_PAUSE_LAUNCH_CHECK:-}" == 1 &&
-        "$SESSION_ID" =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$ ]]; then
-    launch=true
-  fi
-  SNAP=""
-  if [[ ! -f "$STATE_FILE" ]]; then
-    class=missing
-  elif ! SNAP="$(jq -cn --arg repo "$REPO_KEY" --arg session "$SESSION_ID" --argjson launch "$launch" \
-                 "$STATUS_SNAPSHOT_JQ" "$STATE_FILE" 2>/dev/null)"; then
-    # A file that vanished between the test and jq's open reads as missing.
-    if [[ -e "$STATE_FILE" ]]; then class=unreadable; else class=missing; fi
-  elif ! value="$(jq -er '.primary.ok' <<< "$SNAP" 2>/dev/null)"; then
-    class=unreadable
-  fi
-  # Markers only after the snapshot, in-flight activations before the marker:
-  # an activation that finishes between the two checks has already published
-  # its marker. A live activation or a surviving marker is authoritative.
-  if activation_in_flight "$SCOPE_HASH" || [[ -f "$MARKER" ]]; then printf 'active\n'; return 0; fi
-  case "$class" in
-    missing) printf 'inactive\n'; return 0 ;;
-    unreadable)
-      echo "execution-pause.sh: execution-pause state unreadable and no active marker exists" >&2
-      return 4 ;;
-  esac
-  if [[ "$value" == true ]]; then printf 'active\n'; return 0; fi
-  if [[ "$value" == false || "$value" == null ]]; then
-    if [[ "$launch" == true ]] && snapshot_legacy_held; then
-      printf 'active\n'
-    else
-      printf 'inactive\n'
-    fi
-    return 0
-  fi
-  echo "execution-pause.sh: execution-pause state unreadable and no active marker exists" >&2
-  return 4
-}
-
-if [[ "$MODE" == status && "${CLAUDE_EXECUTION_PAUSE_STATUS_LOCKED:-}" != 1 ]]; then
-  status_unlocked
-  exit $?
-fi
-
-# Activation publishes its marker BEFORE taking the state lock (issue #2402,
-# CodeAnt 4630476552). The lock-free `--status` never waits on the lock, so a
-# marker published only after acquisition left a window — lock held or still
-# being waited for, marker not yet written — where status read `inactive` for
-# an activation already under way; the locked read would have waited and said
-# `active`. Publishing first makes every status that starts after this point
-# see the pause. If the lock is never acquired the marker survives and keeps
-# launches blocked until an explicit clear (same fail-closed stance as a
-# failed state write below).
-publish_marker() {
-  local tmp
-  mkdir -p "$MARKER_DIR" 2>/dev/null || {
-    echo "execution-pause.sh: could not create marker directory $MARKER_DIR" >&2
-    return 1
-  }
-  if [[ "$MARKER_DIR_IS_DEFAULT" == 1 ]]; then
-    chmod 700 "$MARKER_DIR" 2>/dev/null || {
-      echo "execution-pause.sh: could not secure marker directory $MARKER_DIR" >&2
-      return 1
-    }
-  fi
-  tmp="$(mktemp "$MARKER_DIR/.execution-pause.XXXXXX")" || {
-    echo "execution-pause.sh: could not create marker temp file in $MARKER_DIR" >&2
-    return 1
-  }
-  printf '%s\n' "$VALUE" > "$tmp" || {
-    rm -f "$tmp"
-    echo "execution-pause.sh: could not write marker temp file $tmp" >&2
-    return 1
-  }
-  mv "$tmp" "$MARKER" || {
-    rm -f "$tmp"
-    echo "execution-pause.sh: could not publish marker $MARKER" >&2
-    return 1
-  }
-}
-
-if [[ "$MODE" == activate ]]; then
-  # In-flight record first, before the marker and the lock: from here until
-  # this process exits, the lock-free status reads this scope as active, even
-  # if a concurrent clear removes the pre-lock marker before this process
-  # takes the lock and re-publishes it (CodeRabbit 4636153100).
-  mkdir -p "$MARKER_DIR" 2>/dev/null || {
-    echo "execution-pause.sh: could not create marker directory $MARKER_DIR" >&2
-    exit 5
-  }
-  INTENT="$ACTIVATING_PREFIX$SCOPE_HASH.$$"
-  trap '[[ -z "$INTENT" ]] || rm -f -- "$INTENT"' EXIT
-  printf '%s %s\n' "$$" "$(pid_start_time "$$")" > "$INTENT" || {
-    echo "execution-pause.sh: could not write activation record $INTENT" >&2
-    exit 5
-  }
-  NOW="$(date -u +%FT%TZ)"
-  DEADLINE_EPOCH=$(( $(date -u +%s) + WINDOW * 60 ))
-  GENERATION="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')" || exit 5
-  [[ "$GENERATION" =~ ^[0-9a-f]{32}$ ]] || exit 5
-  VALUE="$(jq -nc --arg command "$COMMAND_NAME" --arg session "$SESSION_ID" --arg at "$NOW" \
-    --argjson window "$WINDOW" --argjson deadline "$DEADLINE_EPOCH" --arg generation "$GENERATION" \
-    '{generation:$generation,active:true,command:$command,session_id:$session,window_minutes:$window,deadline_epoch:$deadline,at:$at,cleared_at:null}')" || exit 5
-  publish_marker || exit 5
-fi
-
-# Marker and session-state are one lifecycle invariant. Hold the canonical
-# state lock across activation, clearing, and the legacy proofs so a
-# concurrent resume never observes a half-applied transition. The nested
-# session-state.sh process inherits this lock and re-enters safely. (Status is
-# unlocked by default — see "Lock-free status" above.)
-[[ -f "$LOCK_LIB" ]] || { echo "execution-pause.sh: state-lock.sh unavailable" >&2; exit 5; }
-# shellcheck source=state-lock.sh
-source "$LOCK_LIB"
-state_lock_acquire "$STATE_FILE" || exit $?
-trap 'state_lock_release; [[ -z "$INTENT" ]] || rm -f -- "$INTENT"' EXIT
-
 case "$MODE" in
   snapshot-legacy)
     legacy_snapshot || exit $?
@@ -474,16 +236,42 @@ case "$MODE" in
     legacy_resume_scope || exit $?
     ;;
   activate)
-    # Re-publish under the lock: a clear that ran between the pre-lock publish
-    # and this acquisition removed the marker, and this activation is newer.
-    publish_marker || exit 5
+    NOW="$(date -u +%FT%TZ)"
+    DEADLINE_EPOCH=$(( $(date -u +%s) + WINDOW * 60 ))
+    GENERATION="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')" || exit 5
+    [[ "$GENERATION" =~ ^[0-9a-f]{32}$ ]] || exit 5
+    VALUE="$(jq -nc --arg command "$COMMAND_NAME" --arg session "$SESSION_ID" --arg at "$NOW" \
+      --argjson window "$WINDOW" --argjson deadline "$DEADLINE_EPOCH" --arg generation "$GENERATION" \
+      '{generation:$generation,active:true,command:$command,session_id:$session,window_minutes:$window,deadline_epoch:$deadline,at:$at,cleared_at:null}')" || exit 5
+    mkdir -p "$MARKER_DIR" 2>/dev/null || {
+      echo "execution-pause.sh: could not create marker directory $MARKER_DIR" >&2
+      exit 5
+    }
+    if [[ "$MARKER_DIR_IS_DEFAULT" == 1 ]]; then
+      chmod 700 "$MARKER_DIR" 2>/dev/null || {
+        echo "execution-pause.sh: could not secure marker directory $MARKER_DIR" >&2
+        exit 5
+      }
+    fi
+    MARKER_TMP="$(mktemp "$MARKER_DIR/.execution-pause.XXXXXX")" || {
+      echo "execution-pause.sh: could not create marker temp file in $MARKER_DIR" >&2
+      exit 5
+    }
+    printf '%s\n' "$VALUE" > "$MARKER_TMP" || {
+      rm -f "$MARKER_TMP"
+      echo "execution-pause.sh: could not write marker temp file $MARKER_TMP" >&2
+      exit 5
+    }
+    mv "$MARKER_TMP" "$MARKER" || {
+      rm -f "$MARKER_TMP"
+      echo "execution-pause.sh: could not publish marker $MARKER" >&2
+      exit 5
+    }
     # Publish state only after durable positive marker evidence exists. If the
     # state write fails, the surviving marker deliberately keeps launches
     # blocked until an explicit clear/recovery.
     session_state --raw-path --set "$PATH_EXPR=$VALUE" || exit $?
     state_lock_release
-    # Marker and state are final: the in-flight record has done its job.
-    rm -f -- "$INTENT"; INTENT=""
     ;;
   clear)
     EXTRA_CLEAR_ARGS=()

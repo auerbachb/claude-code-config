@@ -8,19 +8,7 @@ COMPLETE="$ROOT/.claude/hooks/background-task-complete.sh"
 PAUSE="$ROOT/.claude/scripts/execution-pause.sh"
 REGISTRY="$ROOT/.claude/scripts/background-task-registry.sh"
 TMP="$(mktemp -d)"
-# Stop the issue #2402 background writers (if started) before removing $TMP,
-# so an early assertion exit never leaves them looping against a deleted tree.
-WRITER_PIDS=()
-cleanup_tmp() {
-  local wp
-  # Children first (an in-flight session-state.sh write), then the loop.
-  for wp in ${WRITER_PIDS[@]+"${WRITER_PIDS[@]}"}; do
-    pkill -P "$wp" 2>/dev/null || true
-    kill "$wp" 2>/dev/null || true
-  done
-  rm -rf "$TMP"
-}
-trap cleanup_tmp EXIT
+trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home"
 export CLAUDE_EXECUTION_PAUSE_MARKER_DIR="$TMP/markers"
 export CLAUDE_BGWORK_MARKER_DIR="$TMP/bgmarkers"
@@ -404,6 +392,20 @@ grep -Fq $'\ttransition\tterminal-contention-runtime\t6' "$FAILURE_MARKER" || \
   fail "failed terminal transition incorrectly changed task lifecycle"
 ok "registry lock contention records launch and terminal failures within hook budgets"
 
+hold_state_lock
+SECONDS=0
+set +e
+gate Agent >/dev/null 2>&1
+gate_contention_rc=$?
+set -e
+gate_contention_elapsed=$SECONDS
+rm -rf "$LOCK_DIR"
+[[ "$gate_contention_rc" == 2 ]] || fail "lock-contended launch gate failed open"
+[[ "$gate_contention_elapsed" -lt 5 ]] || fail "launch-gate contention outlived its hook timeout budget"
+ok "launch-gate lock contention fails closed within the hook budget"
+
+# issue #2433: the gate retries a busy lock briefly, reports busy separately
+# from paused and from unavailable, and stays inside the host hook budget.
 gate_sid() {
   local sid="$1" tool="${2:-Agent}"
   jq -nc --arg sid "$sid" --arg cwd "$CWD" --arg tool "$tool" \
@@ -412,58 +414,6 @@ gate_sid() {
 IDLE_SID=pause-gate-idle-2433
 ACTIVE_SID=pause-gate-active-2433
 "$PAUSE" --repo "$REPO" --activate --session "$ACTIVE_SID" --command pause --window-minutes 5 >/dev/null
-
-# issue #2402: --status is lock-free, so a held state lock no longer refuses a
-# launch. The verdict follows the gate state, well inside the hook budget.
-# Generous named bound, measured over the whole hook subprocess.
-LOCKFREE_BOUND_MS=2000
-# Run "$@" with stdin from $1; print "<elapsed-ms> <rc>" (monotonic clock).
-timed_run() {
-  python3 -c 'import subprocess,sys,time
-t=time.monotonic()
-r=subprocess.run(sys.argv[2:],stdin=open(sys.argv[1],"rb"),stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
-sys.stderr.buffer.write(r.stderr)
-print(int((time.monotonic()-t)*1000), r.returncode)' "$@"
-}
-gate_payload() { # $1 session, $2 file
-  jq -nc --arg sid "$1" --arg cwd "$CWD" \
-    '{session_id:$sid,cwd:$cwd,tool_name:"Agent",tool_input:{run_in_background:false}}' > "$2"
-}
-gate_payload "$IDLE_SID" "$TMP/idle-2402.json"
-gate_payload "$ACTIVE_SID" "$TMP/active-2402.json"
-hold_state_lock
-read -r held_idle_ms held_idle_rc < <(timed_run "$TMP/idle-2402.json" "$GATE" 2>"$TMP/held-idle-2402.err")
-read -r held_active_ms held_active_rc < <(timed_run "$TMP/active-2402.json" "$GATE" 2>/dev/null)
-[[ -d "$LOCK_DIR" ]] || fail "the lock-free status read disturbed the held lock"
-rm -rf "$LOCK_DIR"
-[[ "$held_idle_rc" == 0 ]] || fail "held lock refused an inactive session's launch (rc=$held_idle_rc): $(cat "$TMP/held-idle-2402.err")"
-[[ "$held_active_rc" == 2 ]] || fail "held lock let an armed session launch (rc=$held_active_rc)"
-(( held_idle_ms < LOCKFREE_BOUND_MS && held_active_ms < LOCKFREE_BOUND_MS )) || \
-  fail "gate under a held lock took ${held_idle_ms}/${held_active_ms}ms (bound ${LOCKFREE_BOUND_MS}ms)"
-ok "a held state lock neither refuses nor opens a launch; the verdict follows the gate state"
-
-# Half-applied transitions stay closed without the lock: a marker with
-# inactive state (interrupted clear) and a marker with no state record
-# (interrupted activation) both read active.
-HALF_SID=pause-gate-half-2402
-HALF_MARKER="$CLAUDE_EXECUTION_PAUSE_MARKER_DIR/claude-execution-pause-v2-$(scope_hash "$REPO" "$HALF_SID")"
-printf '{}\n' > "$HALF_MARKER"
-[[ "$("$PAUSE" --repo "$REPO" --status --session "$HALF_SID")" == active ]] || \
-  fail "marker without a state record (interrupted activation) read inactive"
-"$ROOT/.claude/scripts/session-state.sh" --raw-path \
-  --set ".repos[\"$REPO\"].execution_pauses[\"$HALF_SID\"].active=false" >/dev/null
-[[ "$("$PAUSE" --repo "$REPO" --status --session "$HALF_SID")" == active ]] || \
-  fail "marker with inactive state (interrupted clear) read inactive"
-rm -f "$HALF_MARKER"
-[[ "$("$PAUSE" --repo "$REPO" --status --session "$HALF_SID")" == inactive ]] || \
-  fail "completed clear did not read inactive"
-ok "half-applied activation and clear stay active without the lock"
-
-# issue #2433 paths, kept for an older installed helper and the retained locked
-# read (CLAUDE_EXECUTION_PAUSE_STATUS_LOCKED=1): the gate retries a busy lock
-# briefly, reports busy separately from paused and from unavailable, and stays
-# inside the host hook budget.
-export CLAUDE_EXECUTION_PAUSE_STATUS_LOCKED=1
 
 hold_state_lock
 SECONDS=0
@@ -516,7 +466,6 @@ grep -Fq 'could not be verified' <<<"$unavail_msg" || fail "non-contention exit 
 grep -Fq 'not contention' <<<"$unavail_msg" || fail "unavailable message omitted the reason: $unavail_msg"
 if grep -Fq 'lock-busy' <<<"$unavail_msg"; then fail "non-contention exit 6 was called lock-busy"; fi
 ok "a lock that cannot be created is reported as unavailable, not busy"
-unset CLAUDE_EXECUTION_PAUSE_STATUS_LOCKED
 
 # Call-count shim: the gate never retries an `active` verdict, and other
 # non-zero exits stay fail-open after a single call.
@@ -547,114 +496,6 @@ set -e
 [[ "$(wc -l < "$TMP/shim-count-error" | tr -d ' ')" == 1 ]] || fail "a non-6 status failure was retried"
 ok "active is never retried and non-lock failures stay fail-open"
 "$PAUSE" --repo "$REPO" --clear --session "$ACTIVE_SID" >/dev/null 2>&1 || true
-
-# issue #2402: a realistic ~9 MB state file (many repos, PR and task records,
-# Unicode). --status and the whole gate stay well under the hook's lock
-# timeout idle, under a held lock, armed, and cleared; with six writers
-# hammering the state, no Agent launch is refused for lock contention.
-export CLAUDE_STATE_COMPACT_AUTO=0
-UUID_SID=22222222-2222-4222-8222-222222222402
-python3 - "$STATE_FILE" "$REPO" "$UUID_SID" <<'PY'
-import json, os, sys
-path, repo, uuid_sid = sys.argv[1:4]
-with open(path) as f:
-    doc = json.load(f)
-repos = doc.setdefault('repos', {})
-note = 'Ünïcødé — 漢字 — état ' * 4
-# A UUID session with a legacy binding (stale token) over a large current-repo
-# task inventory: the launch check projects the inventory down to one boolean.
-current = repos.setdefault(repo, {})
-current.setdefault('legacy_end_resume_scopes', {})[uuid_sid] = {'legacy': 'legacy-2402', 'native_token': '0' * 64}
-current.setdefault('background_tasks', []).extend(
-    {'task_id': f'cur-{n}', 'status': 'completed', 'session_id': 'pad-2402',
-     'started_at': '2026-01-01T00:00:00Z', 'summary': note} for n in range(5000))
-i = 0
-while True:
-    repos[f'pad-owner/pad-repo-{i}'] = {
-        'prs': {str(n): {'reviewer': 'cr', 'head_sha': '%040x' % (i * 1000 + n), 'phase': 'B', 'notes': note}
-                for n in range(40)},
-        'background_tasks': [{'task_id': f't-{i}-{n}', 'status': 'completed', 'session_id': 'pad',
-                              'started_at': '2026-01-01T00:00:00Z', 'summary': note} for n in range(20)],
-    }
-    i += 1
-    if i % 25 == 0 and len(json.dumps(doc, ensure_ascii=False).encode()) >= 9 * 1024 * 1024:
-        break
-with open(path + '.tmp-2402', 'w') as f:
-    json.dump(doc, f, ensure_ascii=False)
-os.replace(path + '.tmp-2402', path)
-PY
-big_bytes=$(wc -c < "$STATE_FILE" | tr -d ' ')
-(( big_bytes >= 9 * 1024 * 1024 )) || fail "large-state fixture is only $big_bytes bytes"
-status_of() { CLAUDE_EXECUTION_PAUSE_LAUNCH_CHECK=1 "$PAUSE" --repo "$REPO" --status --session "$1"; }
-assert_fast() { # label expected-status expected-gate-rc session payload
-  local label="$1" want="$2" want_rc="$3" sid="$4" payload="$5" got ms rc gms grc
-  got="$(status_of "$sid")" || fail "$label: --status failed"
-  [[ "$got" == "$want" ]] || fail "$label: --status read $got, expected $want"
-  read -r ms rc < <(timed_run /dev/null env CLAUDE_EXECUTION_PAUSE_LAUNCH_CHECK=1 \
-    "$PAUSE" --repo "$REPO" --status --session "$sid" 2>/dev/null)
-  read -r gms grc < <(timed_run "$payload" "$GATE" 2>/dev/null)
-  [[ "$rc" == 0 && "$grc" == "$want_rc" ]] || fail "$label: status rc=$rc gate rc=$grc (want gate $want_rc)"
-  (( ms < LOCKFREE_BOUND_MS && gms < LOCKFREE_BOUND_MS )) || \
-    fail "$label: status ${ms}ms, gate ${gms}ms on a ${big_bytes}-byte state (bound ${LOCKFREE_BOUND_MS}ms)"
-}
-assert_fast "9 MB idle" inactive 0 "$IDLE_SID" "$TMP/idle-2402.json"
-gate_payload "$UUID_SID" "$TMP/uuid-2402.json"
-assert_fast "9 MB idle UUID session with a legacy binding" inactive 0 "$UUID_SID" "$TMP/uuid-2402.json"
-hold_state_lock
-assert_fast "9 MB held lock" inactive 0 "$IDLE_SID" "$TMP/idle-2402.json"
-rm -rf "$LOCK_DIR"
-"$PAUSE" --repo "$REPO" --activate --session "$ACTIVE_SID" --command pause --window-minutes 5 >/dev/null
-assert_fast "9 MB armed" active 2 "$ACTIVE_SID" "$TMP/active-2402.json"
-"$PAUSE" --repo "$REPO" --clear --session "$ACTIVE_SID" >/dev/null
-assert_fast "9 MB cleared" inactive 0 "$ACTIVE_SID" "$TMP/active-2402.json"
-ok "--status and the gate answer within ${LOCKFREE_BOUND_MS}ms on a ${big_bytes}-byte state, idle, held, armed and cleared"
-
-WRITERS=6
-WRITER_STOP="$TMP/writers-2402.stop"
-WRITER_PIDS=()
-for w in $(seq 1 "$WRITERS"); do
-  (
-    n=0
-    while [[ ! -e "$WRITER_STOP" && -d "$TMP" ]]; do
-      n=$((n + 1))
-      if CLAUDE_STATE_LOCK_TIMEOUT=120 "$ROOT/.claude/scripts/session-state.sh" --raw-path \
-           --set ".repos[\"writer-2402/w$w\"].count=$n" >/dev/null 2>&1; then
-        : > "$TMP/writer-2402-$w.ready"
-      fi
-      sleep 0.1
-    done
-  ) &
-  WRITER_PIDS+=("$!")
-done
-SECONDS=0
-until (( $(find "$TMP" -maxdepth 1 -name 'writer-2402-*.ready' | wc -l) == WRITERS )); do
-  (( SECONDS < 240 )) || fail "the $WRITERS state writers never all landed a write"
-  sleep 0.2
-done
-for pid in "${WRITER_PIDS[@]}"; do kill -0 "$pid" 2>/dev/null || fail "writer $pid died under load"; done
-for i in $(seq 1 13); do
-  read -r load_ms load_rc < <(timed_run "$TMP/idle-2402.json" "$GATE" 2>"$TMP/load-2402.err")
-  [[ "$load_rc" == 0 ]] || fail "launch $i refused under $WRITERS writers (rc=$load_rc): $(cat "$TMP/load-2402.err")"
-  if grep -Eq 'lock-contended|lock-busy|could not be verified' "$TMP/load-2402.err"; then
-    fail "launch $i reported lock trouble under load: $(cat "$TMP/load-2402.err")"
-  fi
-  (( load_ms < LOCKFREE_BOUND_MS )) || fail "launch $i took ${load_ms}ms under load (bound ${LOCKFREE_BOUND_MS}ms)"
-done
-CLAUDE_STATE_LOCK_TIMEOUT=240 "$PAUSE" --repo "$REPO" --activate --session "$ACTIVE_SID" \
-  --command pause --window-minutes 5 >/dev/null || fail "could not arm the gate under writer load"
-set +e; gate_sid "$ACTIVE_SID" >/dev/null 2>&1; load_armed_rc=$?; set -e
-[[ "$load_armed_rc" == 2 ]] || fail "an armed gate let a launch through under writer load (rc=$load_armed_rc)"
-CLAUDE_STATE_LOCK_TIMEOUT=240 "$PAUSE" --repo "$REPO" --clear --session "$ACTIVE_SID" >/dev/null || \
-  fail "could not clear the gate under writer load"
-set +e; gate_sid "$ACTIVE_SID" >/dev/null 2>&1; load_cleared_rc=$?; set -e
-[[ "$load_cleared_rc" == 0 ]] || fail "a cleared gate still refused under writer load (rc=$load_cleared_rc)"
-: > "$WRITER_STOP"
-for pid in "${WRITER_PIDS[@]}"; do wait "$pid" 2>/dev/null || true; done
-jq -se --argjson n "$WRITERS" 'length == 1 and (.[0] | type == "object") and (.[0] as $d
-  | [range(1; $n + 1)] | all(. as $w | ($d.repos["writer-2402/w\($w)"].count | type) == "number"))' \
-  "$STATE_FILE" >/dev/null || fail "state after concurrent writers is not one object holding every writer key"
-ok "13 launches under $WRITERS concurrent writers on a 9 MB state: none refused; arm and clear still gate"
-unset CLAUDE_STATE_COMPACT_AUTO
 
 # If state becomes unreadable after activation, the positive marker keeps the
 # gate closed. A random parse failure without such a marker stays fail-open.

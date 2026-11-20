@@ -92,17 +92,10 @@ if [[ ! -x "$PAUSE_SH" ]]; then
   exit 0
 fi
 
-# `--status` is lock-free (issue #2402): one state snapshot, then the marker
-# checks, which keeps half-applied activations and clears closed without the
-# lock. A held state lock therefore no longer refuses a launch, and the
-# current helper never exits 6 from status. The retry below stays for an older
-# installed helper and for the retained locked read
-# (CLAUDE_EXECUTION_PAUSE_STATUS_LOCKED=1); there CLAUDE_STATE_LOCK_TIMEOUT
-# bounds each attempt.
-#
-# Bounded status retry (issue #2433). A lock that is merely BUSY is retried
-# briefly instead of refusing on the first exit 6. Only exit 6 is retried;
-# `active` blocks at once. The
+# Bounded status retry (issue #2433). The status read stays serialized under
+# the state lock — an unlocked read can observe a half-applied activation or
+# clear — but a lock that is merely BUSY is retried briefly instead of refusing
+# on the first exit 6. Only exit 6 is retried; `active` blocks at once. The
 # hook — preflight included, measured from GATE_START_MS at the top — fits
 # CLAUDE_PAUSE_GATE_BUDGET_MS (default 3500 ms) under the 5 s host hook
 # timeout in global-settings.json. Each attempt waits at most

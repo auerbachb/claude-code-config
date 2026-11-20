@@ -87,7 +87,6 @@ opt-in of issue #1544.
 | [estimate-resolve.test.sh](../tests/estimate-resolve.test.sh) | Tests for `estimate-resolve.sh`, including the empty-`GH_ARGS` unbound-variable regression |
 | [estimate-rounds-batch-bash.test.sh](../tests/estimate-rounds-batch-bash.test.sh) | Runs actual estimate rounds batch controls under current Bash and macOS Bash 3.2 |
 | [execution-pause-proof.test.sh](../tests/execution-pause-proof.test.sh) | Verify exact read-only /end evidence across the pause marker and session state |
-| [execution-pause-status.test.sh](../tests/execution-pause-status.test.sh) | Prove lock-free execution-pause --status matches the locked read on every fixture |
 | [exit-report-extract.test.sh](../tests/exit-report-extract.test.sh) | Extractor returns the completion-protocol fields per phase and outcome, fails closed on absent or malformed reports |
 | [fixpr-step3b-daily-cap.test.sh](../tests/fixpr-step3b-daily-cap.test.sh) | Runs `/fixpr` Step 3b's real `@cursor review` decision (fixpr-reviewer-triggers.sh, legacy path) against stubs — the daily-cap skip appends its `## Review notes` line once per HEAD, ok/unknown/missing post, and the tier and refused-HEAD skips still win |
 | [fixpr-step3b-pushed-sha.test.sh](../tests/fixpr-step3b-pushed-sha.test.sh) | Static guard that `/fixpr` Step 3b hands the post-push `PUSHED_SHA` to `fixpr-reviewer-triggers.sh`, which passes it to `bugbot-refused-head.sh` and the review-tier helper, never the pre-push `HEAD_SHA` |

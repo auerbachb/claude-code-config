@@ -891,8 +891,10 @@ _state_lock_install_trap() {
 #   - it holds only regular, non-symlink `owner` / `.owner.*` files;
 #   - at deletion time, entered by `cd -P`, it is the same physical path,
 #     the same inode, and still older than the grace.
-# Files are removed one by one, then `rmdir` — never `rm -rf`, never a
-# followed symlink. Anything else is retained and reported with its reason.
+# Files are removed one by one; the emptied directory is then renamed into
+# a private tombstone and `rmdir`'d only if the tombstone entry is still the
+# validated inode — never `rm -rf`, never a followed symlink, never a
+# removal by the aside's own name. Anything else is retained and reported with its reason.
 # Glob matches beyond max-candidates (default 500), malformed names
 # included, are counted unexamined and reported in ONE summary line.
 # Never touches acquire or release; costs nothing on the lock hot path.
@@ -905,7 +907,7 @@ _state_lock_install_trap() {
 # Returns 0, 1 when any removal failed, 2 on a usage error.
 state_lock_sweep_asides() (
   local state_file="${1:-}" mode="${2:-inventory}" grace="${3:-3600}" cap="${4:-500}"
-  local dir base now c name entry reason mtime examined=0 phys_dir ino
+  local dir base now c name entry reason mtime examined=0 phys_dir ino tomb
   local removed=0 removable=0 retained=0 failed=0 unexamined=0
   # Bounded digit strings, read as decimal (a leading 0 must not mean octal).
   [[ -n "$state_file" && ( "$mode" == inventory || "$mode" == apply ) &&
@@ -993,9 +995,42 @@ state_lock_sweep_asides() (
         fi
       done
     )"
-    if [[ -z "$reason" ]] && ! rmdir -- "$c" 2>/dev/null; then
-      # Gone already (a racing releaser finished it) counts as removed.
-      [[ -e "$c" || -L "$c" ]] && reason="rmdir failed"
+    # The final removal must name a path, so it never removes the aside's
+    # NAME. Instead, after a quick re-check, the name is renamed into a fresh
+    # private tombstone directory (mktemp -d, mode 0700, a name nothing else
+    # uses), the tombstone entry's inode is compared with the validated one,
+    # and only a match is rmdir'd. Whatever sits at the original name after
+    # the rename — a same-name replacement created at any moment — is never
+    # touched. A mismatch (a replacement got renamed instead of the aside) is
+    # renamed back when the original name is still free, otherwise left in
+    # the tombstone; either way nothing is removed and it is reported failed.
+    # Residual: the rmdir of the tombstone entry still names a path, but only
+    # inside the private tombstone; a sweeper killed between rename and rmdir
+    # leaves an empty `<state>.lock.sweep.*` directory, which is harmless.
+    if [[ -z "$reason" ]]; then
+      if [[ ! -e "$c" && ! -L "$c" ]]; then
+        :   # Gone already (a racing releaser finished it): counts as removed.
+      elif [[ -L "$c" ]]; then
+        reason="changed before removal: replaced by a symlink"
+      elif [[ ! -d "$c" || "$(dir_inode "$c")" != "$ino" ]]; then
+        reason="changed before removal: different directory"
+      elif ! tomb="$(mktemp -d "$dir/$base.lock.sweep.XXXXXX" 2>/dev/null)"; then
+        reason="could not create a tombstone"
+      elif ! mv -- "$c" "$tomb/aside" 2>/dev/null; then
+        rmdir -- "$tomb" 2>/dev/null
+        [[ -e "$c" || -L "$c" ]] && reason="could not move aside to the tombstone"
+      elif [[ -L "$tomb/aside" || ! -d "$tomb/aside" || "$(dir_inode "$tomb/aside")" != "$ino" ]]; then
+        reason="changed before removal: different directory"
+        if [[ ! -e "$c" && ! -L "$c" ]] && mv -- "$tomb/aside" "$c" 2>/dev/null; then
+          rmdir -- "$tomb" 2>/dev/null
+        else
+          reason="$reason (left in $tomb)"
+        fi
+      elif ! rmdir -- "$tomb/aside" 2>/dev/null; then
+        reason="rmdir failed (left in $tomb)"
+      else
+        rmdir -- "$tomb" 2>/dev/null
+      fi
     fi
     if [[ -n "$reason" ]]; then
       failed=$((failed + 1)); report failed "$reason" "$c"

@@ -15,7 +15,7 @@ trap cleanup EXIT
 
 # Inherited compactor overrides must never apply here: each case runs under
 # the policy it names, and archives stay inside the fixture HOME.
-while IFS= read -r _v; do unset "$_v"; done < <(compgen -e | grep '^CLAUDE_STATE_COMPACT_')
+while IFS= read -r _v; do unset "$_v"; done < <(compgen -e | grep -E '^CLAUDE_STATE_(COMPACT|LOCK_SWEEP)_')
 unset CLAUDE_STATE_LOCK_HELD CLAUDE_STATE_LOCK_TOKEN
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -115,5 +115,34 @@ printf '{"source":"startup"}' | CLAUDE_STATE_COMPACT_BIN="$STUB" bash "$HOOK" >/
 sleep 1
 [[ ! -e "$HOME/.claude/stub-ran" ]] || fail "a fresh guard with a live owner did not gate the spawn"
 ok "a dead owner pid frees the guard; a live owner still gates the spawn"
+
+# --- 7. lock-aside sweep (issue #2402): detached, never waited on ----------
+# A slow, FAILING sweeper must neither delay nor fail session start; it gets
+# exactly the fixture HOME's state file; CLAUDE_STATE_LOCK_SWEEP_AUTO=0 stops it.
+SWEEP_STUB="$TMP_DIR/stub-sweep.sh"
+cat > "$SWEEP_STUB" <<'SH'
+#!/bin/bash
+printf '%s\n' "$@" > "$HOME/.claude/sweep-args"
+sleep "${STUB_SLEEP:-0}"
+exit 1
+SH
+chmod +x "$SWEEP_STUB"
+rm -f "$HOME/.claude/sweep-args"
+SECONDS=0
+printf '{"source":"startup"}' | CLAUDE_STATE_COMPACT_AUTO=0 CLAUDE_STATE_LOCK_SWEEP_BIN="$SWEEP_STUB" \
+  STUB_SLEEP=25 bash "$HOOK" >/dev/null 2>&1
+SWEEP_RC=$?
+ELAPSED=$SECONDS
+wait_for "$HOME/.claude/sweep-args" || fail "the hook did not start the lock-aside sweep"
+(( ELAPSED < 20 )) || fail "the hook waited for the sweep (${ELAPSED}s)"
+[[ "$SWEEP_RC" == 0 ]] || fail "a failing sweep changed the hook's exit (rc=$SWEEP_RC)"
+[[ "$(tr '\n' ' ' < "$HOME/.claude/sweep-args")" == "--apply --quiet --state-file $HOME/.claude/session-state.json " ]] \
+  || fail "sweep got unexpected arguments: $(tr '\n' ' ' < "$HOME/.claude/sweep-args")"
+rm -f "$HOME/.claude/sweep-args"
+printf '{"source":"startup"}' | CLAUDE_STATE_COMPACT_AUTO=0 CLAUDE_STATE_LOCK_SWEEP_BIN="$SWEEP_STUB" \
+  CLAUDE_STATE_LOCK_SWEEP_AUTO=0 bash "$HOOK" >/dev/null 2>&1
+sleep 1
+[[ ! -e "$HOME/.claude/sweep-args" ]] || fail "CLAUDE_STATE_LOCK_SWEEP_AUTO=0 did not disable the sweep"
+ok "the lock-aside sweep runs detached on the fixture state, a slow failing sweep never blocks, AUTO=0 disables it"
 
 echo "OK: session-start compaction trigger tests passed"
