@@ -139,14 +139,14 @@ check "guard: start_session is denied while unattended" "$(printf '%s' "$OUT" | 
 has "guard: and says to use a sub-agent" "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason')" "sub-agent"
 check "guard: start_session records no question" "$(jq -s '[.[] | select(.type == "question")] | length' "$QF")" "2"
 has "reason: names the script by full path" "$REASON" "'$SCRIPT' update"
-has "reason: asks for the background at once (issue #2592)" "$REASON" "update <id> --context"
+has "reason: asks for the plain-words fields at once (issue #2598)" "$REASON" "update <id> --now"
 
 # ---------------------------------------------------------------- script
 printf '== record / update / per repo\n'
-ID=$(U record --question "Rename the job?" --context "Test background: what this change is and why the operator is being asked" --recommended "keep the name" --did "kept the name")
+ID=$(U record --question "Rename the job?" --now "The nightly job sends every new lead the same first email" --change "Send a shorter follow-up to leads who never opened the first" --why "A short second note may get replies from quiet leads" --risk "Some leads may find a second email annoying and unsubscribe" --recommended "keep the name" --did "kept the name")
 check "agent record gets the next id" "$ID" "U-3"
 U update U-2 --did "parked the merge" ; check "update exits 0" "$?" "0"
-IDB=$( (cd "$REPO_B" && "$SCRIPT" record --question "B?" --context "Test background: what this change is and why the operator is being asked" ) )
+IDB=$( (cd "$REPO_B" && "$SCRIPT" record --question "B?" --now "The nightly job sends every new lead the same first email" --change "Send a shorter follow-up to leads who never opened the first" --why "A short second note may get replies from quiet leads" --risk "Some leads may find a second email annoying and unsubscribe" ) )
 check "another repo has its own ids" "$IDB" "U-1"
 check "pending in repo A" "$(U pending)" "3"
 
@@ -169,7 +169,7 @@ has "the same session's next prompt gets a one-line summary with the count and i
 lacks "the summary is not the full list again" "$SCTX" "Recommended:"
 
 printf '== window end\n'
-U record --question "Late question?" --context "Test background: what this change is and why the operator is being asked" --recommended "yes" >/dev/null
+U record --question "Late question?" --now "The nightly job sends every new lead the same first email" --change "Send a shorter follow-up to leads who never opened the first" --why "A short second note may get replies from quiet leads" --risk "Some leads may find a second email annoying and unsubscribe" --recommended "yes" >/dev/null
 OUT=$(prompt_payload "$REPO_A" "<ci-monitor-event>tick</ci-monitor-event>" | "$DIGEST")
 check "automated prompt before the end: nothing" "$OUT" ""
 # End the window: rewrite the flag through session-state.sh, as `on` does.
@@ -197,7 +197,7 @@ check "after the return: the menu renders" "$OUT" ""
 printf '== origin-less repos, failed writes\n'
 NO_A="$TMP/no-origin-a"; NO_B="$TMP/no-origin-b"
 git init -q "$NO_A"; git init -q "$NO_B"
-(cd "$NO_A" && "$SCRIPT" record --question "A only?" --context "Test background: what this change is and why the operator is being asked" >/dev/null)
+(cd "$NO_A" && "$SCRIPT" record --question "A only?" --now "The nightly job sends every new lead the same first email" --change "Send a shorter follow-up to leads who never opened the first" --why "A short second note may get replies from quiet leads" --risk "Some leads may find a second email annoying and unsubscribe" >/dev/null)
 check "two repos without an origin do not share a file" "$( (cd "$NO_B" && "$SCRIPT" pending) )" "0"
 check "the first still has its question" "$( (cd "$NO_A" && "$SCRIPT" pending) )" "1"
 # A jq that dies after printing partial JSON: no receipt, nothing appended.
@@ -209,13 +209,13 @@ exit 137
 FAKEJQ
 chmod +x "$FAKE/jq"
 BEFORE=$(wc -l <"$QF" | tr -d ' ')
-OUT=$( (cd "$REPO_A" && PATH="$FAKE:$PATH" "$SCRIPT" record --question "Killed?" --context "Test background: what this change is and why the operator is being asked" 2>/dev/null); echo "rc=$?")
+OUT=$( (cd "$REPO_A" && PATH="$FAKE:$PATH" "$SCRIPT" record --question "Killed?" --now "The nightly job sends every new lead the same first email" --change "Send a shorter follow-up to leads who never opened the first" --why "A short second note may get replies from quiet leads" --risk "Some leads may find a second email annoying and unsubscribe" 2>/dev/null); echo "rc=$?")
 check "a killed jq prints no receipt" "$OUT" "rc=1"
 check "and appends nothing" "$(wc -l <"$QF" | tr -d ' ')" "$BEFORE"
 
 printf '== off\n'
 U on --for 1h >/dev/null
-U record --question "Q at off?" --context "Test background: what this change is and why the operator is being asked" >/dev/null
+U record --question "Q at off?" --now "The nightly job sends every new lead the same first email" --change "Send a shorter follow-up to leads who never opened the first" --why "A short second note may get replies from quiet leads" --risk "Some leads may find a second email annoying and unsubscribe" >/dev/null
 PEND_BEFORE_OFF=$(U pending)
 OFF=$(U off)
 has "off: switches off" "$OFF" "unattended: off"
@@ -240,8 +240,8 @@ sprompt() { # CWD SESSION_OR_EMPTY — the hook's additionalContext for an opera
     + (if $sid == "" then {} else {session_id: $sid} end)' | "$DIGEST" | jq -r '.hookSpecificOutput.additionalContext // ""'
 }
 "$SCRIPT" on --for 6h >/dev/null
-UC record --question "Pick the region?" --context "Test background: what this change is and why the operator is being asked" --recommended "us-east" >/dev/null
-UC record --question "Rename the table?" --context "Test background: what this change is and why the operator is being asked" --recommended "keep" >/dev/null
+UC record --question "Pick the region?" --now "The nightly job sends every new lead the same first email" --change "Send a shorter follow-up to leads who never opened the first" --why "A short second note may get replies from quiet leads" --risk "Some leads may find a second email annoying and unsubscribe" --recommended "us-east" >/dev/null
+UC record --question "Rename the table?" --now "The nightly job sends every new lead the same first email" --change "Send a shorter follow-up to leads who never opened the first" --why "A short second note may get replies from quiet leads" --risk "Some leads may find a second email annoying and unsubscribe" --recommended "keep" >/dev/null
 BEFORE=$(wc -l <"$QC" | tr -d ' ')
 D1=$(UC digest); D2=$(UC digest --mark)
 has "digest lists both" "$D1" "U-2: Rename the table?"
@@ -260,7 +260,7 @@ has "same session: one summary line with the count and both ids" "$C2" "2 saved 
 lacks "same session: no second full listing" "$C2" "Recommended:"
 check "still pending after being shown twice" "$(UC pending)" "2"
 
-UC record --question "Third thing?" --context "Test background: what this change is and why the operator is being asked" --recommended "yes" >/dev/null
+UC record --question "Third thing?" --now "The nightly job sends every new lead the same first email" --change "Send a shorter follow-up to leads who never opened the first" --why "A short second note may get replies from quiet leads" --risk "Some leads may find a second email annoying and unsubscribe" --recommended "yes" >/dev/null
 C3=$(sprompt "$REPO_C" s-c1)
 has "a question saved after the first listing appears in full" "$C3" "U-3: Third thing?"
 has "and the header counts only the new one" "$C3" "Questions recorded while you were away (1)"
@@ -312,8 +312,8 @@ check "dismiss another id" "$(UC dismiss U-3 --reason 'stale' | tr '\n' ' ')" "U
 check "all resolved: pending 0" "$(UC pending)" "0"
 check "all resolved: the hook lists nothing" "$(sprompt "$REPO_C" s-c10)" ""
 check "all resolved: digest prints nothing" "$(UC digest)" ""
-UC record --question "Fourth?" --context "Test background: what this change is and why the operator is being asked" >/dev/null
-UC record --question "Fifth?" --context "Test background: what this change is and why the operator is being asked" >/dev/null
+UC record --question "Fourth?" --now "The nightly job sends every new lead the same first email" --change "Send a shorter follow-up to leads who never opened the first" --why "A short second note may get replies from quiet leads" --risk "Some leads may find a second email annoying and unsubscribe" >/dev/null
+UC record --question "Fifth?" --now "The nightly job sends every new lead the same first email" --change "Send a shorter follow-up to leads who never opened the first" --why "A short second note may get replies from quiet leads" --risk "Some leads may find a second email annoying and unsubscribe" >/dev/null
 check "dismiss several ids in one act" "$(UC dismiss U-4 U-5 --reason 'bulk' | tr '\n' ' ')" "U-4 dismissed U-5 dismissed "
 check "and both are recorded" "$(jq -s '[.[] | select(.type == "dismissed" and .reason == "bulk")] | length' "$QC")" "2"
 
@@ -330,7 +330,7 @@ check "list --all --json: spans repos" "$(UC list --all --json | jq -r '[.[].rep
 
 printf '== issue #2352: records written before this change\n'
 REPO_D="$TMP/repo-d"; git init -q "$REPO_D"; git -C "$REPO_D" remote add origin https://github.com/acme/legacy.git
-(cd "$REPO_D" && "$SCRIPT" record --question "Old one?" --context "Test background: what this change is and why the operator is being asked" >/dev/null && "$SCRIPT" record --question "Old two?" --context "Test background: what this change is and why the operator is being asked" >/dev/null)
+(cd "$REPO_D" && "$SCRIPT" record --question "Old one?" --now "The nightly job sends every new lead the same first email" --change "Send a shorter follow-up to leads who never opened the first" --why "A short second note may get replies from quiet leads" --risk "Some leads may find a second email annoying and unsubscribe" >/dev/null && "$SCRIPT" record --question "Old two?" --now "The nightly job sends every new lead the same first email" --change "Send a shorter follow-up to leads who never opened the first" --why "A short second note may get replies from quiet leads" --risk "Some leads may find a second email annoying and unsubscribe" >/dev/null)
 printf '%s\n' '{"type":"listed","through":2,"at":1}' >>"$UDIR/acme__legacy.jsonl"
 check "an old listed watermark hides nothing: pending" "$( (cd "$REPO_D" && "$SCRIPT" pending) )" "2"
 has "and both are listed" "$( (cd "$REPO_D" && "$SCRIPT" digest) )" "U-2: Old two?"
@@ -340,8 +340,8 @@ check "dismiss clears the old ones" "$( (cd "$REPO_D" && "$SCRIPT" pending) )" "
 printf '== issue #2352: a hook killed at any point before it emits loses nothing\n'
 REPO_K="$TMP/repo-k"; git init -q "$REPO_K"; git -C "$REPO_K" remote add origin https://github.com/acme/killme.git
 UK() { (cd "$REPO_K" && "$SCRIPT" "$@"); }
-UK record --question "Kill A?" --context "Test background: what this change is and why the operator is being asked" --recommended "a" >/dev/null
-UK record --question "Kill B?" --context "Test background: what this change is and why the operator is being asked" --recommended "b" >/dev/null
+UK record --question "Kill A?" --now "The nightly job sends every new lead the same first email" --change "Send a shorter follow-up to leads who never opened the first" --why "A short second note may get replies from quiet leads" --risk "Some leads may find a second email annoying and unsubscribe" --recommended "a" >/dev/null
+UK record --question "Kill B?" --now "The nightly job sends every new lead the same first email" --change "Send a shorter follow-up to leads who never opened the first" --why "A short second note may get replies from quiet leads" --risk "Some leads may find a second email annoying and unsubscribe" --recommended "b" >/dev/null
 SEEN_K="$UDIR/seen/acme__killme"
 REAL_JQ=$(command -v jq); REAL_SCRIPT="$SCRIPT"
 export REAL_JQ REAL_SCRIPT KPID="$TMP/hook.pid" KMARK="$TMP/kill.marks"
@@ -428,39 +428,54 @@ check "and the questions file is untouched by all of it" "$(grep -c '"type":"que
 check "...with no other record type added" "$(jq -s '[.[] | select(.type != "question")] | length' "$UDIR/acme__killme.jsonl")" "0"
 
 printf '== issue #2352: answer text that looks like a global option is kept verbatim\n'
-UC record --question "Option-looking answer?" --context "Test background: what this change is and why the operator is being asked" --recommended "x" >/dev/null
+UC record --question "Option-looking answer?" --now "The nightly job sends every new lead the same first email" --change "Send a shorter follow-up to leads who never opened the first" --why "A short second note may get replies from quiet leads" --risk "Some leads may find a second email annoying and unsubscribe" --recommended "x" >/dev/null
 OPTQ=$(UC pending >/dev/null; jq -rs '[.[] | select(.type == "question")] | last | .id' "$QC")
 check "answer text starting with --repo is kept" "$(UC answer "$OPTQ" --answer '--repo oops' --by operator)" "$OPTQ answered"
 check "...and stored as the answer, not read as a global option" "$(jq -rs --arg i "$OPTQ" '[.[] | select(.type == "answered" and .id == $i)][0].answer' "$QC")" "--repo oops"
 
-# ---------------------------------------------------------------- issue #2592: background at the source
-printf '== issue #2592: --context\n'
+# ---------------------------------------------------------------- issue #2598: plain-words fields
+printf '== issue #2598: now / change / why / risk\n'
 REPO_X="$TMP/repo-ctx"; mkdir -p "$REPO_X"; (cd "$REPO_X" && git init -q && git remote add origin https://github.com/acme/ctx.git)
 UX() { (cd "$REPO_X" && "$SCRIPT" "$@"); }
-UX record --question "No background?" >/dev/null 2>&1; check "agent record without --context: usage error" "$?" "2"
-UX record --question "Thin?" --context "PR #12" >/dev/null 2>&1; check "context that is only a ref: usage error" "$?" "2"
-CX=$(UX record --question "Merge PR #12?" --context "PR #12 changes how the nightly lead import treats salespeople, and merging it starts refusing whole files")
-check "agent record with context gets an id" "$CX" "U-1"
-check "context stored" "$(UX list --json | jq -r '.[0].context')" "PR #12 changes how the nightly lead import treats salespeople, and merging it starts refusing whole files"
+NOW="Leads a human rep already emailed are marked do-not-contact"
+CHG="Put the ones who never replied back in the cold-email drip"
+WHY="A second try may get a reply from people who ignored the first"
+RSK="Some may have called or texted the rep, which we cannot see"
+QX="Send a second email to leads who never replied?"
+ok_rec() { UX record --question "$QX" --now "$NOW" --change "$CHG" --why "$WHY" --risk "$RSK" "$@"; }
+UX record --question "$QX" >/dev/null 2>&1; check "agent record without the fields: usage error" "$?" "2"
+UX record --question "$QX" --now "$NOW" --change "$CHG" --why "$WHY" >/dev/null 2>&1; check "missing --risk: usage error" "$?" "2"
+UX record --question "$QX" --now "too short" --change "$CHG" --why "$WHY" --risk "$RSK" >/dev/null 2>&1; check "a field too short: usage error" "$?" "2"
+CX=$(ok_rec --links "PR #4421, Issue #3994")
+check "a plain record with links gets an id" "$CX" "U-1"
+check "fields and links stored" "$(UX list --json | jq -r '.[0] | [.now, .change, .why, .risk, .links] | join("|")')" "$NOW|$CHG|$WHY|$RSK|PR #4421, Issue #3994"
+D=$(UX digest)
+has "digest: Now line" "$D" "Now: $NOW"
+has "digest: Risk line" "$D" "Risk: $RSK"
+has "digest: one Links line" "$D" "Links: PR #4421, Issue #3994"
+for bad in "Merge PR #4421 now?" "Holds acme/widgets#12 back?" "Holds #12 back?" "Uses the rep_list_status column?" "Should PM-A hold it?" "Answer U-25 first?" "Ship commit 4d9190704?" "See https://example.com/x?" 'Run `foo` now?'; do
+  UX record --question "$bad" --now "$NOW" --change "$CHG" --why "$WHY" --risk "$RSK" >/dev/null 2>&1
+  check "question refused: $bad" "$?" "2"
+done
+UX record --question "$QX" --now "The rep_list_status column holds every lead back" --change "$CHG" --why "$WHY" --risk "$RSK" >/dev/null 2>&1; check "a code name in --now: usage error" "$?" "2"
+UX record --question "$QX" --now "$NOW" --change "$CHG" --why "$WHY" --risk "Issue #4419 may not land in time for the import" >/dev/null 2>&1; check "a ticket number in --risk: usage error" "$?" "2"
+ok_rec --did "Held PR #4421 unmerged" >/dev/null 2>&1; check "a ticket number in --did: usage error" "$?" "2"
+check "plain words with C#, v2, 2FA, and/or and COVID-19 pass" "$(UX record --question "$QX" --now "Leads on C# and v2 sites with 2FA and/or COVID-19 rules are held" --change "$CHG" --why "$WHY" --risk "$RSK" >/dev/null 2>&1; echo $?)" "0"
+check "a non-Latin field counts" "$(UX record --question "$QX" --now "Лиды, которым уже писал продавец, помечаются как не беспокоить" --change "$CHG" --why "$WHY" --risk "$RSK" >/dev/null 2>&1; echo $?)" "0"
 HX=$(UX record --source hook --question "Captured menu?")
-check "hook record may arrive without context" "$HX" "U-2"
-has "missing context is flagged in the digest" "$(UX digest)" "Context: missing: recorded without background"
-UX update "$HX" --context "The menu asked whether to keep the old job name, which three dashboards still link to by name" >/dev/null
-check "update --context fills it in" "$(UX list --json | jq -r --arg i "$HX" '.[] | select(.id == $i) | .context')" "The menu asked whether to keep the old job name, which three dashboards still link to by name"
-UX update "$HX" --did "kept the name" >/dev/null
-check "a later --did update keeps the context" "$(UX list --json | jq -r --arg i "$HX" '.[] | select(.id == $i) | "\(.did)|\(.context | length > 0)"')" "kept the name|true"
-check "eight words with a one-letter word count" "$(UX update "$HX" --context "This change adds a retry for failed imports" >/dev/null 2>&1; echo $?)" "0"
-UX update "$HX" --context "issue #1 issue #2 issue #3 issue #4 issue #5 issue #6 issue #7 issue #8" >/dev/null 2>&1; check "lowercase refs only: usage error" "$?" "2"
-UX update "$HX" --context "https://github.com/acme/widgets/pull/12 https://github.com/acme/widgets/issues/34" >/dev/null 2>&1; check "URLs only: usage error" "$?" "2"
-UX update "$HX" --context "acme/widgets#12 acme/widgets#13 acme/widgets#14 acme/widgets#15" >/dev/null 2>&1; check "owner/repo#N refs only: usage error" "$?" "2"
-check "non-Latin background counts" "$(UX update "$HX" --context "Это изменение добавляет повторную попытку для неудачных ночных импортов" >/dev/null 2>&1; echo $?)" "0"
-check "words with digits or slashes count" "$(UX update "$HX" --context "Note: turning on 2FA and/or v2 login changes sign-in" >/dev/null 2>&1; echo $?)" "0"
-check "unspaced Chinese background counts" "$(UX update "$HX" --context "这个改动让夜间导入在遇到销售代表状态时拒绝整个文件" >/dev/null 2>&1; echo $?)" "0"
-UX update "$HX" --context "— — — — — — — — … … … “ ” — — —" >/dev/null 2>&1; check "non-ASCII punctuation only: usage error" "$?" "2"
-UX update "$HX" --context "too thin" >/dev/null 2>&1; check "update with thin context: usage error" "$?" "2"
-UX update "$HX" >/dev/null 2>&1; check "update with neither field: usage error" "$?" "2"
-UX update U-99 --did "nothing" >/dev/null 2>&1; check "update of an unknown id: refused" "$?" "1"
+has "hook record may arrive without the fields" "$HX" "U-"
+has "a missing field is flagged in the digest" "$(UX digest)" "Now: not recorded (recording defect, issue #2598)"
+UX update "$HX" --now "$NOW" --change "$CHG" --why "$WHY" --risk "$RSK" --links "PR #9" >/dev/null
+check "update fills in the fields" "$(UX list --json | jq -r --arg i "$HX" '.[] | select(.id == $i) | [.now, .risk, .links] | join("|")')" "$NOW|$RSK|PR #9"
+UX update "$HX" --did "Kept the old name for now" >/dev/null
+check "a later --did update keeps the fields" "$(UX list --json | jq -r --arg i "$HX" '.[] | select(.id == $i) | "\(.did)|\(.now)"')" "Kept the old name for now|$NOW"
+UX update "$HX" --risk "See PR #12" >/dev/null 2>&1; check "update with a ticket number in a field: usage error" "$?" "2"
+UX update "$HX" >/dev/null 2>&1; check "update with no field: usage error" "$?" "2"
+UX update U-99 --did "nothing at all" >/dev/null 2>&1; check "update of an unknown id: refused" "$?" "1"
 check "and nothing appended" "$(grep -c '"U-99"' "$HOME/.claude/unattended/acme__ctx.jsonl")" "0"
+# Old records (issue #2592) keep their --context, shown as Background.
+LX=$(UX record --question "$QX" --now "$NOW" --change "$CHG" --why "$WHY" --risk "$RSK" --context "This change adds a retry for failed imports that ran overnight")
+has "an old --context is shown as Background" "$(UX digest)" "Background: This change adds a retry"
 
 printf '\nunattended-mode.test.sh: %s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

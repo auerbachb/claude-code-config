@@ -49,7 +49,7 @@ Unattended mode declares the opposite — keep working, do not wait. They can be
 
 ## While unattended
 
-- **No menus, no waiting.** Record (`unattended.sh record --question ... --context ... --recommended ... --did ...`;
+- **No menus, no waiting.** Record (`unattended.sh record --question ... --now ... --change ... --why ... --risk ... --links ... --recommended ... --did ...`;
   see §Writing a question),
   print the receipt, take the recommended option only where it is reversible and no rule requires
   confirmation (a branch-protection change, a paid review, a merge opt-out), park only the step
@@ -65,21 +65,47 @@ Unattended mode declares the opposite — keep working, do not wait. They can be
   `/pr-monitor-and-manage`.
 
 
-## Writing a question (issue #2592)
+## Writing a question (issues #2592, #2598)
 
 The operator reads saved questions hours or days later, often in another thread, having forgotten
 this one. `/back` shows the record word for word and never fills it in, so a record that cannot be
 answered as written stays unanswerable: the fix belongs here, when it is written.
 
-- **`--context` is required** for an agent's record (at least a sentence: 30 letters beyond any ids or links). A
-  hook-captured menu arrives without it; add it at once with `update U-<n> --context '…'`.
-- **Write for a stranger.** Say what the PR, issue or change is and what it does, why it matters,
-  and what each option means in practice. Name the repo, product or feature.
-- **No thread shorthand.** Pipeline names (`PM-A`), code identifiers (`rep_list_status`) and
-  in-thread terms ("the ETL thread", "predicate", "activate") are explained or left out.
-- **The question stands alone.** "Should junk senders be blocked at the mailbox?" needs which
-  mailbox, which rule and what blocking would cost; put that in the question or the context.
-- **`--did`** stays what the thread already did meanwhile; it is not background.
+Length does not make a question answerable; shape does. Every agent record carries four short
+plain sentences, and `record` refuses it without them (exit 2):
+
+| Flag | Says |
+|------|------|
+| `--now` | what happens today |
+| `--change` | what would change if he says yes |
+| `--why` | why that change is worth it |
+| `--risk` | the real risk of saying yes |
+
+The question, those four and `--did` refuse ticket numbers (`#12`, `PR 12`, `owner/repo#12`),
+links, backticks, `snake_case` code names, pipeline labels (`PM-A`), question ids (`U-25`) and
+commit hashes. Those go in `--links`, which `/back` prints as one line at the end. Define any
+term a newcomer would not know ("a human sales rep", not "rep").
+
+**Answerable** (the operator's own rewrite of a question he could not follow):
+
+> Code marks imported leads who a human rep previously emailed as do-not-contact. But for the ones
+> who never replied we should add them back into the cold-email drip pool because maybe if we take
+> a second crack at them they will reply. Risk is that maybe they called or texted the sales rep
+> and we can't see that, so maybe they should be in a separate human review list.
+
+**Unanswerable** (sales-kit U-25, as recorded):
+
+> PM-A: PR #4421 (Issue #3994) adds two predicate definitions (a lead's rep status; an inbox
+> declared no longer watched) and holds rep leads on every send path. Until core Issue #4419
+> lands, it refuses WHOLE any lead file that carries a rep_list_status. Merge and activate it
+> before the first real import?
+
+- **`--did`** stays what the thread already did meanwhile, in plain words ("held the change, not
+  merged"), never review or CI bookkeeping (check counts, review rounds).
+- A hook-captured menu arrives without the fields; add them at once with `update U-<n> --now …
+  --change … --why … --risk …`.
+- `--context` (issue #2592) is still read on old records and shown as Background; it no longer
+  satisfies a new record.
 
 ## Past decisions
 
