@@ -108,23 +108,19 @@ round.
   covers the chat: he sees only what is inside the `AskUserQuestion` call. So never print a brief above
   the menu; each question's `question` text **is** its brief, and nothing he needs to decide is outside
   the dialog. The dialog pages through a round's questions one at a time, so each page carries its own.
-  Shape of the `question` text, plain lines, at most 10:
+  Shape of the `question` text:
 
   ```text
-  <the decision, as one plain question>
+  <the stored question, word for word>
   What it is: <PR|Issue> #N "<title>" (<open|merged|closed>)  — one line per entry in `refs`
-  In plain words: <what that PR or issue does and why it matters, 1–2 sentences>
-  Why you: <why a person must decide>
-  Meanwhile: <what the thread already did>. Already done / not done yet; can / cannot be undone.
+  Meanwhile: <the stored did, word for word>. Already done / not done yet; can / cannot be undone.
   ```
 
-  - **Plain words, no shorthand.** Thread shorthand — pipeline names (`PM-A`), code identifiers
-    (`rep_list_status`), internal terms ("predicate", "ETL thread", "activate", "hold"), step names — never
-    reaches the dialog as-is. Explain each in words a person who never saw the thread follows, from the
-    stored `question` and `did` and each ref's `summary` (its body opening). Where those do not explain a
-    term, read the ref (`gh pr view` / `gh issue view`) **before** asking, not after he says he lacks
-    context. Never shorten the stored question into a terse title like `PR #N (x hold) — merge?`; the
-    `header` chip is the only short label.
+  - **Shown as recorded, never repaired.** Print the stored `question` and `did` whole: never shorten
+    them into a terse title (`PR #N (x hold) — merge?`), and never rewrite, translate or fill them in
+    from the PR, the issue or the thread. A question that cannot be answered as recorded is a recording
+    defect to fix at the source, and a repaired menu would hide it. The `header` chip is the only short
+    label.
   - **What it is** comes from the question's `refs`; `<PR|Issue>` follows the ref's `is`
     (what GitHub says it is), else its `kind`. A ref with
     `error` set prints `<PR|Issue> #N: could not read`; never guess its title. No refs: say in a few
@@ -135,10 +131,10 @@ round.
   - **What each option does** goes in that option's `description` (below), not in the question text.
   - End the question text with `<id>`, or `[<repo>] <id>` in `/back all`; the `header` chip names the
     decision in a few plain words, not the id.
-- **Option descriptions** state, in plain words, what actually happens next: `confirms what was done`,
-  or `NEW: <a merge, a close, a push, a deletion…> happens next` (`PR #2477 is merged; Issue #2363 stays
-  open`), never `Records X` and never thread shorthand. If the option's effect is not stated in the
-  stored question, its `did` or the ref, say `the thread decides what this means` rather than inventing one.
+- **Option descriptions** state what actually happens next, as the record states it: `confirms what
+  was done`, or `NEW: <a merge, a close, a push, a deletion…> happens next` (`PR #2477 is merged; Issue
+  #2363 stays open`), never `Records X`. If the stored question and its `did` do not state the option's
+  effect, say `the thread decides what this means` rather than inventing one.
 - **Options** (the tool takes at most four): the recommended option first, labelled
   `<text> (Recommended)` (`recommended`, or a Decision's `default_option`), then at most two other
   recorded options, and always a last `Leave it open`. Recorded options that do not fit are listed in
@@ -154,9 +150,8 @@ round.
     `'Don'\''t'`), so the text is stored unchanged.
   - `Leave it open`, a dismissed menu, or no answer: record nothing; it stays open and listed.
   - A typed reply that is not an answer (a question back, "what is U-11", "I lack context"): never
-    record it. Say `<id> left open: that was a question, not an answer.`, read more (the PR or issue
-    body, the thread's last messages), and ask that question once more in its own menu, its question
-    text rewritten with what you learned. If the second reply is not an answer either, leave it open.
+    record it, and never re-ask it with context you filled in. Say `<id> left open: recorded without
+    enough context to answer.` It stays open, and the recording gap goes back to its source.
   - A refused write (exit non-zero): another thread may have resolved it since the report was read. Say
     in one line `<id> not recorded: <its error line>. Your answer was: <answer>`, so his choice is not
     lost silently, and go on with the rest; never retry it or force it.

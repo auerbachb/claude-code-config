@@ -44,11 +44,9 @@
 #   decisions        open Desk Decisions in scope: {id, repo, question, options, default_option,
 #                    session_id, created_at, context, refs}; null when unreadable
 #     refs           each `PR #N` / `Issue #N` named in the question, its did or context (at most 4),
-#                    read in the item's repo: {repo, kind, number, is, title, state, url, summary, error};
-#                    kind is as written, is what GitHub says it is (pr | issue); summary is the opening of
-#                    its body (markup and blank lines collapsed, at most 600 characters; null when empty),
-#                    so /back can explain the thread's shorthand in plain words; a failed lookup has
-#                    is/title/state/url/summary null and error "could not read"
+#                    read in the item's repo: {repo, kind, number, is, title, state, url, error}; kind is
+#                    as written, is what GitHub says it is (pr | issue); a failed lookup has
+#                    is/title/state/url null and error "could not read"
 #   other_threads_open  open questions and Decisions outside a thread scope (0 for --all), split into
 #                    other_threads_open_this_repo and other_threads_open_other_repos
 #   tasks            open human tasks (owner-task.sh list --json, Issue #2538 contract); null when the
@@ -455,7 +453,7 @@ while IFS="$(printf '\t')" read -r rr rk rn; do
     # An "Issue #N" may be a PR and the other way round: try the named kind, then the other.
     if [ "$rk" = pr ]; then kinds="pr issue"; else kinds="issue pr"; fi
     for k in $kinds; do
-      got=$(gh "$k" view "$rn" --repo "$rr" --json title,state,url,body 2>/dev/null) || got=""
+      got=$(gh "$k" view "$rn" --repo "$rr" --json title,state,url 2>/dev/null) || got=""
       printf '%s' "$got" | "$JQ" -e 'type == "object" and has("title")' >/dev/null 2>&1 && { found="$k"; break; }
       got=""
     done
@@ -464,30 +462,16 @@ while IFS="$(printf '\t')" read -r rr rk rn; do
     "$JQ" -c --arg r "$rr" --arg k "$rk" --argjson n "$rn" --arg is "$found" '{repo: $r, kind: $k, number: $n,
       # `gh issue view` also answers for a PR: the URL says which it is.
       is: (if (.url // "") | test("/pull/[0-9]+") then "pr" elif (.url // "") | test("/issues/[0-9]+") then "issue" else $is end),
-      title, state, url,
-      # The body opening, flattened to one line: comments dropped, markup removed only where it is syntax.
-      summary: ((.body // "")
-        # Markup only where it is syntax: a leading heading or quote marker, emphasis pairs and
-        # code-span ticks. Literal characters (C#, a > b, x**2, __init__) are kept.
-        | split("\n") | map(sub("^\\s*(#{1,6}\\s+|>\\s*)+"; "")) | join(" ")
-        # Code spans (odd pieces between ticks) are kept verbatim; elsewhere HTML comments are
-        # dropped and a ** or __ pair only when it wraps text, so x**2 and __init__ survive.
-        | [splits("`")] | to_entries | map(if .key % 2 == 1 then .value else .value
-            | gsub("(?s)<!--.*?-->"; " ")
-            | gsub("(?<![\\w*])\\*\\*(?<t>[^*\\s](?:[^*]*[^*\\s])?)\\*\\*(?![\\w*])"; "\(.t)")
-            | gsub("(?<![\\w_])__(?<t>[^_\\s](?:[^_]*[^_\\s])?)__(?![\\w_])"; "\(.t)") end) | join("")
-        | gsub("\\s+"; " ")
-        | ltrimstr(" ") | rtrimstr(" ") | if . == "" then null elif length > 600 then .[:597] + "..." else . end),
-      error: null}' <<<"$got" >>"$REFS"
+      title, state, url, error: null}' <<<"$got" >>"$REFS"
   else
-    "$JQ" -cn --arg r "$rr" --arg k "$rk" --argjson n "$rn" '{repo: $r, kind: $k, number: $n, is: null, title: null, state: null, url: null, summary: null, error: "could not read"}' >>"$REFS"
+    "$JQ" -cn --arg r "$rr" --arg k "$rk" --argjson n "$rn" '{repo: $r, kind: $k, number: $n, is: null, title: null, state: null, url: null, error: "could not read"}' >>"$REFS"
   fi
 done <"$WORK/refs.tsv"
 for qd in q d; do
   "$JQ" -c --slurpfile refs "$REFS" "$REFS_DEF"'
     if (.in | type) == "array" then .in |= map((.repo // "") as $r | . + {refs: [refs[] as $x
       | ($refs | map(select((.repo | ascii_downcase) == ($r | ascii_downcase) and .kind == $x.kind and .number == $x.number)) | .[0])
-        // ($x + {repo: $r, is: null, title: null, state: null, url: null, summary: null, error: "could not read"})]}) else . end' \
+        // ($x + {repo: $r, is: null, title: null, state: null, url: null, error: "could not read"})]}) else . end' \
     "$WORK/$qd.json" >"$WORK/$qd.tmp" 2>/dev/null && mv "$WORK/$qd.tmp" "$WORK/$qd.json"
 done
 
