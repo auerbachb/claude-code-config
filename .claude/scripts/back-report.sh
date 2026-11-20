@@ -468,9 +468,14 @@ while IFS="$(printf '\t')" read -r rr rk rn; do
       # The body opening, flattened to one line: comments dropped, markup removed only where it is syntax.
       summary: ((.body // "") | gsub("(?s)<!--.*?-->"; " ")
         # Markup only where it is syntax: a leading heading or quote marker, emphasis pairs and
-        # code-span ticks. Literal characters (C#, a > b) are kept.
+        # code-span ticks. Literal characters (C#, a > b, x**2, __init__) are kept.
         | split("\n") | map(sub("^\\s*(#{1,6}\\s+|>\\s*)+"; "")) | join(" ")
-        | gsub("\\*\\*|__|`"; "") | gsub("\\s+"; " ")
+        # Code spans (odd pieces between ticks) are kept verbatim; elsewhere a ** or __ pair is
+        # dropped only when it wraps text, so x**2 and __init__ survive.
+        | [splits("`")] | to_entries | map(if .key % 2 == 1 then .value else .value
+            | gsub("(?<![\\w*])\\*\\*(?<t>[^*\\s](?:[^*]*[^*\\s])?)\\*\\*(?![\\w*])"; "\(.t)")
+            | gsub("(?<![\\w_])__(?<t>[^_\\s](?:[^_]*[^_\\s])?)__(?![\\w_])"; "\(.t)") end) | join("")
+        | gsub("\\s+"; " ")
         | ltrimstr(" ") | rtrimstr(" ") | if . == "" then null elif length > 600 then .[:597] + "..." else . end),
       error: null}' <<<"$got" >>"$REFS"
   else
