@@ -61,6 +61,9 @@
 #   stoppages        Desk stoppage entries since `since` (this session's in thread scope); null when unreadable
 #   running          pipeline agents still recorded as running (this session's in thread scope)
 #   handoffs         per-PR handoff files in scope: {repo, pr, phase_completed, head_sha}
+#   away_log         what threads logged instead of writing to chat while he was away (away-log.sh,
+#                    issue #2594), oldest first: {at, at_iso, repo, session, kind, text}; this session's
+#                    in thread scope (this repo's when no session is known); null when unreadable
 #   local_sources    the sources read from this machine only (another machine's are not seen)
 #   unreadable       [{source, reason}] for every source that could not be read
 #
@@ -69,6 +72,7 @@
 #                    ~/.claude/scripts/, ./.claude/scripts/ (first executable)
 #   human-queue.sh   $BACK_REPORT_HQ, else ~/.claude/skills-worktree/desk/bin/, then <this repo>/desk/bin/
 #   unattended.sh, presence.sh, session-state.sh   siblings of this script
+#   away-log.sh      $BACK_REPORT_AWAY_LOG, else a sibling of this script
 #   gh               on PATH
 #
 # EXIT CODES
@@ -534,6 +538,18 @@ $dirs
 DIRS
 fi
 
+# --- away log (issue #2594): what threads would have said in chat while he was away ----------------
+AL="${BACK_REPORT_AWAY_LOG:-$HERE/away-log.sh}"
+if [ ! -x "$AL" ]; then
+  null_section away_log; unreadable "away log" "away-log.sh not found next to this script"
+else
+  AARGS=(--since "$SINCE" --cwd "$CWD")
+  if [ "$ALL" -eq 1 ]; then AARGS+=(--all); elif [ -n "$SID" ]; then AARGS+=(--session "$SID"); fi
+  arc=0; ALOG=$("$AL" read "${AARGS[@]}" 2>/dev/null) || arc=$?
+  if [ "$arc" -ne 0 ]; then null_section away_log; unreadable "away log" "away-log.sh read exited $arc"
+  else put away_log "away log" "$ALOG" array; fi
+fi
+
 # --- assemble -------------------------------------------------------------------------------------
 "$JQ" -n -c \
   --arg scope "$SCOPE" --arg repo "$REPO" --arg sid "$SID" \
@@ -543,7 +559,7 @@ fi
   --slurpfile tasks "$WORK/tasks.json" --slurpfile merged "$WORK/merged.json" \
   --slurpfile opened "$WORK/opened.json" --slurpfile failed "$WORK/failed.json" \
   --slurpfile stoppages "$WORK/stoppages.json" --slurpfile running "$WORK/running.json" \
-  --slurpfile handoffs "$WORK/handoffs.json" --rawfile unread "$UNREAD" '
+  --slurpfile handoffs "$WORK/handoffs.json" --slurpfile away_log "$WORK/away_log.json" --rawfile unread "$UNREAD" '
   {scope: $scope, repo: $repo, session: $sid, now: $now, since: $since, since_source: $since_source,
    away_seconds: $away, digest_level: $level, presence: $presence[0],
    questions: $q[0].in, decisions: $d[0].in,
@@ -556,6 +572,6 @@ fi
    tasks: $tasks[0],
    activity: {merged: $merged[0], opened: $opened[0], failed: $failed[0],
               failed_not_listed: (if $failed[0] == null then null else $dropped end)},
-   stoppages: $stoppages[0], running: $running[0], handoffs: $handoffs[0],
-   local_sources: ["presence", "unattended questions", "running agents", "handoffs"],
+   stoppages: $stoppages[0], running: $running[0], handoffs: $handoffs[0], away_log: $away_log[0],
+   local_sources: ["presence", "unattended questions", "running agents", "handoffs", "away log"],
    unreadable: [$unread | split("\n")[] | select(length > 0) | fromjson]}'

@@ -16,6 +16,7 @@ Canonical human-facing output policy (Issue #1873). CLAUDE.md gives this policy 
 | `/pm` standing status request | Report a changed active board every 30 minutes by default and immediately on a terminal outcome | Set `report_every_min: 0` to opt out or a positive value to change cadence. Use the existing PM turn, canonical board and exact report receipt |
 | Completion of a user `/pm` invocation | One step receipt, after the immediate tick on a day arming invocation | Render recorded outcomes and flag missing ones. Internal ticks and probes stay silent. |
 | Terminal completion | Minimal outcome; useful artifact link only | Preserve full verification in PR/issue/logs; emit clean merge line once |
+| Operator away (`presence.sh is-away`; Issue #2594) | Nothing, every row above included: no chat text | Append each would-be message to `away-log.sh`; `/back` reads it. Records, gates and the question queue are unchanged (`away-log.md`) |
 
 A stopped pipeline must never disappear: when recovery ends, surface why and how it can resume even if the owner cannot fix the underlying service. Do not repeat an unchanged notice every tick. A materially changed blocker, failed notification, or a new required decision may notify again. Never silence a safety event merely because recovery is possible.
 

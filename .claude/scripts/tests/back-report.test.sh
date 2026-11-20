@@ -187,6 +187,22 @@ R --session sess-a --now "$NOW"
 check "a handoff is listed" "$(f '[.handoffs[] | "\(.repo)#\(.pr):\(.phase_completed)"] | join(",")')" "acme/widgets#8:A"
 check "an empty handoff file is named" "$(f '[.unreadable[].source | select(endswith("pr-9-handoff.json"))] | length')" 1
 
+printf '== away log (issue #2594)\n'
+export AWAY_LOG_DIR="$tmp/away-log"
+AL="$(dirname "$REPORT")/away-log.sh"
+(cd "$REPO" && "$AL" append --kind merged --text "merged PR #7" --session sess-a --now $((NOW - 600)) >/dev/null)
+(cd "$REPO" && "$AL" append --kind owner-task --text "sign in to Railway" --session sess-a --now $((NOW - 300)) >/dev/null)
+(cd "$REPO" && "$AL" append --kind blocker --text "other thread" --session sess-b --now $((NOW - 300)) >/dev/null)
+(cd "$REPO" && "$AL" append --kind note --text "before he left" --session sess-a --now $((NOW - 7200)) >/dev/null)
+R --session sess-a --since $((NOW - 3600)) --now "$NOW"
+check "thread: this session's entries since he left, oldest first" "$(f '[.away_log[] | "\(.kind):\(.text)"] | join("|")')" "merged:merged PR #7|owner-task:sign in to Railway"
+R --all --since $((NOW - 3600)) --now "$NOW"
+check "--all: every session's entries" "$(f '.away_log | length')" 3
+check "the away log is a local source" "$(f '.local_sources | index("away log") != null')" true
+BACK_REPORT_AWAY_LOG="$tmp/missing.sh" R --session sess-a --now "$NOW"
+check "away-log.sh missing: null and named" "$(f '"\(.away_log):\([.unreadable[] | select(.source == "away log")] | length)"')" "null:1"
+unset AWAY_LOG_DIR
+
 printf '== --save-recovered: tasks handed over in the thread but never saved\n'
 cat >"$tmp/found.json" <<'J'
 [{"what":"Sign in to Railway","why":"only you hold the login"},

@@ -11,6 +11,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 |--------|---------|
 <!-- catalog:rows:begin -->
 | [active-work-cap.sh](../active-work-cap.sh) | Repo-wide budget for simultaneously active coding work — resolves `ACTIVE_WORK_CAP` and the per-thread `PIPELINE_CEILING`, counts open PRs + live chips + pre-PR pipelines, emits `FREE` for batch chip emitters |
+| [away-log.sh](../away-log.sh) | Away log: while the operator is away a thread writes nothing to chat and appends each would-be message here; /back reads it |
 | [back-report.sh](../back-report.sh) | /back's data in one JSON object: open questions and Desk Decisions, open human tasks, and a digest of GitHub, stoppage and pipeline activity since the away declaration; an unreadable source is named, never read as empty |
 | [bgwork-ceiling.sh](../bgwork-ceiling.sh) | Hard ceiling on chat silence while background work (subagents, watchers) runs |
 | [gh-window.sh](../gh-window.sh) | GitHub date-window builder (ET-anchored, macOS + GNU dual-syntax) |
