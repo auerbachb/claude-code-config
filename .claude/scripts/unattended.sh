@@ -36,7 +36,8 @@
 #                                                question, those four and --did refuse ticket refs (#N,
 #                                                PR #N, owner/repo#N), links, backticks, snake_case code
 #                                                names, pipeline labels (PM-A), U-/D- ids and commit
-#                                                hashes: those go in --links only. A hook-captured menu
+#                                                hashes: those go in --links only. ALL_CAPS variable
+#                                                names (OPENAI_API_KEY) are allowed: he must know which. A hook-captured menu
 #                                                has no fields until the agent adds them with `update`.
 #                                                Writing guide: .claude/reference/unattended-mode.md
 #                                                §Writing a question. --context (issue #2592) is still
@@ -368,7 +369,7 @@ plain_problem() { # TEXT
       [qr{\x23\d},                                     "a ticket number like \x23123"],
       [qr{\b(?:pr|prs|issue|issues|pull)\s*\x23?\d+}i, "a ticket number like PR 123"],
       [qr{\x60},                                       "backticks"],
-      [qr{\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b},     "a code name like some_field"],
+      [qr{\b(?![A-Z0-9_]+\b)[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b}, "a code name like some_field"],
       [qr{\b[A-Z]{2,4}-[A-Z]\b},                     "a pipeline label like PM-A"],
       [qr{\b[UD]-\d+\b},                              "a question id like U-25"],
       [qr{\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b}, "a commit hash"],

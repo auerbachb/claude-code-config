@@ -117,7 +117,7 @@ if [ -n "$ids" ] && [ "$failed" -eq 0 ]; then
 else
   saved=""
   [ -n "$ids" ] && saved=" Already saved: $ids; do not record those again, add their fields with '$UNATTENDED_SH' update <id> --now '<what happens today>' --change '<what would change>' --why '<why>' --risk '<the real risk>' --links '<PR/issue numbers>'."
-  reason="UNATTENDED (human-queue.md, Unattended): the operator is away, so no menu opens.${saved} The questions not listed could not be recorded: record each with '$UNATTENDED_SH' record --question '...' --now '<what happens today>' --change '<what would change>' --why '<why>' --risk '<the real risk>' --links '<PR/issue numbers>' --recommended '...' --did '...', or put it in your final report. Take the recommended option only if the step is reversible and no rule requires confirmation, else park only that step, and keep working. Do not ask again."
+  reason="UNATTENDED (human-queue.md, Unattended): the operator is away, so no menu opens.${saved} The questions not listed could not be recorded: record each with '$UNATTENDED_SH' record --question '<the question in plain words, PR/issue numbers moved to --links>' --now '<what happens today>' --change '<what would change>' --why '<why>' --risk '<the real risk>' --links '<PR/issue numbers>' --recommended '...' --did '...', or put it in your final report. Take the recommended option only if the step is reversible and no rule requires confirmation, else park only that step, and keep working. Do not ask again."
 fi
 
 deny "$reason"

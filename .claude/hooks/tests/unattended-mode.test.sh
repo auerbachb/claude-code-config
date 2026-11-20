@@ -461,6 +461,7 @@ UX record --question "$QX" --now "The rep_list_status column holds every lead ba
 UX record --question "$QX" --now "$NOW" --change "$CHG" --why "$WHY" --risk "Issue #4419 may not land in time for the import" >/dev/null 2>&1; check "a ticket number in --risk: usage error" "$?" "2"
 ok_rec --did "Held PR #4421 unmerged" >/dev/null 2>&1; check "a ticket number in --did: usage error" "$?" "2"
 check "plain words with C#, v2, 2FA, and/or and COVID-19 pass" "$(UX record --question "$QX" --now "Leads on C# and v2 sites with 2FA and/or COVID-19 rules are held" --change "$CHG" --why "$WHY" --risk "$RSK" >/dev/null 2>&1; echo $?)" "0"
+check "an ALL_CAPS variable name is allowed" "$(UX record --question "Human task: set OPENAI_API_KEY in the server settings?" --now "$NOW" --change "$CHG" --why "$WHY" --risk "$RSK" >/dev/null 2>&1; echo $?)" "0"
 check "a non-Latin field counts" "$(UX record --question "$QX" --now "Лиды, которым уже писал продавец, помечаются как не беспокоить" --change "$CHG" --why "$WHY" --risk "$RSK" >/dev/null 2>&1; echo $?)" "0"
 HX=$(UX record --source hook --question "Captured menu?")
 has "hook record may arrive without the fields" "$HX" "U-"
